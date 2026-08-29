@@ -1,0 +1,14 @@
+# 로컬 작업·참고 자료 (커밋하지 않는다)
+.tmp/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 로컬 세션 기록으로 향하는 심볼릭 링크 (기기 고유 절대경로)
+.claude/histories

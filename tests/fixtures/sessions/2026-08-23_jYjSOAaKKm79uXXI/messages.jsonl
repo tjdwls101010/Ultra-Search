@@ -1,0 +1,2 @@
+{"role": "user", "content": [{"type": "text", "text": "Threads 사례 조사"}], "timestamp": 1787483281000}
+{"role": "assistant", "content": [{"type": "text", "text": "Threads에서는 자료가 빈약합니다."}], "stopReason": "stop", "timestamp": 1787483290000, "usage": {"input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0, "totalTokens": 110, "cost": {"total": 0.001}}}

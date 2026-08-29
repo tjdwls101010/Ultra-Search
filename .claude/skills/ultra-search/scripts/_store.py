@@ -1,0 +1,209 @@
+"""Reading Aside's own session storage.
+
+This is someone else's private data directory, and the CLI has no supported way to ask
+"which session did my command just create?". Two consequences shape everything here.
+
+The transcript on disk is authoritative and the database is not. Ephemeral CLI sessions
+have been observed writing a full ``messages.jsonl`` while adding no row to ``state.db``
+at all -- so every database read returns None rather than raising, and no caller may
+require one to have succeeded.
+
+And a session is correlated by a marker we planted in the prompt, not by matching the
+prompt text. Two parallel searches of the same question are otherwise indistinguishable,
+and picking the wrong one reports someone else's answer as yours.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULT_ASIDE_HOME = "~/.aside"
+ACCOUNT = "u/0"
+
+#: Aside deletes CLI sessions on its own schedule -- observed gone the next day. Anything
+#: worth keeping is copied out while the run is still alive.
+SESSION_LIFETIME_NOTE = "aside removes CLI sessions within about a day"
+
+
+@dataclass
+class SessionRef:
+    session_id: str
+    path: Path
+
+    @property
+    def transcript(self) -> Path:
+        return self.path / "messages.jsonl"
+
+
+def aside_home(explicit: str | os.PathLike[str] | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path(os.environ.get("ULTRA_SEARCH_ASIDE_HOME") or DEFAULT_ASIDE_HOME).expanduser()
+
+
+def sessions_root(home: str | os.PathLike[str] | None = None) -> Path:
+    return aside_home(home) / ACCOUNT / "sessions"
+
+
+def iter_sessions(home: str | os.PathLike[str] | None = None) -> list[SessionRef]:
+    """Every session directory, newest first by directory mtime."""
+    root = sessions_root(home)
+    try:
+        entries = [d for d in root.iterdir() if d.is_dir() and "_" in d.name]
+    except OSError:
+        return []
+    entries.sort(key=lambda d: _mtime(d), reverse=True)
+    return [SessionRef(session_id=d.name.split("_", 1)[1], path=d) for d in entries]
+
+
+def session_dir(home: str | os.PathLike[str] | None, session_id: str) -> Path | None:
+    """The directory for a session id, whatever date prefix Aside gave it."""
+    root = sessions_root(home)
+    try:
+        for d in root.iterdir():
+            if d.is_dir() and d.name.endswith("_" + session_id):
+                return d
+    except OSError:
+        return None
+    return None
+
+
+def find_session_by_marker(home: str | os.PathLike[str] | None, marker: str) -> SessionRef | None:
+    """The session whose opening user message contains ``marker``.
+
+    Only the first record is read, and only from sessions that have one: a directory
+    Aside has created but not yet written to is a session in progress, not a mismatch.
+    """
+    for ref in iter_sessions(home):
+        t = ref.transcript
+        try:
+            with t.open("r", encoding="utf-8", errors="replace") as f:
+                first = f.readline()
+        except OSError:
+            continue
+        if not first.strip():
+            continue
+        if marker in first:
+            return ref
+    return None
+
+
+# --- copying out ------------------------------------------------------------------
+
+
+def copy_new_lines(src: str | os.PathLike[str], dst: str | os.PathLike[str], since: int) -> int:
+    """Append whole lines from ``src`` after byte ``since`` onto ``dst``; return the new cursor.
+
+    Append-only and whole-lines-only, both deliberately. The destination outlives the
+    source, so a source that shrinks or vanishes must never shorten the copy; and a line
+    still being written is not yet a record, so consuming it would store a fragment that
+    can never be completed.
+    """
+    src_p, dst_p = Path(src), Path(dst)
+    try:
+        size = src_p.stat().st_size
+    except OSError:
+        return since
+    if size <= since:
+        return since
+    with src_p.open("rb") as f:
+        f.seek(since)
+        chunk = f.read(size - since)
+    end = chunk.rfind(b"\n")
+    if end == -1:
+        return since
+    complete = chunk[: end + 1]
+    dst_p.parent.mkdir(parents=True, exist_ok=True)
+    with dst_p.open("ab") as out:
+        out.write(complete)
+    return since + len(complete)
+
+
+def last_activity(
+    home: str | os.PathLike[str] | None,
+    session_id: str,
+    child_ids: list[str] | None = None,
+) -> float:
+    """Newest write time across the run's own transcript and every child's.
+
+    A parent that spawned subagents goes silent while they work. Measuring only the
+    parent would call that stalled; the children's writes are the evidence that it is not.
+    """
+    newest = 0.0
+    for sid in [session_id, *(child_ids or [])]:
+        d = session_dir(home, sid)
+        if not d:
+            continue
+        newest = max(newest, _mtime(d), _mtime(d / "messages.jsonl"))
+    return newest
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+# --- the database, best-effort ------------------------------------------------------
+
+
+def db_path(home: str | os.PathLike[str] | None = None) -> Path:
+    return aside_home(home) / ACCOUNT / "state.db"
+
+
+def _query(home, sql: str, args: tuple) -> list[dict]:
+    p = db_path(home)
+    if not p.exists():
+        return []
+    try:
+        # Read-only, not immutable: the daemon writes this constantly through a WAL, and
+        # immutable=1 would tell SQLite to ignore that WAL and hand back stale rows with
+        # no error. Failing to open is recoverable here; being quietly wrong is not.
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in con.execute(sql, args)]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        # A schema change, a lock, a corrupt copy -- none of these are worth failing a
+        # command over, because everything this returns is supplementary detail.
+        return []
+
+
+def db_session_row(home: str | os.PathLike[str] | None, session_id: str) -> dict | None:
+    rows = _query(home, "select * from sessions where id = ?", (session_id,))
+    return rows[0] if rows else None
+
+
+def db_child_rows(home: str | os.PathLike[str] | None, session_id: str) -> list[dict]:
+    return _query(home, "select * from sessions where parent_id = ?", (session_id,))
+
+
+def db_finished_at(home: str | os.PathLike[str] | None, session_id: str) -> int | None:
+    rows = _query(
+        home,
+        "select finished_at from session_runs where session_id = ? order by id desc limit 1",
+        (session_id,),
+    )
+    if not rows:
+        return None
+    val = rows[0].get("finished_at")
+    return int(val) if val else None
+
+
+def db_suspension(home: str | os.PathLike[str] | None, session_id: str) -> object | None:
+    row = db_session_row(home, session_id)
+    if not row:
+        return None
+    raw = row.get("suspension")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw

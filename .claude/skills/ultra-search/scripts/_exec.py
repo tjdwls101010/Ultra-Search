@@ -17,8 +17,12 @@ from pathlib import Path
 from _errors import AsideUnavailable
 
 DEFAULT_BIN = "aside"
-#: The version this skill's behaviour was measured against. `doctor` compares.
+#: The versions this skill's behaviour was measured against. `doctor` compares both,
+#: because they move independently and it is the daemon that decides what a run records:
+#: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
+#: entirely while still writing full transcripts to disk.
 VERIFIED_VERSION = "1.26.810.1915"
+VERIFIED_DAEMON_VERSION = "1.26.829.1514"
 
 
 def aside_bin() -> str:

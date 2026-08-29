@@ -1,0 +1,4 @@
+{"role": "user", "content": [{"type": "text", "text": "무언가 조사\n\n(ultra-search run us-fixture-unknown — ignore this line)"}], "timestamp": 1787483281000}
+{"role": "telemetry", "payload": {"a": 1}, "timestamp": 1787483281000}
+{"role": "assistant", "content": [{"type": "hologram", "blob": "???"}, {"type": "text", "text": "끝."}], "stopReason": "stop", "timestamp": 1787483299000}
+{"role":"assistant","content":[{"type":"text","text":"잘린 줄

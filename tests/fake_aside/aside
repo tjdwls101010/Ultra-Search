@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""A stand-in for the `aside` binary.
+
+It exists so the supervisor's state machine can be driven through situations the real
+binary produces rarely or only by accident -- a run whose session never appears, a child
+that outlives its parent, two identical prompts racing. Recording those as fixtures is
+the only way to test them repeatedly.
+
+Behaviour is chosen by FAKE_ASIDE_SCENARIO. Every invocation appends its argv to
+$FAKE_ASIDE_CALLS/calls.jsonl so a contract test can assert what was actually run.
+"""
+from __future__ import annotations
+
+import json
+import os
+import random
+import string
+import sys
+import time
+from pathlib import Path
+
+SCENARIO = os.environ.get("FAKE_ASIDE_SCENARIO", "simple")
+HOME = Path(os.environ.get("ULTRA_SEARCH_ASIDE_HOME", "~/.aside")).expanduser()
+SESSIONS = HOME / "u" / "0" / "sessions"
+
+
+def record_call(argv: list[str]) -> None:
+    d = os.environ.get("FAKE_ASIDE_CALLS")
+    if not d:
+        return
+    p = Path(d) / "calls.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"argv": argv, "scenario": SCENARIO, "at": time.time()}, ensure_ascii=False) + "\n")
+
+
+def new_session_id() -> str:
+    return "".join(random.choices(string.ascii_letters + string.digits, k=16))
+
+
+def make_session(prompt: str, session_id: str | None = None) -> tuple[str, Path]:
+    sid = session_id or new_session_id()
+    d = SESSIONS / f"{time.strftime('%Y-%m-%d')}_{sid}"
+    d.mkdir(parents=True, exist_ok=True)
+    rec = {"role": "user", "content": [{"type": "text", "text": prompt}], "timestamp": int(time.time() * 1000)}
+    append(d, rec)
+    return sid, d
+
+
+def append(d: Path, rec: dict) -> None:
+    with (d / "messages.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def usage(total: int = 1000) -> dict:
+    return {
+        "input": total // 2, "output": 20, "cacheRead": 0, "cacheWrite": 0,
+        "reasoning": 0, "totalTokens": total, "cost": {"total": 0.01},
+    }
+
+
+def assistant(texts=None, calls=None, stop="stop") -> dict:
+    content = []
+    for name, args in calls or []:
+        content.append({"type": "toolCall", "name": name, "arguments": args})
+    for t in texts or []:
+        content.append({"type": "text", "text": t})
+    return {"role": "assistant", "content": content, "stopReason": stop,
+            "usage": usage(), "timestamp": int(time.time() * 1000)}
+
+
+def tool_result(name: str, content: str, details: dict | None = None) -> dict:
+    return {"role": "toolResult", "toolName": name, "content": content, "details": details or {},
+            "isError": False, "toolCallId": "call_fake", "timestamp": int(time.time() * 1000)}
+
+
+SEARCH_SOURCES = {"sources": [
+    {"id": "src1", "url": "https://example.org/a", "title": "Example A", "excerpt": "…"},
+    {"id": "src2", "url": "https://example.org/b", "title": "Example B", "excerpt": "…"},
+]}
+
+
+def do_exec(prompt: str, session: str | None = None) -> int:
+    if session:
+        # Continuing an existing session: append to its transcript rather than creating a
+        # new one. The real binary does this, and a fake that made a fresh session instead
+        # would hide the fact that marker discovery cannot work on a resumed run.
+        d = None
+        for name in os.listdir(SESSIONS) if SESSIONS.is_dir() else []:
+            if name.endswith("_" + session):
+                d = SESSIONS / name
+                break
+        if d is None:
+            print(f"no such session {session}", file=sys.stderr)
+            return 1
+        append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
+                   "timestamp": int(time.time() * 1000)})
+        answer = "이어서 답합니다."
+        # The reply can land after this process exits -- which is exactly when a supervisor
+        # that stopped waiting would report the previous turn's answer instead.
+        delay = float(os.environ.get("FAKE_ASIDE_RESUME_DELAY", "0"))
+        if delay:
+            if os.fork() == 0:
+                time.sleep(delay)
+                append(d, assistant(texts=[answer]))
+                os._exit(0)
+        else:
+            append(d, assistant(texts=[answer]))
+        print(answer)
+        return 0
+
+    if SCENARIO == "aside_down":
+        print("Aside daemon is not reachable", file=sys.stderr)
+        return 1
+
+    if SCENARIO == "no_session":
+        # The session never appears on disk: the supervisor has to fall back to stdout
+        # alone rather than waiting forever for a correlation that will not happen.
+        print("Thinking: working…")
+        print("websearch(objective: 'x', search_queries: ['x'], mode: 'basic')")
+        print(" > {\"session_id\":\"unknowable\",\"results\":[{\"url\":\"https://example.org/only-in-stdout\"}]}")
+        time.sleep(float(os.environ.get("FAKE_ASIDE_DELAY", "0.3")))
+        print("The answer, visible only in stdout.")
+        return 0
+
+    sid, d = make_session(prompt)
+    print(f"Thinking: starting {sid}")
+    sys.stdout.flush()
+
+    if SCENARIO == "slow":
+        delay = float(os.environ.get("FAKE_ASIDE_DELAY", "3"))
+        append(d, assistant(calls=[("websearch", {"objective": "slow", "search_queries": ["q"]})], stop="toolUse"))
+        time.sleep(delay)
+        append(d, tool_result("websearch", "results…", SEARCH_SOURCES))
+        append(d, assistant(texts=["느린 답."]))
+        print("느린 답.")
+        return 0
+
+    if SCENARIO in ("subagent", "orphan"):
+        children = []
+        append(d, assistant(calls=[("subagent", {"action": "spawn", "description": "c1"}),
+                                   ("subagent", {"action": "spawn", "description": "c2"})], stop="toolUse"))
+        for name in ("c1", "c2"):
+            cid, cd = make_session(f"child task {name}")
+            children.append((cid, cd))
+            append(d, tool_result("subagent", "spawned", {"taskId": cid}))
+        # One child finishes promptly; in the orphan scenario the other is still writing
+        # when the parent process exits, which is exactly the case that must not be
+        # reported as a clean completion.
+        append(children[0][1], assistant(texts=["child 1 done."]))
+        if SCENARIO == "subagent":
+            append(children[1][1], assistant(texts=["child 2 done."]))
+            append(d, assistant(texts=["부모 답: 자식 둘 완료."]))
+            print("부모 답: 자식 둘 완료.")
+            return 0
+        os.environ["FAKE_ASIDE_ORPHAN_DIR"] = str(children[1][1])
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(float(os.environ.get("FAKE_ASIDE_ORPHAN_DELAY", "2")))
+            append(children[1][1], assistant(texts=["child 2 finished late."]))
+            os._exit(0)
+        append(d, assistant(texts=["부모 답: 자식 하나가 아직."]))
+        print("부모 답: 자식 하나가 아직.")
+        return 0
+
+    if SCENARIO == "fail":
+        append(d, assistant(texts=[""], stop="error"))
+        print("something went wrong", file=sys.stderr)
+        return 1
+
+    if SCENARIO == "empty":
+        append(d, assistant(texts=[""]))
+        return 0
+
+    # simple
+    append(d, assistant(calls=[("websearch", {"objective": "o", "search_queries": ["q"]})], stop="toolUse"))
+    append(d, tool_result("websearch", "results…", SEARCH_SOURCES))
+    answer = 'Answer <citation refs="src1">Example A</citation>'
+    append(d, assistant(texts=[answer]))
+    print(answer)
+    return 0
+
+
+def do_repl(code: str) -> int:
+    """Snippets are identified by a marker the caller embeds, so the fake does not have
+    to parse JavaScript to know which reply to give."""
+    if SCENARIO == "aside_down":
+        print("fetch failed: other side closed", file=sys.stderr)
+        print("Aside daemon is not reachable", file=sys.stderr)
+        return 1
+    if SCENARIO == "repl_timeout":
+        # The real daemon reports a 120s snippet overrun as though it had died.
+        time.sleep(float(os.environ.get("FAKE_ASIDE_DELAY", "0.2")))
+        print("fetch failed: other side closed", file=sys.stderr)
+        print("Aside daemon is not reachable", file=sys.stderr)
+        return 1
+
+    replies = os.environ.get("FAKE_ASIDE_REPL_NDJSON")
+    if replies:
+        for line in Path(replies).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                print(line)
+                sys.stdout.flush()
+        return 0
+    print(json.dumps({"ok": True, "pwd": str(HOME / "u" / "0" / "sessions" / "fake")}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    record_call(argv)
+    if len(argv) < 2:
+        print("usage: aside <exec|repl|mcp|account> …", file=sys.stderr)
+        return 2
+    cmd = argv[1]
+    positionals = [a for a in argv[2:] if not a.startswith("-")]
+    flagged = {a for a in argv[2:] if a.startswith("-")}
+    if "--version" in flagged or cmd == "--version":
+        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.810.1915"))
+        return 0
+    if cmd == "exec":
+        # --session <id> consumes the id, which would otherwise look like the prompt.
+        session = None
+        if "--session" in argv:
+            i = argv.index("--session")
+            session = argv[i + 1]
+            positionals = [a for a in positionals if a != session]
+        return do_exec(positionals[-1] if positionals else "", session)
+    if cmd == "repl":
+        return do_repl(positionals[-1] if positionals else "")
+    if cmd == "mcp":
+        print(json.dumps({"result": {"tools": [{"name": "repl", "description": "fake repl API description"}]}}))
+        return 0
+    if cmd == "account":
+        print(json.dumps({"accounts": [{"id": "u0", "status": "logged-in"}]}))
+        return 0
+    print(f"unknown command {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

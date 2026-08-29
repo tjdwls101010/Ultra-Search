@@ -12,3 +12,9 @@ venv/
 
 # 로컬 세션 기록으로 향하는 심볼릭 링크 (기기 고유 절대경로)
 .claude/histories
+
+# ultra-search 런타임 산출물
+.ultra-search/
+
+# Node 변환 의존성
+node_modules/

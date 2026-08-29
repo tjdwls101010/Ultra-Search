@@ -10,17 +10,23 @@ function say(obj) {
   console.log(JSON.stringify(obj));
 }
 
+// The sandbox has no AbortController; a slow fetch is raced against a timer instead.
+const TIMED_OUT = Symbol('timeout');
+
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), ms))]);
+}
+
 async function get(u) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), perUrlTimeoutMs);
   try {
-    const res = await fetch(u, { signal: controller.signal, redirect: 'follow' });
+    const res = await withTimeout(fetch(u, { redirect: 'follow' }), perUrlTimeoutMs);
+    if (res === TIMED_OUT) return { ok: false, status: 0, error: 'timeout' };
     if (!res.ok) return { ok: false, status: res.status };
-    return { ok: true, status: res.status, body: await res.text() };
+    const body = await withTimeout(res.text(), perUrlTimeoutMs);
+    if (body === TIMED_OUT) return { ok: false, status: res.status, error: 'timeout reading body' };
+    return { ok: true, status: res.status, body };
   } catch (e) {
     return { ok: false, status: 0, error: String(e && e.message ? e.message : e) };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

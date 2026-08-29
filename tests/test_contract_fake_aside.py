@@ -132,3 +132,25 @@ def test_the_real_repl_fs_is_promise_based_without_sync_variants() -> None:
 
     assert "writeFile" in keys
     assert not any(k.endswith("Sync") for k in keys)
+
+
+# --- the snippets must only use globals the sandbox actually has ------------------------
+
+
+def test_no_snippet_reaches_for_a_global_the_sandbox_lacks() -> None:
+    """Measured absent from the REPL sandbox. A snippet that touches one of these throws
+    before its own try block, so the rejection is swallowed by Promise.allSettled and the
+    snippet reports an empty result instead of an error -- which is how sitemap discovery
+    silently degraded to link-following for a while without any test noticing."""
+    forbidden = ("AbortController", "new URL(", "URLSearchParams", "structuredClone", "require(", "writeFileSync")
+    snippets = (Path(__file__).resolve().parents[1] / ".claude" / "skills" / "ultra-search"
+                / "scripts" / "page" / "snippets")
+
+    offenders = []
+    for js in snippets.glob("*.js"):
+        code = "\n".join(
+            line for line in js.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//")
+        )
+        offenders += [f"{js.name}: {tok}" for tok in forbidden if tok in code]
+
+    assert offenders == []

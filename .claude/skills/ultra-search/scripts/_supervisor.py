@@ -56,6 +56,10 @@ def supervise(
     meta = run.meta()
     prompt = meta.get("prompt") or ""
     marker = meta.get("marker") or _registry.marker_for(run.run_id)
+    if timeout is None and meta.get("watch_timeout") is not None:
+        # `--timeout` is recorded by the CLI that started the run; the supervisor is a
+        # separate process with no way to be passed it, so it is read back from disk here.
+        timeout = float(meta["watch_timeout"])
 
     argv = _exec.exec_argv(
         _registry.decorate_prompt(prompt, marker),

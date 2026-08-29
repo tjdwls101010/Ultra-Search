@@ -270,3 +270,21 @@ def test_meta_tracks_activity_while_the_run_is_going(
 
     assert meta["last_activity_at"] > 0
     assert meta["state"] == "completed"
+
+
+def test_the_watch_timeout_recorded_by_the_cli_is_honoured(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """`--timeout` is recorded by the process that starts the run, but enforced by the
+    detached supervisor, which cannot be passed an argument. Reading it back from meta is
+    the only link between the two -- and when that link was missing the flag did nothing
+    at all, silently."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    run = start(runs_dir)
+    run.update_meta(watch_timeout=0.6)
+
+    meta = _supervisor.supervise(run, poll=0.05, discovery_deadline=5.0, settle=0.2)
+
+    assert meta["state"] == "abandoned"
+    assert meta["reason"] == "watch timeout"

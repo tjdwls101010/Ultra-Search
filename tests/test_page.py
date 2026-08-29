@@ -282,32 +282,117 @@ def test_two_urls_that_slug_the_same_do_not_overwrite_each_other(tmp_path: Path)
 
 
 # --- interpreting --out --------------------------------------------------------------
+#
+# Driven through the CLI rather than the private helper that implements it: what a caller
+# relies on is that `--out ./notes` produces a folder, not that any particular function
+# decided so.
 
 
-def test_an_extensionless_out_path_is_a_directory(tmp_path: Path) -> None:
+def out_paths(tmp_path: Path, out: str, monkeypatch) -> dict:
+    import ultra_search
+
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    calls: list = []
+
+    def fake_batch(urls, **kw):
+        calls.append(list(urls))
+        return [dict(text_response(ARTICLE), url=u) for u in urls] + [{"kind": "batch_done"}]
+
+    import _repl
+
+    monkeypatch.setattr(_repl, "fetch_batch", fake_batch)
+
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ultra_search.main(["fetch", "https://example.org/a", "--out", out, "--runs-dir", str(tmp_path / "runs")])
+    return json.loads([l for l in buf.getvalue().splitlines() if l.startswith("{")][-1])
+
+
+def test_an_extensionless_out_path_is_a_directory(tmp_path: Path, monkeypatch) -> None:
     """`--out ./notes` for one URL means a folder to anyone who types it. Producing an
     extensionless file called `notes` instead is a surprise nobody checks for."""
-    import _page as p
+    target = tmp_path / "notes"
 
-    out_file, out_dir = p._destinations(["https://e.org/a"], str(tmp_path / "notes"), tmp_path)
+    payload = out_paths(tmp_path, str(target), monkeypatch)
 
-    assert out_file is None
-    assert out_dir == tmp_path / "notes"
-    assert out_dir.is_dir()
-
-
-def test_a_named_markdown_file_is_a_file(tmp_path: Path) -> None:
-    import _page as p
-
-    out_file, _ = p._destinations(["https://e.org/a"], str(tmp_path / "answer.md"), tmp_path)
-
-    assert out_file == tmp_path / "answer.md"
+    assert target.is_dir()
+    assert Path(payload["items"][0]["path"]).parent == target
 
 
-def test_a_trailing_slash_is_a_directory_even_with_a_dot_in_the_name(tmp_path: Path) -> None:
-    import _page as p
+def test_a_named_markdown_file_is_a_file(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "answer.md"
 
-    out_file, out_dir = p._destinations(["https://e.org/a"], str(tmp_path / "v1.2") + "/", tmp_path)
+    payload = out_paths(tmp_path, str(target), monkeypatch)
 
-    assert out_file is None
-    assert out_dir.is_dir()
+    assert Path(payload["items"][0]["path"]) == target
+    assert target.is_file()
+
+
+def test_a_trailing_slash_is_a_directory_even_with_a_dot_in_the_name(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "v1.2"
+
+    payload = out_paths(tmp_path, str(target) + "/", monkeypatch)
+
+    assert target.is_dir()
+    assert Path(payload["items"][0]["path"]).parent == target
+
+
+def test_several_urls_are_refused_a_single_output_file(tmp_path: Path, monkeypatch) -> None:
+    import contextlib
+    import io
+
+    import ultra_search
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = ultra_search.main([
+            "fetch", "https://example.org/a", "https://example.org/b",
+            "--out", str(tmp_path / "one.md"), "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+    assert code == 2
+    assert "file" in json.loads(buf.getvalue().splitlines()[-1])["message"]
+
+
+# --- --format ---------------------------------------------------------------------------
+
+
+def test_format_html_writes_the_original_html(tmp_path: Path) -> None:
+    out = _page.fetch_urls(
+        ["https://example.org/a"],
+        out_dir=tmp_path,
+        fmt="html",
+        fetch_provider=provider({"https://example.org/a": text_response(ARTICLE)}),
+    )
+
+    item = out["items"][0]
+    assert item["status"] == "ok"
+    saved = Path(item["path"])
+    assert saved.suffix == ".html"
+    assert saved.read_text(encoding="utf-8") == ARTICLE
+
+
+def test_format_html_is_refused_for_a_response_that_was_not_html(tmp_path: Path, fixtures: Path) -> None:
+    """A .html file containing markdown is a file whose contents contradict its name --
+    worse than a refusal, because nothing downstream notices."""
+    pdf = fixtures / "docs" / "sample_en.pdf"
+
+    out = _page.fetch_urls(
+        ["https://example.org/paper.pdf"],
+        out_dir=tmp_path,
+        fmt="html",
+        fetch_provider=provider({
+            "https://example.org/paper.pdf": {
+                "status": 200, "content_type": "application/pdf", "kind": "file",
+                "saved_path": str(pdf), "ext": "pdf",
+            }
+        }),
+    )
+
+    item = out["items"][0]
+    assert item["status"] == "unsupported"
+    assert item["path"] is None
+    assert not list(tmp_path.glob("*.html"))

@@ -12,6 +12,7 @@
 - **`fetch`** — URL을 원문 마크다운으로. PDF·docx·pptx·xlsx·epub도 변환한다. 자바스크립트로 그리는 페이지는 실제 탭으로 자동 승격.
 - **`map` / `crawl`** — 사이트의 URL 목록만 먼저 보고, 받을 만하면 통째로 받는다.
 - **`status` / `log` / `result`** — 돌고 있는 조사를 들여다보고, 끝나면 답과 출처를 수거한다.
+- **`sessions` / `resume`** — Aside가 아직 가지고 있는 대화를 목록으로 보고, 이어서 묻는다. 앱에서 시작한 대화도 포함된다.
 
 ## 설치
 
@@ -50,7 +51,7 @@ $US fetch --help    # 플래그·기본값·거부 규칙
 ## 개발
 
 ```bash
-python3 -m pytest tests/          # 143개, aside 없이 통과
+python3 -m pytest tests/          # 170개, aside 없이 통과
 python3 -m pytest tests/ -m live  # 실제 Aside 필요
 ```
 

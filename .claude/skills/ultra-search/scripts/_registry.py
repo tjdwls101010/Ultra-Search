@@ -10,6 +10,7 @@ either wins the name or the caller takes another.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -72,9 +73,19 @@ class Run:
         _atomic_write_json(self.meta_path, meta)
 
     def update_meta(self, **changes: object) -> dict:
-        meta = load_meta(self.path)
-        meta.update(changes)
-        self.write_meta(meta)
+        """Merge changes into meta.json, serialised against other processes.
+
+        Three processes write this file: the CLI that started the run, the detached
+        supervisor, and whatever later calls `stop`. Each does read-modify-write, so
+        without a lock two concurrent updates lose one side's keys entirely -- the
+        supervisor's `state` and `pid` being overwritten by a parent that had already read
+        the older copy. The lock makes the pair atomic; the atomic rename below only ever
+        made the write itself atomic.
+        """
+        with _meta_lock(self.path):
+            meta = load_meta(self.path)
+            meta.update(changes)
+            _atomic_write_json(self.meta_path, meta)
         return meta
 
     def meta(self) -> dict:
@@ -116,6 +127,41 @@ def create_run(
         run.write_meta(base)
         return run
     raise ArgumentError(f"could not reserve a run directory under {root}", fix="Check the directory is writable.")
+
+
+@contextlib.contextmanager
+def _meta_lock(run_path: Path, timeout: float = 5.0):
+    """A cross-process lock via O_EXCL, with a staleness escape.
+
+    A supervisor killed mid-update would otherwise leave a lock nobody can clear, and a
+    run that cannot record its own state is worse than one whose update raced.
+    """
+    lock = Path(run_path) / "meta.lock"
+    deadline = time.time() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                try:
+                    if time.time() - lock.stat().st_mtime > timeout:
+                        lock.unlink()
+                        continue
+                except OSError:
+                    pass
+                break  # proceed unlocked rather than lose the update entirely
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                lock.unlink()
+            except OSError:
+                pass
 
 
 def _atomic_write_json(path: Path, obj: dict) -> None:

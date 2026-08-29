@@ -188,3 +188,36 @@ def test_slugs_stay_within_a_sane_filename_length() -> None:
     long_url = "https://example.org/" + "segment/" * 60
 
     assert len(_extract.slug_for(long_url)) <= 120
+
+
+def test_a_challenge_is_recognised_without_running_the_converter(fixtures: Path, monkeypatch) -> None:
+    """The decisive markers are read off the raw body, before conversion. An interstitial
+    that arrives when node is missing would otherwise come back as an extraction error --
+    and an error is not escalated to a browser tab, which is the one thing that clears a
+    challenge."""
+    monkeypatch.setattr(
+        _extract, "_run_to_markdown", lambda html, url: {"ok": False, "message": "node is not installed"}
+    )
+
+    out = _extract.extract_html(html(fixtures, "challenge"), "https://example.com/")
+
+    assert out.status == "challenge"
+
+
+def test_a_normal_page_without_the_converter_is_an_error_not_a_challenge(fixtures: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        _extract, "_run_to_markdown", lambda html, url: {"ok": False, "message": "node is not installed"}
+    )
+
+    out = _extract.extract_html(html(fixtures, "article"), "https://en.wikipedia.org/wiki/Web_scraping")
+
+    assert out.status == "error"
+    assert "node" in (out.error or "")
+
+
+def test_the_original_html_is_kept_on_the_document(fixtures: Path) -> None:
+    body = html(fixtures, "article")
+
+    out = _extract.extract_html(body, "https://en.wikipedia.org/wiki/Web_scraping")
+
+    assert out.raw == body

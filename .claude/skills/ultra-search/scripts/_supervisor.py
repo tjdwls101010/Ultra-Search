@@ -68,12 +68,20 @@ def supervise(
         model=meta.get("model"),
         speed=meta.get("speed"),
     )
+    # A resumed run appends to a session that already exists, so its transcript opens with
+    # the original prompt and the marker never appears in the first line that discovery
+    # reads. The id is already known here -- use it rather than hunting for it.
+    session_id: str | None = meta.get("session_id") or meta.get("resume_session_id")
+
     proc = _exec.spawn_exec(argv, run.stdout_path)
     started = time.time()
-    run.update_meta(state="running", pid=proc.pid, started_at=started, argv=argv)
+    opening = {"state": "running", "pid": proc.pid, "supervisor_pid": os.getpid(),
+               "started_at": started, "argv": argv}
+    if session_id:
+        opening["session_id"] = session_id
+    run.update_meta(**opening)
 
     home = _store.aside_home()
-    session_id: str | None = meta.get("session_id")
     cursor = int(meta.get("session_cursor") or 0)
     child_cursors: dict[str, int] = dict(meta.get("child_cursors") or {})
     children: list[str] = list(meta.get("children") or [])
@@ -162,14 +170,22 @@ def _activity(run, home, session_id, children) -> float:
 
 
 def _child_is_terminal(run: _registry.Run, child_id: str) -> bool:
-    """A child is done when its last assistant turn stopped for a reason other than a
-    tool call. Mid-tool means it is still working."""
+    """A child is done when its last assistant turn stopped for a reason other than a tool
+    call. Mid-tool means it is still working.
+
+    The stop reason alone decides it. Requiring text as well would call a child that
+    honestly found nothing -- and said so by stopping with an empty turn -- an orphan, and
+    an orphan is reported as an unresolved loose end rather than as an answer.
+    """
     events, _ = _events.read_events(run.child_transcript(child_id))
     assistants = [e for e in events if e.kind == "assistant"]
     if not assistants:
         return False
     last = assistants[-1]
-    return last.stop_reason != "toolUse" and bool(last.text.strip())
+    if last.stop_reason:
+        return last.stop_reason != "toolUse"
+    # No stop reason recorded at all: fall back to whether it produced anything.
+    return bool(last.text.strip())
 
 
 def _stop_requested(run: _registry.Run) -> bool:

@@ -32,7 +32,28 @@ def dispatch(args) -> int:
         "result": _result,
         "show": _show,
         "stop": _stop,
+        "sessions": _sessions,
     }[args.command](args, runs_root)
+
+
+def _sessions(args, runs_root: Path) -> int:
+    rows = _store.session_summaries(limit=max(args.limit * 5, args.limit))
+    if args.mine:
+        rows = [r for r in rows if r["started_by_ultra_search"]]
+    if args.search:
+        needle = args.search.lower()
+        rows = [r for r in rows if needle in (r["prompt"] or "").lower()]
+    rows = rows[: args.limit]
+    print(json.dumps(
+        {
+            "ok": True,
+            "command": "sessions",
+            "sessions": rows,
+            "note": "resume any of these by session_id. Aside deletes sessions within about a day.",
+        },
+        ensure_ascii=False,
+    ))
+    return 0 if rows else _errors.EXIT_EMPTY
 
 
 def _targets(args, runs_root: Path) -> list:
@@ -209,13 +230,23 @@ def _show(args, runs_root: Path) -> int:
         )
     # The text Aside already fetched, not a fresh request: re-fetching would cost a round
     # trip and could return something different from what the answer was based on.
+    #
+    # A URL usually appears twice -- once as a search result's snippet, once as the page a
+    # later webfetch actually read. `show` exists to give the second one, so the tools that
+    # open a page win regardless of which came first in the transcript.
     body = ""
+    fallback = ""
     for e in events:
-        if e.kind == "tool_result" and any(
-            isinstance(s, dict) and s.get("url") == hit.url for s in (e.details or {}).get("sources") or []
-        ):
+        if e.kind != "tool_result":
+            continue
+        if not any(isinstance(s, dict) and s.get("url") == hit.url
+                   for s in (e.details or {}).get("sources") or []):
+            continue
+        if _events.is_opening_tool(e.tool_name):
             body = e.content
             break
+        fallback = fallback or e.content
+    body = body or fallback
     payload = {"ok": True, "command": "show", "run_id": run.run_id,
                "source": {"url": hit.url, "title": hit.title, "id": hit.id, "opened": hit.opened},
                "content": body}
@@ -234,9 +265,14 @@ def _stop(args, runs_root: Path) -> int:
         if (meta.get("state") or "") in _follow.TERMINAL_STATES:
             continue
         run.update_meta(stop_requested=True)
-        _terminate(meta.get("supervisor_pid"))
-        _terminate(meta.get("pid"))
-        run.update_meta(state="abandoned", reason="stop requested", daemon_run_continues=True, finished_at=time.time())
+        # The supervisor notices the flag and writes `abandoned` itself. Give it a moment
+        # to do so rather than racing it: two processes writing the terminal state is how
+        # an `abandoned` gets overwritten by a stale `running` a moment later.
+        if not _await_state(run, "abandoned", 1.5):
+            _terminate(meta.get("supervisor_pid"))
+            _terminate(meta.get("pid"))
+            run.update_meta(state="abandoned", reason="stop requested",
+                            daemon_run_continues=True, finished_at=time.time())
         stopped.append(run.run_id)
     payload = {
         "ok": True,
@@ -250,6 +286,15 @@ def _stop(args, runs_root: Path) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def _await_state(run: _registry.Run, state: str, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if (run.meta().get("state") or "") == state:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _terminate(pid: object) -> None:

@@ -6,6 +6,7 @@ fails these rather than silently changing what `result` reports.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -146,7 +147,9 @@ def test_compact_level_reports_tool_output_size_instead_of_its_bytes(simple: Pat
 
     line = _events.render(result, level="compact")
     assert "websearch" in line
-    assert str(len(result.content)) in line or "B" in line
+    # The exact byte count, not just the letter B -- "out=…B" contains a B whatever the
+    # number is, so the laxer form passes even when the size is wrong or absent.
+    assert f"out={len(result.content)}B" in line
     assert result.content[:200] not in line
 
 
@@ -154,4 +157,6 @@ def test_raw_level_prints_the_stored_record_unchanged(simple: Path) -> None:
     events, _ = _events.read_events(simple)
     result = next(e for e in events if e.kind == "tool_result")
 
-    assert '"toolName"' in _events.render(result, level="raw")
+    # Round-tripped, not spot-checked: "unchanged" means every field survives, and
+    # asserting one key would pass on a record that had been summarised down to it.
+    assert json.loads(_events.render(result, level="raw")) == result.raw

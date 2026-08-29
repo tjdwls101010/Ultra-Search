@@ -70,9 +70,22 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(cli) -> N
     assert code == 0
     assert payload["runs"][0]["state"] in ("starting", "running")
     nxt = payload["next"]
-    assert "--follow" in nxt["command"]
     assert nxt["run_in_background"] is True
     assert nxt["bash_timeout_ms"] >= 600_000
+
+    # Run it, rather than checking it contains "--follow": a command that names the wrong
+    # run, or that cannot execute at all, passes every string check and still leaves the
+    # caller with no way to find out the work finished.
+    import shlex
+    import subprocess
+
+    done = subprocess.run(shlex.split(nxt["command"]), capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0
+    assert f"run.completed {payload['runs'][0]['run_id']}" in done.stdout
+
+    collected = subprocess.run(shlex.split(nxt["then"]), capture_output=True, text=True, timeout=120)
+    assert collected.returncode == 0
+    assert "Answer" in json.loads(collected.stdout.splitlines()[-1])["answer"]
 
 
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(
@@ -206,12 +219,23 @@ def test_status_flags_a_long_silence_without_acting_on_it(
 def test_a_silent_parent_with_busy_children_is_not_called_stalled(
     runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
 ) -> None:
+    """The parent's own files are deliberately made old and only the child's is fresh, so
+    the child's activity is the only thing that can produce the verdict. Leaving the
+    parent's files newly written would pass whether children were consulted or not."""
+    import os
     import time as _t
 
     import _registry
 
     run = _registry.create_run(runs_dir, label="subs")
     run.update_meta(state="running", children=["kid"], last_activity_at=1.0)
+    run.stdout_path.write_text("old output\n")
+    run.session_transcript.parent.mkdir(parents=True, exist_ok=True)
+    run.session_transcript.write_text('{"role":"user","content":[{"type":"text","text":"q"}]}\n')
+    stale = _t.time() - 3600
+    for p in (run.stdout_path, run.session_transcript, run.meta_path):
+        os.utime(p, (stale, stale))
+
     run.child_transcript("kid").parent.mkdir(parents=True, exist_ok=True)
     run.child_transcript("kid").write_text('{"role":"assistant","content":[],"timestamp":1}\n')
 
@@ -219,6 +243,30 @@ def test_a_silent_parent_with_busy_children_is_not_called_stalled(
 
     assert status["runs"][0]["possibly_stalled"] is False
     assert status["runs"][0]["children"] == 1
+    assert status["runs"][0]["idle_seconds"] < 60
+
+
+def test_a_parent_whose_children_have_also_gone_quiet_is_flagged(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """The other half of the pair: when nothing anywhere has written recently, the flag has
+    to appear -- otherwise the previous test passes for a `status` that never flags at all."""
+    import os
+    import time as _t
+
+    import _registry
+
+    run = _registry.create_run(runs_dir, label="quiet-subs")
+    run.update_meta(state="running", children=["kid"], last_activity_at=1.0)
+    run.child_transcript("kid").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("kid").write_text('{"role":"assistant","content":[],"timestamp":1}\n')
+    stale = _t.time() - 3600
+    for p in (run.meta_path, run.child_transcript("kid")):
+        os.utime(p, (stale, stale))
+
+    code, status, _ = run_cli("status", "--run", run.run_id, "--stall-after", "60", "--runs-dir", str(runs_dir))
+
+    assert status["runs"][0]["possibly_stalled"] is True
 
 
 # --- result and show ------------------------------------------------------------------
@@ -280,3 +328,101 @@ def test_stop_says_plainly_that_the_run_itself_continues(
     assert code == 0
     assert stopped["daemon_run_continues"] is True
     assert "aside" in stopped["note"].lower()
+
+
+# --- continuing a session this tool did not create --------------------------------------
+
+
+def test_sessions_lists_what_aside_still_has(cli, aside_home: Path) -> None:
+    code, payload, _ = cli("sessions")
+
+    assert code == 0
+    ids = {s["session_id"] for s in payload["sessions"]}
+    assert "SimpleSearch00001" in ids
+    listed = next(s for s in payload["sessions"] if s["session_id"] == "SimpleSearch00001")
+    # The prompt is what makes the list usable; nobody recognises a session id.
+    assert "Python" in listed["prompt"]
+
+
+def test_sessions_can_be_narrowed_to_the_ones_this_tool_started(cli, aside_home: Path) -> None:
+    _, started, _ = cli("search", "질문", "--wait", "30")
+    run_id = started["runs"][0]["run_id"]
+
+    _, payload, _ = cli("sessions", "--mine")
+
+    assert payload["sessions"], "the search just run must appear"
+    assert all(s["started_by_ultra_search"] for s in payload["sessions"])
+    assert run_id in {s["run_id"] for s in payload["sessions"]}
+
+
+def test_sessions_can_be_searched_by_prompt(cli, aside_home: Path) -> None:
+    _, payload, _ = cli("sessions", "--search", "Agent Teams")
+
+    assert [s["session_id"] for s in payload["sessions"]] == ["SubagentParent01"]
+
+
+def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path) -> None:
+    """The capability this is for: a conversation started in the Aside app, or by a bare
+    `aside exec`, is picked up here and continued -- keeping everything it already worked
+    out instead of starting the investigation again."""
+    code, payload, _ = cli("resume", "SimpleSearch00001", "그래서 결론은?", "--wait", "30")
+
+    assert code == 0
+    run = payload["runs"][0]
+    assert run["resumed_from"] == "SimpleSearch00001"
+    assert run["state"] == "completed"
+    assert run["answer"] == "이어서 답합니다."
+
+
+def test_resuming_an_external_session_passes_it_to_aside_as_the_session(
+    cli, aside_home: Path, fake_aside: Path
+) -> None:
+    cli("resume", "SimpleSearch00001", "후속", "--wait", "30")
+
+    calls = [json.loads(l) for l in (fake_aside / "calls.jsonl").read_text().splitlines()]
+    argv = calls[-1]["argv"]
+    assert argv[argv.index("--session") + 1] == "SimpleSearch00001"
+
+
+def test_resuming_a_session_whose_subagents_never_finished_says_so(cli, aside_home: Path) -> None:
+    """The recorded subagent session has a child that stops mid-tool. Resuming it inherits
+    that loose end, and reporting a clean completion would hide work nobody collected."""
+    code, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--wait", "30")
+
+    run = payload["runs"][0]
+    assert run["state"] == "completed_with_orphans"
+    assert run["orphan_children"] == ["xtXKs5dqLhtZ9sCN"]
+
+
+def test_resuming_something_that_is_neither_a_run_nor_a_session_is_refused(cli) -> None:
+    code, err, _ = cli("resume", "NoSuchThing00001", "후속")
+
+    assert code == 2
+    assert "sessions" in err["fix"]
+
+
+def test_show_prefers_the_page_that_was_read_over_the_snippet_that_listed_it(
+    runs_dir: Path, aside_home: Path, fake_aside: Path
+) -> None:
+    """A URL appears twice: once as a search result's excerpt, once as the page a later
+    webfetch actually read. `show` exists to give the second one, and taking whichever
+    came first in the transcript gives the first."""
+    import _registry
+
+    run = _registry.create_run(runs_dir, label="show")
+    run.update_meta(state="completed")
+    run.session_transcript.parent.mkdir(parents=True, exist_ok=True)
+    src = {"sources": [{"id": "s1", "url": "https://e.test/a", "title": "A"}]}
+    with run.session_transcript.open("w", encoding="utf-8") as f:
+        for rec in (
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {"role": "toolResult", "toolName": "websearch", "content": "검색 스니펫", "details": src},
+            {"role": "toolResult", "toolName": "webfetch", "content": "페이지 전문", "details": src},
+        ):
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    code, shown, _ = run_cli("show", "--run", run.run_id, "--source", "0", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert shown["content"] == "페이지 전문"
+    assert shown["source"]["opened"] is True

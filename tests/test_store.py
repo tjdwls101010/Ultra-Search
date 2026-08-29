@@ -91,7 +91,7 @@ def test_copy_resumes_from_the_cursor_without_duplicating(aside_home: Path, tmp_
     assert dst.read_bytes() == src.read_bytes()
 
 
-def test_copy_never_shrinks_the_destination(aside_home: Path, tmp_path: Path) -> None:
+def test_a_shrinking_source_never_shortens_the_copy(aside_home: Path, tmp_path: Path) -> None:
     """Aside cleans up sessions on its own schedule. When the source is truncated or
     deleted underneath a live run, the copy we already made is the only remaining record
     of it -- so the copy is append-only, always."""
@@ -105,6 +105,36 @@ def test_copy_never_shrinks_the_destination(aside_home: Path, tmp_path: Path) ->
 
     assert dst.read_bytes() == kept
     assert after == cursor
+
+
+def test_a_lost_copy_is_rebuilt_rather_than_resumed_past(aside_home: Path, tmp_path: Path) -> None:
+    """The cursor describes the destination, not the source. If the copy is truncated or
+    deleted while the source is intact, continuing from the old cursor would append the
+    tail onto nothing and silently lose everything before it."""
+    src = sessions_of(aside_home) / "2026-08-29_SimpleSearch00001" / "messages.jsonl"
+    dst = tmp_path / "copy.jsonl"
+    cursor = _store.copy_new_lines(src, dst, since=0)
+    original = dst.read_bytes()
+
+    dst.write_bytes(b"")
+    after = _store.copy_new_lines(src, dst, since=cursor)
+
+    assert dst.read_bytes() == original
+    assert after == cursor
+
+
+def test_a_source_recreated_shorter_at_the_same_path_is_read_from_the_start(
+    aside_home: Path, tmp_path: Path
+) -> None:
+    src = sessions_of(aside_home) / "2026-08-29_SimpleSearch00001" / "messages.jsonl"
+    dst = tmp_path / "copy.jsonl"
+    cursor = _store.copy_new_lines(src, dst, since=0)
+
+    dst.unlink()
+    src.write_text('{"role":"user","content":[{"type":"text","text":"새 세션"}]}\n')
+    _store.copy_new_lines(src, dst, since=cursor)
+
+    assert "새 세션" in dst.read_text(encoding="utf-8")
 
 
 def test_copy_survives_the_source_disappearing(aside_home: Path, tmp_path: Path) -> None:

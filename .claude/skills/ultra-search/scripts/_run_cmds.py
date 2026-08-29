@@ -42,26 +42,62 @@ def _search(args, runs_root: Path) -> int:
 
 
 def _resume(args, runs_root: Path) -> int:
-    target = _registry.resolve_run(runs_root, args.run)
-    meta = target.meta()
-    state = meta.get("state") or "unknown"
-    if state not in TERMINAL_STATES:
-        raise ArgumentError(
-            f"run {args.run} is still {state}; resume only continues a finished session",
-            fix="Wait for it with `log --run %s --follow`, or start a separate `search`." % args.run,
-            state=state,
-        )
-    session_id = meta.get("session_id")
-    if not session_id:
-        raise ArgumentError(
-            f"run {args.run} has no session to continue",
-            fix="Its session was never correlated; start a fresh `search` instead.",
-            state=state,
-        )
-    run = _start_run(
-        runs_root, args.prompt, args, group=None, resume_session_id=session_id, resumed_from=target.run_id
+    """Continue an existing Aside session, whether or not this tool created it.
+
+    A run id is looked up first because it carries state we can check. Anything else is
+    taken as a session id and verified against the sessions on disk -- that is what makes
+    a conversation started in the Aside app continuable from here.
+    """
+    target = args.target
+    resumed_from = target
+    try:
+        run = _registry.resolve_run(runs_root, target)
+    except ArgumentError:
+        session_id = _external_session(target)
+    else:
+        meta = run.meta()
+        state = meta.get("state") or "unknown"
+        if state not in TERMINAL_STATES:
+            raise ArgumentError(
+                f"run {target} is still {state}; resume only continues a session that has stopped working",
+                fix=f"Wait for it with `log --run {target} --follow`, or start a separate `search`.",
+                state=state,
+            )
+        session_id = meta.get("session_id")
+        if not session_id:
+            raise ArgumentError(
+                f"run {target} has no session to continue",
+                fix="Its session was never correlated; start a fresh `search` instead.",
+                state=state,
+            )
+
+    new_run = _start_run(
+        runs_root, args.prompt, args, group=None,
+        resume_session_id=session_id, resumed_from=resumed_from,
     )
-    return _await_and_report([run], args, runs_root, None)
+    return _await_and_report([new_run], args, runs_root, None)
+
+
+def _external_session(session_id: str) -> str:
+    """Verify a session id that did not come from this tool's own registry."""
+    import _store
+
+    home = _store.aside_home()
+    if _store.session_dir(home, session_id) is None:
+        raise ArgumentError(
+            f"no run and no Aside session called {session_id!r}",
+            fix="List what exists with `sessions`. Aside deletes sessions within about a day.",
+        )
+    row = _store.db_session_row(home, session_id)
+    if row and str(row.get("status") or "") == "running":
+        # Only app-created sessions have a row at all; when there is one and it says
+        # running, attaching would wait for that turn rather than continuing it.
+        raise ArgumentError(
+            f"session {session_id} is still working",
+            fix="Wait for it to finish, or ask in the Aside app.",
+            state="running",
+        )
+    return session_id
 
 
 def _start_run(runs_root: Path, prompt: str, args, *, group: str | None, **extra) -> _registry.Run:
@@ -80,8 +116,9 @@ def _start_run(runs_root: Path, prompt: str, args, *, group: str | None, **extra
         **extra,
     )
     run.update_meta(marker=_registry.marker_for(run.run_id))
-    pid = _exec.spawn_supervisor(run.path)
-    run.update_meta(supervisor_pid=pid)
+    # Nothing is written after the spawn: the supervisor records its own pid, so the two
+    # processes never both hold a stale copy of this file at once.
+    _exec.spawn_supervisor(run.path)
     return run
 
 

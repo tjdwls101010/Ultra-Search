@@ -19,6 +19,11 @@ from pathlib import Path
 #: shown it in a result list. The distinction is what `opened` reports.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
 
+def is_opening_tool(name: str) -> bool:
+    """Whether this tool's result means the agent read the page rather than just listing it."""
+    return name in _OPENING_TOOLS
+
+
 _CITATION_RE = re.compile(r'<citation\s+refs="([^"]*)"\s*>(.*?)</citation>', re.DOTALL)
 
 

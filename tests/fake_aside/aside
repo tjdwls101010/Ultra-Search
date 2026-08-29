@@ -82,7 +82,26 @@ SEARCH_SOURCES = {"sources": [
 ]}
 
 
-def do_exec(prompt: str) -> int:
+def do_exec(prompt: str, session: str | None = None) -> int:
+    if session:
+        # Continuing an existing session: append to its transcript rather than creating a
+        # new one. The real binary does this, and a fake that made a fresh session instead
+        # would hide the fact that marker discovery cannot work on a resumed run.
+        d = None
+        for name in os.listdir(SESSIONS) if SESSIONS.is_dir() else []:
+            if name.endswith("_" + session):
+                d = SESSIONS / name
+                break
+        if d is None:
+            print(f"no such session {session}", file=sys.stderr)
+            return 1
+        append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
+                   "timestamp": int(time.time() * 1000)})
+        answer = "이어서 답합니다."
+        append(d, assistant(texts=[answer]))
+        print(answer)
+        return 0
+
     if SCENARIO == "aside_down":
         print("Aside daemon is not reachable", file=sys.stderr)
         return 1
@@ -193,10 +212,12 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "exec":
         # --session <id> consumes the id, which would otherwise look like the prompt.
+        session = None
         if "--session" in argv:
             i = argv.index("--session")
-            positionals = [a for a in positionals if a != argv[i + 1]]
-        return do_exec(positionals[-1] if positionals else "")
+            session = argv[i + 1]
+            positionals = [a for a in positionals if a != session]
+        return do_exec(positionals[-1] if positionals else "", session)
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")
     if cmd == "mcp":

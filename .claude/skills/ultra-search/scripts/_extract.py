@@ -67,6 +67,9 @@ class Document:
     author: str = ""
     published: str = ""
     site: str = ""
+    #: The response body exactly as fetched, kept so `--format html` can write the
+    #: original rather than a re-rendering of it.
+    raw: str = ""
 
 
 def count_words(text: str) -> int:
@@ -141,24 +144,37 @@ def looks_like_challenge(html: str, extracted_words: int) -> bool:
     other and an empty extraction. A challenge that has grown wordy is still a challenge,
     which is why word count qualifies the weak path and not the strong one.
     """
-    low = html.lower()
-    if any(sign in low for sign in _CHALLENGE_STRONG):
+    if _has_strong_challenge_marker(html):
         return True
+    low = html.lower()
     weak = sum(1 for sign in _CHALLENGE_WEAK if sign in low)
     return weak >= 2 and extracted_words < SHELL_WORD_THRESHOLD
 
 
+def _has_strong_challenge_marker(html: str) -> bool:
+    low = (html or "").lower()
+    return any(sign in low for sign in _CHALLENGE_STRONG)
+
+
 def extract_html(html: str, url: str = "", *, via: str = "fetch") -> Document:
+    # The decisive challenge markers are read off the raw body, before conversion. An
+    # interstitial that the converter cannot handle -- or that arrives when node is not
+    # installed at all -- would otherwise be reported as an extraction error, and an error
+    # is not escalated to a browser tab, which is the one thing that clears a challenge.
+    if _has_strong_challenge_marker(html):
+        return Document(url=url, via=via, raw=html, status="challenge", kind="html",
+                        error="the response is a bot challenge, not the page")
+
     result = _run_to_markdown(html, url)
     if not result.get("ok"):
-        return Document(url=url, via=via, status="error", kind="html",
+        return Document(url=url, via=via, raw=html, status="error", kind="html",
                         error=str(result.get("message") or "extraction failed"))
 
     markdown = result.get("markdown") or ""
     words = int(result.get("words") or 0)
 
     if looks_like_challenge(html, words):
-        return Document(url=url, via=via, status="challenge", kind="html", words=words,
+        return Document(url=url, via=via, raw=html, status="challenge", kind="html", words=words,
                         title=result.get("title") or "", markdown=markdown,
                         error="the response is a bot challenge, not the page")
 
@@ -173,6 +189,7 @@ def extract_html(html: str, url: str = "", *, via: str = "fetch") -> Document:
         published=result.get("published") or "",
         site=result.get("site") or "",
     )
+    doc.raw = html
     doc.status = "ok" if words >= SHELL_WORD_THRESHOLD else "shell"
     if doc.status == "shell":
         doc.error = f"only {words} words extracted; the page probably renders client-side"

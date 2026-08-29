@@ -100,11 +100,43 @@ def test_a_documentation_site_crawls(tmp_path: Path) -> None:
 
 
 def test_map_finds_urls_without_downloading_them(tmp_path: Path) -> None:
-    code, payload = cli("map", "https://docs.aside.com", "--max-urls", "50")
+    """map is the cheap look-before-you-download step, so the check that matters is that
+    it wrote a manifest and no pages -- pointed at a directory it actually uses."""
+    manifest = tmp_path / "map.json"
+
+    code, payload = cli("map", "https://docs.aside.com", "--max-urls", "50", "--out", str(manifest))
 
     assert code == 0
     assert len(payload["urls"]) >= 10
-    assert not list((tmp_path).glob("*.md"))
+    assert manifest.exists()
+    assert list(tmp_path.rglob("*.md")) == []
+
+
+def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) -> None:
+    """A conversation started by a bare `aside exec` -- or in the Aside app -- is picked up
+    here and continued with what it already worked out, rather than investigated again."""
+    import subprocess as sp
+
+    sp.run(
+        ["aside", "exec", "내 이름은 성진이야. 기억해 두고 알겠다고만 답해."],
+        capture_output=True, text=True, timeout=180,
+    )
+
+    code, listing = cli("sessions", "--limit", "10", "--runs-dir", str(tmp_path))
+    assert code == 0
+    external = next(s for s in listing["sessions"] if "성진" in s["prompt"])
+    assert external["started_by_ultra_search"] is False
+
+    code, payload = cli(
+        "resume", external["session_id"], "내 이름이 뭐라고 했지? 이름만 답해.",
+        "--wait", "120", "--runs-dir", str(tmp_path),
+    )
+
+    assert code == 0
+    run = payload["runs"][0]
+    assert run["state"] == "completed"
+    # The point of resuming rather than starting fresh: it still has the earlier turn.
+    assert "성진" in run["answer"]
 
 
 def test_repl_api_reports_the_installed_browser_api() -> None:

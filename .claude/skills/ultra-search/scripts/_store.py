@@ -107,6 +107,13 @@ def copy_new_lines(src: str | os.PathLike[str], dst: str | os.PathLike[str], sin
         size = src_p.stat().st_size
     except OSError:
         return since
+    # The cursor describes the destination, not the source. If they disagree -- the copy
+    # was truncated or lost, or the source was recreated shorter at the same path -- the
+    # cursor is a claim about bytes that are not there, and continuing from it would skip
+    # everything in between. Start over instead.
+    dst_size = dst_p.stat().st_size if dst_p.exists() else 0
+    if dst_size < since:
+        since = dst_size
     if size <= since:
         return since
     with src_p.open("rb") as f:
@@ -207,3 +214,55 @@ def db_suspension(home: str | os.PathLike[str] | None, session_id: str) -> objec
         return json.loads(raw)
     except (TypeError, ValueError):
         return raw
+
+
+def session_summaries(home: str | os.PathLike[str] | None = None, limit: int = 30) -> list[dict]:
+    """Every Aside session on disk, newest first, with enough to pick one out.
+
+    Sessions made in the Aside app or by a bare `aside exec` are continuable too, but a
+    session id is not something anyone can recall -- so the opening prompt is what makes
+    the list usable, and the marker is what says whether ultra-search started it.
+    """
+    import json as _json
+
+    out: list[dict] = []
+    # Filtered before limited, not after: repl calls leave behind session directories with
+    # no transcript at all, and they are the newest ones, so slicing first returns a page
+    # of nothing on a machine that has used the browser recently.
+    for ref in iter_sessions(home):
+        if len(out) >= limit:
+            break
+        first = ""
+        try:
+            with ref.transcript.open("r", encoding="utf-8", errors="replace") as f:
+                first = f.readline()
+        except OSError:
+            continue
+        if not first.strip():
+            continue
+        prompt = ""
+        try:
+            rec = _json.loads(first)
+            content = rec.get("content")
+            if isinstance(content, str):
+                prompt = content
+            else:
+                prompt = " ".join(
+                    str(b.get("text") or "") for b in (content or []) if isinstance(b, dict)
+                )
+        except ValueError:
+            prompt = first[:200]
+        marker = ""
+        if "ultra-search:" in prompt:
+            marker = prompt.split("ultra-search:", 1)[1].split(" ", 1)[0].strip(")\n")
+        out.append(
+            {
+                "session_id": ref.session_id,
+                "date": ref.path.name.split("_", 1)[0],
+                "modified_at": _mtime(ref.transcript) or _mtime(ref.path),
+                "prompt": " ".join(prompt.split())[:160],
+                "started_by_ultra_search": bool(marker),
+                "run_id": marker or None,
+            }
+        )
+    return out

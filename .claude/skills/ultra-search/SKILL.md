@@ -48,7 +48,9 @@ If this is your only turn — nothing will wake you — run the follow in the *f
 
 **The browser is the user's real browser.** Their cookies, their sessions, their tabs — that is the point, and it is why a subscription feed or a paywalled article works at all. It also means a `crawl` is hitting sites as them. Keep page counts to what the task needs.
 
-**Sessions are cleaned up within about a day.** Each run's transcript, answer and sources are copied into the runs directory as it goes, so results survive; the Aside-side session does not. `resume` continues a finished run's session while it still exists, and is refused on a live one — attaching to a running session cannot steer it, it only waits for the current turn and prints the result.
+**A conversation already underway is usually cheaper than a new one.** `resume` continues any session Aside still has — one this tool started, or one the user began in the Aside app or with a bare `aside exec` — keeping everything it already worked out instead of paying to rediscover it. `sessions` is how you find one, because it lists the opening prompt and nobody recognises a session id. It is refused on a session still working: attaching to a live one cannot steer it, only wait for the current turn and print the result.
+
+**Sessions are cleaned up within about a day.** Each run's transcript, answer and sources are copied into the runs directory as it goes, so results survive; the Aside-side session does not — which is also why a session worth continuing is worth continuing today.
 
 **`repl-api` prints the browser REPL's own documentation**, live from the installed version. Reach for it before hand-writing browser automation. Its sandbox is narrower than Node: no `URL`, no `AbortController`, and `fs` is promise-based and refuses writes outside the project and session directories. Its built-in `googleSearch` hits a bot challenge and cannot be trusted — that is what `search` is for.
 

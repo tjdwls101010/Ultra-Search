@@ -144,7 +144,13 @@ def test_children_transcripts_are_copied_too(runs_dir: Path, aside_home: Path, f
     meta = run_to_completion(run, settle=1.0)
 
     assert len(meta["children"]) == 2
-    assert len(run.child_transcripts()) == 2
+    # The ids and the content, not the file count: two empty files named after the wrong
+    # sessions would satisfy a count.
+    for cid in meta["children"]:
+        text = run.child_transcript(cid).read_text(encoding="utf-8")
+        assert "child task" in text
+    answer = json.loads((run.path / "result.json").read_text())["answer"]
+    assert "child 1 done." in answer and "child 2 done." in answer
 
 
 def test_a_failing_aside_process_is_a_failed_run(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch) -> None:
@@ -175,13 +181,27 @@ def test_a_run_that_finds_nothing_says_so_rather_than_reporting_success(
 def test_two_runs_of_the_same_prompt_do_not_claim_each_others_sessions(
     runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    """Actually concurrent, because sequential runs cannot reproduce the bug. Two searches
+    of the same question are distinguishable only by the marker; run one after the other,
+    even a matcher that keyed on prompt text would pass, since by then only one candidate
+    session exists at a time."""
+    import threading
+
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "0.8")
     a, b = start(runs_dir, "같은 질문"), start(runs_dir, "같은 질문")
 
-    run_to_completion(a)
-    run_to_completion(b)
+    threads = [threading.Thread(target=run_to_completion, args=(r,)) for r in (a, b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-    assert a.meta()["session_id"] != b.meta()["session_id"]
+    sid_a, sid_b = a.meta().get("session_id"), b.meta().get("session_id")
+    assert sid_a and sid_b and sid_a != sid_b
+    # And each run's copy holds its own marker, not the other's.
+    assert _registry.marker_for(a.run_id) in a.session_transcript.read_text(encoding="utf-8")
+    assert _registry.marker_for(b.run_id) in b.session_transcript.read_text(encoding="utf-8")
 
 
 def test_the_marker_is_appended_to_the_prompt_aside_actually_receives(
@@ -288,3 +308,75 @@ def test_the_watch_timeout_recorded_by_the_cli_is_honoured(
 
     assert meta["state"] == "abandoned"
     assert meta["reason"] == "watch timeout"
+
+
+def test_a_child_that_stops_with_nothing_to_say_is_finished_not_orphaned(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """A subagent that honestly found nothing stops with an empty turn. Calling that an
+    orphan reports a loose end where there is an answer -- and `completed_with_orphans`
+    tells the caller to go looking for work that already finished."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    run = start(runs_dir)
+    run.child_transcript("quiet").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("quiet").write_text(
+        json.dumps({"role": "assistant", "content": [], "stopReason": "stop"}) + "\n"
+    )
+
+    assert _supervisor._child_is_terminal(run, "quiet") is True
+
+
+def test_a_child_still_mid_tool_is_not_finished(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    run = start(runs_dir)
+    run.child_transcript("busy").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("busy").write_text(
+        json.dumps({"role": "assistant", "content": [], "stopReason": "toolUse"}) + "\n"
+    )
+
+    assert _supervisor._child_is_terminal(run, "busy") is False
+
+
+def test_concurrent_meta_updates_do_not_lose_each_others_keys(runs_dir: Path) -> None:
+    """meta.json is written by the starting CLI, the detached supervisor and `stop`, each
+    doing read-modify-write. Without serialisation the loser's keys vanish -- which is how
+    a supervisor's `state` and `pid` got overwritten by a parent holding an older copy."""
+    import threading
+
+    run = _registry.create_run(runs_dir, label="race")
+    keys = [f"k{i}" for i in range(24)]
+
+    def write(k: str) -> None:
+        run.update_meta(**{k: k})
+
+    threads = [threading.Thread(target=write, args=(k,)) for k in keys]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    meta = run.meta()
+    assert [k for k in keys if k not in meta] == []
+
+
+def test_a_resumed_run_reads_the_session_it_was_told_to_continue(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """A resumed run appends to a session that already exists, so that transcript opens
+    with the original prompt and the marker never reaches the line discovery reads. Hunting
+    for it anyway leaves the run `completed_unstructured` with its answer scraped out of
+    stdout -- which is what happened until the id was used directly."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    first = start(runs_dir)
+    run_to_completion(first)
+    session_id = first.meta()["session_id"]
+
+    second = start(runs_dir, "후속 질문")
+    second.update_meta(resume_session_id=session_id, resumed_from=first.run_id)
+    meta = run_to_completion(second)
+
+    assert meta["state"] == "completed"
+    assert meta["session_id"] == session_id
+    result = json.loads((second.path / "result.json").read_text())
+    assert result["answer"] == "이어서 답합니다."

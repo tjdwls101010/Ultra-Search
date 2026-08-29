@@ -28,7 +28,7 @@ EXIT_EMPTY = 5
 EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
 SPEED_CHOICES = ("default", "fast")
 LEVEL_CHOICES = ("compact", "normal", "full", "raw")
-FORMAT_CHOICES = ("md", "html", "text", "snapshot")
+FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
 
 
@@ -107,11 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser(
         "resume",
         help="Ask a follow-up in a finished run's session.",
-        description="Continue a finished run's Aside session with a follow-up question. Creates a new run id "
-        "that records its lineage. Refused while the run is still going: attaching to a live session waits "
-        "for the current turn and cannot steer it.",
+        description="Continue an existing Aside session with a follow-up question, keeping everything it "
+        "already worked out. Takes a run id from `search` or any session id from `sessions`, so a "
+        "conversation started in the Aside app can be picked up here. Creates a new run id recording its "
+        "lineage. Refused while the session is still working: attaching to a live one waits for the current "
+        "turn and cannot steer it.",
     )
-    r.add_argument("run", metavar="RUN", help="Run id to continue.")
+    r.add_argument(
+        "target",
+        metavar="RUN_OR_SESSION",
+        help="A run id from `search`, or an Aside session id from `sessions` -- including a "
+        "session started in the Aside app or by a bare `aside exec`, which this did not create.",
+    )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
     r.add_argument("--wait", type=float, default=100.0, metavar="SEC", help="As for `search`.")
     r.add_argument("--background", action="store_true", help="As for `search`.")
@@ -228,7 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=FORMAT_CHOICES,
         default="md",
-        help="Output form. Document files are always md. Default md.",
+        help="md saves extracted markdown; html saves the page's original HTML exactly as "
+        "fetched. html is refused for a response that was not HTML (a PDF, a markdown file) "
+        "rather than silently writing markdown into a .html file. Default md.",
     )
     f.add_argument(
         "--via",
@@ -282,6 +291,24 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--out", metavar="DIR", help="Output directory. Default: .ultra-search/crawls/<host>/.")
     _add_runs_dir(c)
 
+    # --- sessions -----------------------------------------------------------
+    se = sub.add_parser(
+        "sessions",
+        help="List Aside sessions that exist right now, so one can be resumed.",
+        description="Every conversation Aside still has on disk, newest first -- ones this tool started and "
+        "ones started in the Aside app or by a bare `aside exec` alike. The opening prompt is shown because "
+        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside deletes these "
+        "within about a day, so a session listed here may not be listed tomorrow.",
+    )
+    se.add_argument("--limit", type=int, default=20, metavar="N", help="How many to list. Default 20.")
+    se.add_argument(
+        "--mine",
+        action="store_true",
+        help="Only sessions this tool started, identified by the marker it plants in the prompt.",
+    )
+    se.add_argument("--search", metavar="TEXT", help="Only sessions whose opening prompt contains TEXT.")
+    _add_runs_dir(se)
+
     # --- repl-api / doctor / setup -----------------------------------------
     sub.add_parser(
         "repl-api",
@@ -309,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("search", "resume"):
         import _run_cmds as impl
-    elif args.command in ("status", "log", "result", "show", "stop"):
+    elif args.command in ("status", "log", "result", "show", "stop", "sessions"):
         import _watch_cmds as impl
     elif args.command in ("fetch", "map", "crawl"):
         import _page as impl

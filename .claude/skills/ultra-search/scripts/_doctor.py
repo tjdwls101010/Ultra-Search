@@ -92,18 +92,29 @@ def _doctor(args) -> int:
             ok = False
             checks.append(_check("browser repl", False, str(e), "Open the Aside app, then retry."))
 
+    if binary and daemon["ok"]:
+        account = _account_status()
+        checks.append(_check("aside account", account["ok"], account["detail"],
+                             None if account["ok"] else "Sign in to Aside, then re-run `doctor`."))
+        ok = ok and account["ok"]
+
     node = shutil.which("node")
     checks.append(_check("node", bool(node), node or "not on PATH", None if node else "Install Node 20 or newer."))
+    ok = ok and bool(node)
 
     modules = PAGE_DIR / "node_modules"
     have_modules = (modules / "defuddle").exists() and (modules / ".bin" / "anydoc").exists()
     checks.append(_check("page conversion", have_modules,
                          str(modules) if have_modules else "not installed",
                          None if have_modules else "Run `setup`."))
+    # Without these, `fetch` reaches the page and then fails to convert it -- a failure
+    # that reads as a network problem unless doctor says otherwise.
+    ok = ok and have_modules
 
     sessions = _store.sessions_root()
     checks.append(_check("aside sessions", sessions.is_dir(), str(sessions),
                          None if sessions.is_dir() else "Aside has not been run for this account yet."))
+    ok = ok and sessions.is_dir()
 
     runs_root = _registry.resolve_runs_dir(getattr(args, "runs_dir", None))
     checks.append(_check("runs dir", True, str(runs_root)))
@@ -136,6 +147,19 @@ def _repl_probe() -> list[dict]:
     except (OSError, subprocess.SubprocessError) as e:
         raise AsideUnavailable(f"repl round trip failed: {e}") from e
     return [json.loads(l) for l in proc.stdout.splitlines() if l.strip().startswith("{")]
+
+
+def _account_status() -> dict:
+    """Whether an account is signed in. A signed-out browser fetches public pages fine and
+    silently loses every logged-in one, which is the capability this tool exists for."""
+    try:
+        proc = subprocess.run([_exec.aside_bin(), "account", "list"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "detail": f"could not run `aside account list`: {e}"}
+    out = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return {"ok": False, "detail": out[:200] or f"exit {proc.returncode}"}
+    return {"ok": bool(out), "detail": " ".join(out.split())[:200] or "no accounts listed"}
 
 
 def _daemon_status() -> dict:

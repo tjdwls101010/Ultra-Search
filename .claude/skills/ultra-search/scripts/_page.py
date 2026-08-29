@@ -233,8 +233,16 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
         # no file: it looks like a source that was read.
         return item
 
+    if fmt == "html" and not (doc.raw or "").strip():
+        # A PDF, a markdown file, or a tab's rendered text has no original HTML to write.
+        # Writing markdown into a .html file instead would hand back a file whose contents
+        # contradict its name.
+        item["status"] = "unsupported"
+        item["error"] = f"--format html needs an HTML response; this one was {doc.kind}"
+        return item
+
     path = out_file or _unique_path(dest, _extract.slug_for(url), used_names, fmt)
-    text = _extract.render_markdown(doc, frontmatter=frontmatter) if fmt == "md" else (doc.markdown or "")
+    text = doc.raw if fmt == "html" else _extract.render_markdown(doc, frontmatter=frontmatter)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     item["path"] = str(path)
@@ -257,7 +265,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
 
 
 def _unique_path(dest: Path, slug: str, used: set[str], fmt: str) -> Path:
-    ext = {"md": ".md", "html": ".html", "text": ".txt", "snapshot": ".json"}.get(fmt, ".md")
+    ext = {"md": ".md", "html": ".html"}.get(fmt, ".md")
     name = slug
     n = 2
     # Slugs flatten punctuation, so /a/b and /a-b arrive here identical. Suffixing keeps

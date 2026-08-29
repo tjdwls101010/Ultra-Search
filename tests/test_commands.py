@@ -61,11 +61,20 @@ def test_several_prompts_run_as_one_group(cli) -> None:
     assert len({r["run_id"] for r in payload["runs"]}) == 3
 
 
-def test_a_background_search_hands_back_the_command_that_will_wake_you(cli) -> None:
+def test_a_background_search_hands_back_the_command_that_will_wake_you(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
     """The failure this prevents: a caller starts work in the background and simply
     stops, because nothing told it how to find out the work had finished. The command is
-    spelled out rather than described, and carries the Bash timeout it needs."""
-    code, payload, _ = cli("search", "질문", "--background")
+    spelled out rather than described, and carries the Bash timeout it needs.
+
+    Deliberately a slow run. Against a run that has already finished, a follower that
+    returned immediately without waiting for anything would pass every assertion here --
+    so the run has to still be going when the follower starts, and the follower has to be
+    the thing that waits."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "2")
+    code, payload, _ = run_cli("search", "질문", "--background", "--runs-dir", str(runs_dir))
 
     assert code == 0
     assert payload["runs"][0]["state"] in ("starting", "running")
@@ -78,14 +87,19 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(cli) -> N
     # caller with no way to find out the work finished.
     import shlex
     import subprocess
+    import time as _t
 
+    started = _t.time()
     done = subprocess.run(shlex.split(nxt["command"]), capture_output=True, text=True, timeout=180)
+    waited = _t.time() - started
+
     assert done.returncode == 0
     assert f"run.completed {payload['runs'][0]['run_id']}" in done.stdout
+    assert waited > 1.0, "the follower has to wait for the run, not return on a run already over"
 
     collected = subprocess.run(shlex.split(nxt["then"]), capture_output=True, text=True, timeout=120)
     assert collected.returncode == 0
-    assert "Answer" in json.loads(collected.stdout.splitlines()[-1])["answer"]
+    assert json.loads(collected.stdout.splitlines()[-1])["answer"] == "느린 답."
 
 
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(
@@ -384,14 +398,16 @@ def test_resuming_an_external_session_passes_it_to_aside_as_the_session(
     assert argv[argv.index("--session") + 1] == "SimpleSearch00001"
 
 
-def test_resuming_a_session_whose_subagents_never_finished_says_so(cli, aside_home: Path) -> None:
-    """The recorded subagent session has a child that stops mid-tool. Resuming it inherits
-    that loose end, and reporting a clean completion would hide work nobody collected."""
+def test_resuming_does_not_inherit_the_previous_turns_loose_ends(cli, aside_home: Path) -> None:
+    """The recorded session's earlier turn left a subagent mid-tool. That child belongs to
+    the turn that spawned it and was reported there; carrying it forward would attach an
+    unresolved loose end to every later question asked in the same conversation."""
     code, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--wait", "30")
 
     run = payload["runs"][0]
-    assert run["state"] == "completed_with_orphans"
-    assert run["orphan_children"] == ["xtXKs5dqLhtZ9sCN"]
+    assert run["state"] == "completed"
+    assert not run.get("orphan_children")
+    assert run["answer"] == "이어서 답합니다."
 
 
 def test_resuming_something_that_is_neither_a_run_nor_a_session_is_refused(cli) -> None:
@@ -426,3 +442,79 @@ def test_show_prefers_the_page_that_was_read_over_the_snippet_that_listed_it(
     assert code == 0
     assert shown["content"] == "페이지 전문"
     assert shown["source"]["opened"] is True
+
+
+def test_resuming_a_session_that_is_mid_turn_is_refused(cli, aside_home: Path) -> None:
+    """An ephemeral CLI session has no database row, so a check that only consults the
+    database passes a busy session by virtue of its absence. The transcript always exists,
+    and a turn that has not reached a terminal assistant message is still in flight."""
+    d = aside_home / "u" / "0" / "sessions" / "2026-08-30_MidTurn000000001"
+    d.mkdir()
+    with (d / "messages.jsonl").open("w", encoding="utf-8") as f:
+        for rec in (
+            {"role": "user", "content": [{"type": "text", "text": "조사해줘"}]},
+            {"role": "assistant", "content": [{"type": "toolCall", "name": "websearch", "arguments": {}}],
+             "stopReason": "toolUse"},
+        ):
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    code, err, _ = cli("resume", "MidTurn000000001", "후속")
+
+    assert code == 2
+    assert "in flight" in err["message"]
+
+
+# --- doctor's negative paths ------------------------------------------------------------
+
+
+def test_doctor_fails_when_the_conversion_packages_are_missing(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """Without these, `fetch` reaches the page and then fails to convert it -- a failure
+    that reads as a network problem unless doctor says otherwise."""
+    import _doctor
+
+    monkeypatch.setattr(_doctor, "PAGE_DIR", tmp_path / "no-modules")
+
+    code, payload, _ = run_cli("doctor", "--runs-dir", str(runs_dir))
+
+    assert code == 3
+    assert payload["ok"] is False
+    conversion = next(c for c in payload["checks"] if c["check"] == "page conversion")
+    assert conversion["ok"] is False
+    assert conversion["fix"]
+
+
+def test_doctor_fails_on_an_unwritable_runs_directory(
+    aside_home: Path, fake_aside: Path, tmp_path: Path
+) -> None:
+    """Tried, not assumed: an unwritable runs directory lets doctor pass and then fails the
+    first `search` at the moment it reserves a run, which reads as the search breaking."""
+    import os
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    os.chmod(blocked, 0o500)
+    try:
+        code, payload, _ = run_cli("doctor", "--runs-dir", str(blocked))
+    finally:
+        os.chmod(blocked, 0o700)
+
+    assert code == 3
+    runs = next(c for c in payload["checks"] if c["check"] == "runs dir")
+    assert runs["ok"] is False
+
+
+def test_doctor_reports_a_signed_out_browser_as_a_failure(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """A signed-out browser fetches public pages perfectly and silently loses every page
+    this tool exists to reach, so an empty account roster is not a healthy environment."""
+    import _doctor
+
+    monkeypatch.setattr(_doctor, "_account_status", lambda: {"ok": False, "detail": "no accounts"})
+
+    code, payload, _ = run_cli("doctor", "--runs-dir", str(runs_dir))
+
+    assert code == 3
+    assert next(c for c in payload["checks"] if c["check"] == "aside account")["ok"] is False

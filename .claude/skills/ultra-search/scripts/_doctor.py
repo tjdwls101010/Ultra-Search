@@ -11,6 +11,7 @@ installed on this machine that decides what the snippets may use.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -117,7 +118,12 @@ def _doctor(args) -> int:
     ok = ok and sessions.is_dir()
 
     runs_root = _registry.resolve_runs_dir(getattr(args, "runs_dir", None))
-    checks.append(_check("runs dir", True, str(runs_root)))
+    # Tried, not assumed. An unwritable runs directory lets doctor pass and then fails the
+    # first `search` at the moment it reserves a run -- which reads as the search breaking.
+    writable, detail = _writable(runs_root)
+    checks.append(_check("runs dir", writable, detail,
+                         None if writable else "Choose a writable --runs-dir."))
+    ok = ok and writable
 
     payload = {
         "ok": ok,
@@ -149,6 +155,17 @@ def _repl_probe() -> list[dict]:
     return [json.loads(l) for l in proc.stdout.splitlines() if l.strip().startswith("{")]
 
 
+def _writable(path: Path) -> tuple[bool, str]:
+    probe = Path(path) / ".write-probe"
+    try:
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True, str(path)
+    except OSError as e:
+        return False, f"{path} is not writable ({e})"
+
+
 def _account_status() -> dict:
     """Whether an account is signed in. A signed-out browser fetches public pages fine and
     silently loses every logged-in one, which is the capability this tool exists for."""
@@ -159,7 +176,20 @@ def _account_status() -> dict:
     out = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return {"ok": False, "detail": out[:200] or f"exit {proc.returncode}"}
-    return {"ok": bool(out), "detail": " ".join(out.split())[:200] or "no accounts listed"}
+    # Exit 0 with an empty roster is a signed-out browser, not a healthy one -- and a
+    # signed-out browser fetches public pages perfectly while silently losing every page
+    # this tool exists to reach. So the answer has to come from the content, not the
+    # command having run.
+    flat = " ".join(out.split())
+    try:
+        parsed = json.loads(out)
+        accounts = parsed.get("accounts") if isinstance(parsed, dict) else parsed
+        if isinstance(accounts, list):
+            return {"ok": bool(accounts), "detail": flat[:200] or "no accounts"}
+    except ValueError:
+        pass
+    signed_in = "signed in" in flat.lower() or bool(re.search(r"^\s*\*?\s*u\d", out, re.M))
+    return {"ok": signed_in, "detail": flat[:200] or "no accounts listed"}
 
 
 def _daemon_status() -> dict:

@@ -107,13 +107,14 @@ def copy_new_lines(src: str | os.PathLike[str], dst: str | os.PathLike[str], sin
         size = src_p.stat().st_size
     except OSError:
         return since
-    # The cursor describes the destination, not the source. If they disagree -- the copy
-    # was truncated or lost, or the source was recreated shorter at the same path -- the
-    # cursor is a claim about bytes that are not there, and continuing from it would skip
-    # everything in between. Start over instead.
-    dst_size = dst_p.stat().st_size if dst_p.exists() else 0
-    if dst_size < since:
-        since = dst_size
+    # The destination's own size is the cursor. The `since` a caller passes is a hint
+    # recorded separately from the append it describes, so the two drift in both
+    # directions: a lost or truncated copy leaves it too high, and a crash between the
+    # append and the record that followed it leaves it too low. Trusting it either way
+    # skips records or copies them twice, and duplicated records are then counted twice
+    # in usage, sources and child discovery. The bytes on disk cannot drift from
+    # themselves.
+    since = dst_p.stat().st_size if dst_p.exists() else 0
     if size <= since:
         return since
     with src_p.open("rb") as f:

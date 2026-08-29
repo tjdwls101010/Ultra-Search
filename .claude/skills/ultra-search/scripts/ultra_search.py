@@ -47,11 +47,9 @@ def _add_target(p: argparse.ArgumentParser, *, all_flag: bool = False) -> None:
     g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`.")
     if all_flag:
         g.add_argument("--all", action="store_true", help="Every run still being watched.")
-    p.add_argument(
-        "--last",
-        action="store_true",
-        help="Use the most recently started run or group. Default when neither --run nor --group is given.",
-    )
+    # No --last flag: with neither --run nor --group this already targets the most recent
+    # run's group, and a flag that only restates the default is one more thing to be wrong
+    # about.
 
 
 def _add_exec_opts(p: argparse.ArgumentParser) -> None:
@@ -204,7 +202,13 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--run", metavar="ID", help="Run id. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
     g.add_argument("--source", metavar="N|ID", help="Source index from `result`, or its source id.")
-    g.add_argument("--item", type=int, metavar="N", help="Tool-call index from `log`.")
+    g.add_argument(
+        "--item",
+        type=int,
+        metavar="N",
+        help="Index into this run's tool RESULTS, in order, counting from 0 -- not into all "
+        "events. `log --level normal` lists them.",
+    )
     _add_runs_dir(sh)
 
     # --- stop ---------------------------------------------------------------
@@ -235,9 +239,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=FORMAT_CHOICES,
         default="md",
-        help="md saves extracted markdown; html saves the page's original HTML exactly as "
-        "fetched. html is refused for a response that was not HTML (a PDF, a markdown file) "
-        "rather than silently writing markdown into a .html file. Default md.",
+        help="md saves extracted markdown; html saves the document itself -- the response body "
+        "for a plain fetch, or the rendered DOM when the page was opened in a tab. html is "
+        "refused for a response that was not HTML (a PDF, a markdown file) rather than "
+        "silently writing markdown into a .html file. Default md.",
     )
     f.add_argument(
         "--via",
@@ -266,7 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
     m.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
     m.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
-    m.add_argument("--out", metavar="FILE", help="Write the manifest here instead of stdout.")
+    m.add_argument(
+        "--out",
+        metavar="FILE",
+        help="Also write the manifest here. The URL list is printed either way; redirect stdout "
+        "if a large site's manifest should not reach the caller.",
+    )
     _add_runs_dir(m)
 
     # --- crawl --------------------------------------------------------------

@@ -262,6 +262,36 @@ def collect_sources(events: list[Event]) -> list[Source]:
     return out
 
 
+def turn_start_index(events: list[Event], marker: str) -> int:
+    """Index of the user message that began this run's turn.
+
+    A resumed run appends to a transcript that already holds earlier turns, so "the last
+    assistant message" is the previous answer until the new one lands. The marker planted
+    in the prompt is what separates the two; without this boundary a resume reports the
+    answer to the question before it, and folds that turn's children and token usage into
+    the new result.
+
+    A fresh run's marker is in the first record, so the boundary is 0 and the whole
+    transcript is this turn -- the same code path, not a special case.
+    """
+    for i in range(len(events) - 1, -1, -1):
+        e = events[i]
+        if e.kind == "user" and marker and marker in e.text:
+            return i
+    return 0
+
+
+def has_terminal_answer(events: list[Event]) -> bool:
+    """Whether an assistant turn has finished here, as opposed to stopping to call a tool.
+
+    An empty answer still counts: a run that honestly found nothing has finished.
+    """
+    for e in events:
+        if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
+            return True
+    return False
+
+
 def child_session_ids(events: list[Event]) -> list[str]:
     """Child sessions spawned by this run, in spawn order.
 

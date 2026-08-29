@@ -38,10 +38,34 @@ function tagValues(xml, tag) {
   return out;
 }
 
+// XML escapes its ampersands, so a query string arrives as ?a=1&amp;b=2. Fetching that
+// verbatim requests a URL the site does not have.
+function unescapeXml(s) {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&amp;/g, '&');
+}
+
 function locs(xml) {
   return tagValues(xml, 'loc')
-    .map((s) => s.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '').trim())
+    .map((s) => unescapeXml(s.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '').trim()))
     .filter(Boolean);
+}
+
+// robots.txt is where a site that does not use the conventional sitemap path says where
+// its sitemap actually is. Reading it for <loc> finds nothing, so the directive has to be
+// parsed on its own terms.
+function robotsSitemaps(body) {
+  const out = [];
+  for (const line of String(body).split(/\r?\n/)) {
+    const m = /^\s*sitemap\s*:\s*(\S+)/i.exec(line);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
 }
 
 const start = Date.now();
@@ -54,6 +78,28 @@ for (const root of roots) {
     say({ kind: 'sitemap_miss', url: root, status: res.status });
     continue;
   }
+  if (/^\s*(user-agent|sitemap|disallow|allow)\s*:/im.test(res.body) && !/<loc/i.test(res.body)) {
+    for (const child of robotsSitemaps(res.body)) {
+      if (Date.now() - start > budgetMs) break;
+      const sub = await get(child);
+      if (!sub.ok) continue;
+      const nested = /<sitemapindex/i.test(sub.body);
+      for (const u of locs(sub.body)) {
+        if (nested) {
+          const leaf = await get(u);
+          if (!leaf.ok) continue;
+          for (const v of locs(leaf.body)) {
+            if (!seen.has(v)) { seen.add(v); say({ kind: 'url', url: v, source: u }); }
+          }
+        } else if (!seen.has(u)) {
+          seen.add(u);
+          say({ kind: 'url', url: u, source: child });
+        }
+      }
+    }
+    continue;
+  }
+
   const isIndex = /<sitemapindex/i.test(res.body);
   if (isIndex) {
     for (const child of locs(res.body)) {

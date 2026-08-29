@@ -82,20 +82,24 @@ class Run:
         the older copy. The lock makes the pair atomic; the atomic rename below only ever
         made the write itself atomic.
         """
+        last: Exception | None = None
         for attempt in range(5):
-            with _meta_lock(self.path):
-                meta = load_meta(self.path)
-                meta.update(changes)
-                _atomic_write_json(self.meta_path, meta)
-            # Verify rather than assume. The lock gives up after its timeout rather than
-            # refusing to record a run's state at all, so the last write may have raced;
-            # reading our own keys back is what makes that fallback self-correcting
-            # instead of a silent loss.
-            written = load_meta(self.path)
-            if all(written.get(k) == v for k, v in changes.items()):
-                return written
-            time.sleep(0.02 * (attempt + 1))
-        return load_meta(self.path)
+            try:
+                with _meta_lock(self.path):
+                    meta = load_meta(self.path)
+                    meta.update(changes)
+                    _atomic_write_json(self.meta_path, meta)
+                    return meta
+            except (TimeoutError, OSError) as e:
+                last = e
+                time.sleep(0.05 * (attempt + 1))
+        # Out of retries. Recording the run's state matters more than the lock did, so
+        # this proceeds -- but says so, because a lost update here is otherwise invisible.
+        meta = load_meta(self.path)
+        meta.update(changes)
+        meta["meta_lock_contended"] = str(last)
+        _atomic_write_json(self.meta_path, meta)
+        return meta
 
     def meta(self) -> dict:
         return load_meta(self.path)
@@ -139,46 +143,40 @@ def create_run(
 
 
 @contextlib.contextmanager
-def _meta_lock(run_path: Path, timeout: float = 5.0, stale_after: float = 30.0):
-    """A cross-process lock via O_EXCL.
+def _meta_lock(run_path: Path, timeout: float = 10.0):
+    """A real cross-process lock, held by the kernel.
 
-    Staleness is checked on every attempt rather than only after the timeout, because the
-    holder this needs to survive is a supervisor that was killed -- its lock is never
-    coming back, and waiting the full window for something already dead delays every
-    writer behind it.
+    flock and not an O_EXCL sentinel file, because the holder this has to survive is a
+    supervisor that was killed: the kernel drops a flock when the process dies, while a
+    sentinel outlives it and needs a staleness heuristic that can either block everyone
+    behind a dead run or unlink a live holder's lock. Neither is acceptable for the file
+    that records whether a run finished.
 
-    If the wait runs out anyway the update proceeds unlocked. Losing a race is a
-    degradation; refusing to record a run's state at all is a run nobody can find.
+    A caller that cannot acquire it within the timeout raises rather than proceeding
+    unlocked -- an unsynchronised read-modify-write silently drops the other writer's
+    keys, and `update_meta` retries, which is a better answer than a lost update.
     """
-    lock = Path(run_path) / "meta.lock"
+    import fcntl
+
+    lock_path = Path(run_path) / "meta.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
     deadline = time.time() + timeout
-    fd = None
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            try:
-                if time.time() - lock.stat().st_mtime > stale_after:
-                    lock.unlink()
-                    continue
-            except OSError:
-                # Cleared by its owner between the open and the stat -- retry immediately.
-                continue
-            if time.time() >= deadline:
-                break
-            time.sleep(0.02)
-        except OSError:
-            break  # an unwritable run directory is the caller's problem, not this lock's
     try:
-        yield
-    finally:
-        if fd is not None:
-            os.close(fd)
+        while True:
             try:
-                lock.unlink()
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
             except OSError:
-                pass
+                if time.time() >= deadline:
+                    raise TimeoutError(f"could not lock {lock_path} within {timeout}s")
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _atomic_write_json(path: Path, obj: dict) -> None:
@@ -219,7 +217,8 @@ def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
         known = [r.run_id for r in all_runs(runs_root)][-5:]
         raise ArgumentError(
             f"no run {run_id!r} under {Path(runs_root) / RUNS_SUBDIR}",
-            fix="Use `status --last`, or one of these run ids." if known else "No runs have been started here yet.",
+            fix="Run `status` with no target for the most recent one, or name one of these." if known
+            else "No runs have been started here yet.",
             recent_runs=known,
         )
     return Run(run_id=run_id, path=path)
@@ -228,7 +227,7 @@ def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
 def resolve_group(runs_root: str | os.PathLike[str], group: str) -> list[Run]:
     members = [r for r in all_runs(runs_root) if load_meta(r.path).get("group") == group]
     if not members:
-        raise ArgumentError(f"no group {group!r} under {Path(runs_root) / RUNS_SUBDIR}", fix="Use `status --last`.")
+        raise ArgumentError(f"no group {group!r} under {Path(runs_root) / RUNS_SUBDIR}", fix="Run `status` with no target for the most recent one.")
     return members
 
 

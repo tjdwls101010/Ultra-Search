@@ -90,11 +90,25 @@ def _external_session(session_id: str) -> str:
         )
     row = _store.db_session_row(home, session_id)
     if row and str(row.get("status") or "") == "running":
-        # Only app-created sessions have a row at all; when there is one and it says
-        # running, attaching would wait for that turn rather than continuing it.
         raise ArgumentError(
             f"session {session_id} is still working",
             fix="Wait for it to finish, or ask in the Aside app.",
+            state="running",
+        )
+
+    # The database is not enough on its own: an ephemeral CLI session has no row there at
+    # all, so a busy one would pass the check above by simply not existing in it. The
+    # transcript is the surface that always exists -- a turn that has not reached a
+    # terminal assistant message is a turn still in flight.
+    import _events
+
+    d = _store.session_dir(home, session_id)
+    events, _ = _events.read_events(d / "messages.jsonl") if d else ([], 0)
+    if events and not (events[-1].kind == "assistant" and events[-1].stop_reason != "toolUse"):
+        raise ArgumentError(
+            f"session {session_id} has a turn still in flight",
+            fix="Wait for it to finish -- attaching to a live session waits for the current "
+            "turn and cannot steer it.",
             state="running",
         )
     return session_id

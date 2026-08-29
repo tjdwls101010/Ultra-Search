@@ -121,14 +121,24 @@ def supervise(
                 run.update_meta(session_id=session_id)
         if session_id:
             cursor, children, child_cursors = _sync(run, home, session_id, cursor, children, child_cursors)
-            orphans = [c for c in children if not _child_is_terminal(run, c)]
-            if not orphans:
+            mine = _this_turn(run, marker)
+            orphans = [c for c in _events.child_session_ids(mine) if not _child_is_terminal(run, c)]
+            # Both conditions, not just the children. The process exiting does not mean the
+            # last message has been flushed, and on a resumed session the message that is
+            # already there is the previous turn's answer.
+            if _events.has_terminal_answer(mine) and not orphans:
                 break
         if time.time() >= deadline:
             break
         time.sleep(min(poll, 0.2))
 
-    return _finish(run, session_id, exit_code, orphans, children)
+    return _finish(run, session_id, marker, exit_code, orphans, children)
+
+
+def _this_turn(run: _registry.Run, marker: str) -> list:
+    """The events belonging to this run's turn, discarding any that preceded it."""
+    events, _ = _events.read_events(run.session_transcript)
+    return events[_events.turn_start_index(events, marker) :]
 
 
 def _sync(run, home, session_id, cursor, children, child_cursors):
@@ -178,10 +188,14 @@ def _child_is_terminal(run: _registry.Run, child_id: str) -> bool:
     an orphan is reported as an unresolved loose end rather than as an answer.
     """
     events, _ = _events.read_events(run.child_transcript(child_id))
-    assistants = [e for e in events if e.kind == "assistant"]
-    if not assistants:
+    if not events:
         return False
-    last = assistants[-1]
+    last = events[-1]
+    # The LAST event, not the last assistant one. A user turn after a finished answer means
+    # a new turn has begun; looking only at assistants would report that child as done and
+    # stop copying it mid-investigation.
+    if last.kind != "assistant":
+        return False
     if last.stop_reason:
         return last.stop_reason != "toolUse"
     # No stop reason recorded at all: fall back to whether it produced anything.
@@ -208,11 +222,17 @@ def _abandon(run: _registry.Run, reason: str, proc) -> dict:
     )
 
 
-def _finish(run, session_id, exit_code, orphans, children) -> dict:
+def _finish(run, session_id, marker, exit_code, orphans, children) -> dict:
     stdout = _read_text(run.stdout_path)
 
     if session_id:
-        events, _ = _events.read_events(run.session_transcript)
+        # This turn only. A resumed session's earlier turns are context, not results, and
+        # counting them again would attribute the previous answer, its sources and its
+        # tokens to this run.
+        events = _this_turn(run, marker)
+        # Strictly this turn's children, with no fallback to the accumulated list: falling
+        # back is what would re-attach the previous turn's subagent answers to this one.
+        children = _events.child_session_ids(events)
         sources = _events.collect_sources(events)
         answer = _events.final_answer(events, sources)
         usage = _events.total_usage(events)

@@ -37,7 +37,11 @@ def dispatch(args) -> int:
 
 
 def _sessions(args, runs_root: Path) -> int:
-    rows = _store.session_summaries(limit=max(args.limit * 5, args.limit))
+    # A filter searches everything and then takes the first N matches. Reading a page first
+    # and filtering it afterwards reports "no match" for a session that is simply further
+    # down the list, which is indistinguishable from its not existing.
+    scan = 10_000 if (args.mine or args.search) else args.limit
+    rows = _store.session_summaries(limit=scan)
     if args.mine:
         rows = [r for r in rows if r["started_by_ultra_search"]]
     if args.search:

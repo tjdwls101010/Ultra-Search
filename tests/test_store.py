@@ -200,3 +200,21 @@ def test_a_database_missing_the_expected_tables_degrades_quietly(aside_home: Pat
     con.close()
 
     assert _store.db_session_row(aside_home, "SimpleSearch00001") is None
+
+
+def test_a_copy_that_got_ahead_of_the_cursor_is_not_duplicated(aside_home: Path, tmp_path: Path) -> None:
+    """The supervisor appends and then records the new cursor as a separate step. Dying
+    between the two leaves the destination ahead of what meta remembers -- and re-copying
+    from the remembered position duplicates records, which are then counted twice in
+    usage, sources and child discovery."""
+    src = sessions_of(aside_home) / "2026-08-29_SimpleSearch00001" / "messages.jsonl"
+    dst = tmp_path / "copy.jsonl"
+    full = _store.copy_new_lines(src, dst, since=0)
+    complete = dst.read_bytes()
+
+    # meta still holds a cursor from before the last append.
+    stale_cursor = full // 2
+    after = _store.copy_new_lines(src, dst, since=stale_cursor)
+
+    assert dst.read_bytes() == complete
+    assert after == full

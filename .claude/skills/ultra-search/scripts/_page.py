@@ -236,9 +236,11 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     #
     # A challenge or a blocked response is refused either way: saving one looks like a
     # source that was read, which is the failure this whole module is arranged around.
-    if doc.status in ("challenge", "blocked", "error", "unsupported", "needs_ocr"):
+    if doc.status in ("challenge", "blocked"):
         return item
     if fmt == "html":
+        # Saving the document needs no article extractor, so a converter that is missing or
+        # that failed does not stand between the caller and the bytes already in hand.
         if not (doc.raw or "").strip():
             item["status"] = "unsupported"
             item["error"] = f"--format html needs an HTML response; this one was {doc.kind}"
@@ -248,6 +250,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
 
     path = out_file or _unique_path(dest, _extract.slug_for(url), used_names, fmt)
     text = doc.raw if fmt == "html" else _extract.render_markdown(doc, frontmatter=frontmatter)
+    body_for_print = text
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     item["path"] = str(path)
@@ -263,9 +266,10 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
                 pass
 
     if print_content:
-        body = doc.markdown or ""
-        item["content"] = body[:max_chars]
-        item["truncated"] = len(body) > max_chars
+        # The same bytes that went to the file. Returning markdown alongside an .html file
+        # would make --print disagree with the artifact it is describing.
+        item["content"] = body_for_print[:max_chars]
+        item["truncated"] = len(body_for_print) > max_chars
     return item
 
 

@@ -199,9 +199,16 @@ def test_two_runs_of_the_same_prompt_do_not_claim_each_others_sessions(
 
     sid_a, sid_b = a.meta().get("session_id"), b.meta().get("session_id")
     assert sid_a and sid_b and sid_a != sid_b
-    # And each run's copy holds its own marker, not the other's.
-    assert _registry.marker_for(a.run_id) in a.session_transcript.read_text(encoding="utf-8")
-    assert _registry.marker_for(b.run_id) in b.session_transcript.read_text(encoding="utf-8")
+
+    # Each copy holds its own marker AND not the other's. The second half is what catches a
+    # matcher that resolved both runs to whichever session happened to be newest -- which
+    # the differing ids alone would not, if the two were claimed in the lucky order.
+    text_a = a.session_transcript.read_text(encoding="utf-8")
+    text_b = b.session_transcript.read_text(encoding="utf-8")
+    assert _registry.marker_for(a.run_id) in text_a
+    assert _registry.marker_for(b.run_id) not in text_a
+    assert _registry.marker_for(b.run_id) in text_b
+    assert _registry.marker_for(a.run_id) not in text_b
 
 
 def test_the_marker_is_appended_to_the_prompt_aside_actually_receives(
@@ -380,3 +387,58 @@ def test_a_resumed_run_reads_the_session_it_was_told_to_continue(
     assert meta["session_id"] == session_id
     result = json.loads((second.path / "result.json").read_text())
     assert result["answer"] == "이어서 답합니다."
+
+
+def test_a_resumed_run_reports_the_new_answer_not_the_previous_one(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """The transcript a resume appends to already ends in an answer. Until the new one
+    lands, "the last assistant message" is the previous turn's -- so a supervisor that
+    stopped waiting at the process exit would report the answer to the question before
+    this one, with a state of `completed`."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "1.0")
+    first = start(runs_dir)
+    run_to_completion(first)
+    session_id = first.meta()["session_id"]
+
+    second = start(runs_dir, "후속 질문")
+    second.update_meta(resume_session_id=session_id, resumed_from=first.run_id)
+    meta = _supervisor.supervise(second, poll=0.05, discovery_deadline=5.0, settle=6.0)
+
+    assert meta["state"] == "completed"
+    result = json.loads((second.path / "result.json").read_text())
+    assert result["answer"] == "이어서 답합니다."
+    assert "Answer" not in result["answer"], "the previous turn's answer must not be reported"
+
+
+def test_a_resumed_run_does_not_inherit_the_previous_turns_usage_and_sources(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    first = start(runs_dir)
+    run_to_completion(first)
+    first_result = json.loads((first.path / "result.json").read_text())
+    session_id = first.meta()["session_id"]
+
+    second = start(runs_dir, "후속 질문")
+    second.update_meta(resume_session_id=session_id, resumed_from=first.run_id)
+    run_to_completion(second, settle=3.0)
+
+    result = json.loads((second.path / "result.json").read_text())
+    assert result["sources"] == [], "the earlier turn's sources belong to the earlier run"
+    assert result["usage"]["total_tokens"] < first_result["usage"]["total_tokens"]
+
+
+def test_a_child_with_a_new_turn_after_its_answer_is_not_finished(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """The last event, not the last assistant one. A user turn after a finished answer
+    means new work has begun, and calling that child done stops copying it mid-investigation."""
+    run = start(runs_dir)
+    run.child_transcript("again").parent.mkdir(parents=True, exist_ok=True)
+    with run.child_transcript("again").open("w", encoding="utf-8") as f:
+        f.write(json.dumps({"role": "assistant", "content": [], "stopReason": "stop"}) + "\n")
+        f.write(json.dumps({"role": "user", "content": [{"type": "text", "text": "추가 조사해"}]}) + "\n")
+
+    assert _supervisor._child_is_terminal(run, "again") is False

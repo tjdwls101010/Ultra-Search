@@ -98,7 +98,16 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
                    "timestamp": int(time.time() * 1000)})
         answer = "이어서 답합니다."
-        append(d, assistant(texts=[answer]))
+        # The reply can land after this process exits -- which is exactly when a supervisor
+        # that stopped waiting would report the previous turn's answer instead.
+        delay = float(os.environ.get("FAKE_ASIDE_RESUME_DELAY", "0"))
+        if delay:
+            if os.fork() == 0:
+                time.sleep(delay)
+                append(d, assistant(texts=[answer]))
+                os._exit(0)
+        else:
+            append(d, assistant(texts=[answer]))
         print(answer)
         return 0
 

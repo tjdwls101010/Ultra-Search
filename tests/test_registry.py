@@ -13,6 +13,7 @@ import pytest
 
 import _registry
 from _errors import ArgumentError
+from conftest import SCRIPTS
 
 
 def test_a_run_gets_its_own_directory_named_for_when_and_what(runs_dir: Path) -> None:
@@ -133,3 +134,45 @@ def test_group_membership_is_recorded_where_a_later_process_can_read_it(runs_dir
 def test_saved_pages_live_beside_the_runs(runs_dir: Path) -> None:
     assert _registry.pages_dir(runs_dir) == runs_dir / "pages"
     assert _registry.pages_dir(runs_dir).is_dir()
+
+
+def test_an_update_confirms_its_own_keys_landed(runs_dir: Path) -> None:
+    """The lock gives up after its timeout rather than refusing to record a run's state,
+    so a write can race. Reading the keys back is what makes that fallback self-correcting
+    instead of a silent loss."""
+    run = _registry.create_run(runs_dir, label="verify")
+
+    written = run.update_meta(state="completed", answer_count=3)
+
+    assert written["state"] == "completed"
+    assert written["answer_count"] == 3
+    assert _registry.load_meta(run.path)["state"] == "completed"
+
+
+def test_updates_from_many_processes_all_survive(runs_dir: Path) -> None:
+    """Processes, not threads: the lock is a file, and a threads-only test would pass on
+    an in-process lock that does nothing across the process boundary this actually has --
+    the CLI, the detached supervisor and `stop` are three separate processes."""
+    import subprocess
+    import sys
+    import textwrap
+
+    run = _registry.create_run(runs_dir, label="procs")
+    script = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(SCRIPTS)!r})
+        import _registry
+        run = _registry.Run(run_id={run.run_id!r}, path=__import__("pathlib").Path({str(run.path)!r}))
+        run.update_meta(**{{sys.argv[1]: sys.argv[1]}})
+        """
+    )
+    procs = [
+        subprocess.Popen([sys.executable, "-c", script, f"key{i}"])
+        for i in range(8)
+    ]
+    for p in procs:
+        assert p.wait(timeout=60) == 0
+
+    meta = run.meta()
+    assert [f"key{i}" for i in range(8) if f"key{i}" not in meta] == []

@@ -396,3 +396,37 @@ def test_format_html_is_refused_for_a_response_that_was_not_html(tmp_path: Path,
     assert item["status"] == "unsupported"
     assert item["path"] is None
     assert not list(tmp_path.glob("*.html"))
+
+
+def test_format_html_saves_a_client_rendered_page_that_has_no_article(tmp_path: Path) -> None:
+    """`--format html` asked for the document, not the article. Gating the save on article
+    extraction refuses exactly the pages someone reaches for raw HTML to inspect."""
+    out = _page.fetch_urls(
+        ["https://x.com/a"],
+        out_dir=tmp_path,
+        fmt="html",
+        via="fetch",
+        fetch_provider=provider({"https://x.com/a": text_response(SHELL)}),
+    )
+
+    item = out["items"][0]
+    assert item["path"] is not None
+    assert Path(item["path"]).read_text(encoding="utf-8") == SHELL
+
+
+def test_format_html_still_refuses_to_save_a_bot_challenge(tmp_path: Path, fixtures: Path) -> None:
+    """The one thing that stays refused in every format: a challenge saved as the page
+    looks like a source that was read."""
+    challenge = (fixtures / "html" / "challenge.html").read_text(encoding="utf-8")
+
+    out = _page.fetch_urls(
+        ["https://example.org/c"],
+        out_dir=tmp_path,
+        fmt="html",
+        via="fetch",
+        fetch_provider=provider({"https://example.org/c": text_response(challenge)}),
+    )
+
+    assert out["items"][0]["status"] == "challenge"
+    assert out["items"][0]["path"] is None
+    assert list(tmp_path.glob("*.html")) == []

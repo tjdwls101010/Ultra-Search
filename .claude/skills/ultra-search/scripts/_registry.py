@@ -82,11 +82,20 @@ class Run:
         the older copy. The lock makes the pair atomic; the atomic rename below only ever
         made the write itself atomic.
         """
-        with _meta_lock(self.path):
-            meta = load_meta(self.path)
-            meta.update(changes)
-            _atomic_write_json(self.meta_path, meta)
-        return meta
+        for attempt in range(5):
+            with _meta_lock(self.path):
+                meta = load_meta(self.path)
+                meta.update(changes)
+                _atomic_write_json(self.meta_path, meta)
+            # Verify rather than assume. The lock gives up after its timeout rather than
+            # refusing to record a run's state at all, so the last write may have raced;
+            # reading our own keys back is what makes that fallback self-correcting
+            # instead of a silent loss.
+            written = load_meta(self.path)
+            if all(written.get(k) == v for k, v in changes.items()):
+                return written
+            time.sleep(0.02 * (attempt + 1))
+        return load_meta(self.path)
 
     def meta(self) -> dict:
         return load_meta(self.path)
@@ -130,11 +139,16 @@ def create_run(
 
 
 @contextlib.contextmanager
-def _meta_lock(run_path: Path, timeout: float = 5.0):
-    """A cross-process lock via O_EXCL, with a staleness escape.
+def _meta_lock(run_path: Path, timeout: float = 5.0, stale_after: float = 30.0):
+    """A cross-process lock via O_EXCL.
 
-    A supervisor killed mid-update would otherwise leave a lock nobody can clear, and a
-    run that cannot record its own state is worse than one whose update raced.
+    Staleness is checked on every attempt rather than only after the timeout, because the
+    holder this needs to survive is a supervisor that was killed -- its lock is never
+    coming back, and waiting the full window for something already dead delays every
+    writer behind it.
+
+    If the wait runs out anyway the update proceeds unlocked. Losing a race is a
+    degradation; refusing to record a run's state at all is a run nobody can find.
     """
     lock = Path(run_path) / "meta.lock"
     deadline = time.time() + timeout
@@ -144,15 +158,18 @@ def _meta_lock(run_path: Path, timeout: float = 5.0):
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             break
         except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > stale_after:
+                    lock.unlink()
+                    continue
+            except OSError:
+                # Cleared by its owner between the open and the stat -- retry immediately.
+                continue
             if time.time() >= deadline:
-                try:
-                    if time.time() - lock.stat().st_mtime > timeout:
-                        lock.unlink()
-                        continue
-                except OSError:
-                    pass
-                break  # proceed unlocked rather than lose the update entirely
+                break
             time.sleep(0.02)
+        except OSError:
+            break  # an unwritable run directory is the caller's problem, not this lock's
     try:
         yield
     finally:

@@ -228,17 +228,22 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     if doc.error:
         item["error"] = doc.error
 
-    if doc.status != "ok" or not (doc.markdown or "").strip():
-        # Nothing usable is written. A saved challenge page or empty shell is worse than
-        # no file: it looks like a source that was read.
+    # What counts as "usable" depends on what was asked for. `--format md` needs an
+    # article, so a page that extracted to nothing has nothing to write. `--format html`
+    # asked for the document itself, and a client-rendered page still has one -- gating
+    # that on article extraction would refuse to save exactly the pages someone reaches
+    # for raw HTML to inspect.
+    #
+    # A challenge or a blocked response is refused either way: saving one looks like a
+    # source that was read, which is the failure this whole module is arranged around.
+    if doc.status in ("challenge", "blocked", "error", "unsupported", "needs_ocr"):
         return item
-
-    if fmt == "html" and not (doc.raw or "").strip():
-        # A PDF, a markdown file, or a tab's rendered text has no original HTML to write.
-        # Writing markdown into a .html file instead would hand back a file whose contents
-        # contradict its name.
-        item["status"] = "unsupported"
-        item["error"] = f"--format html needs an HTML response; this one was {doc.kind}"
+    if fmt == "html":
+        if not (doc.raw or "").strip():
+            item["status"] = "unsupported"
+            item["error"] = f"--format html needs an HTML response; this one was {doc.kind}"
+            return item
+    elif doc.status != "ok" or not (doc.markdown or "").strip():
         return item
 
     path = out_file or _unique_path(dest, _extract.slug_for(url), used_names, fmt)

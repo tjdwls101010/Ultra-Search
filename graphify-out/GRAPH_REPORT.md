@@ -1,16 +1,16 @@
 # Graph Report - Ultra-Search  (2026-09-04)
 
 ## Corpus Check
-- 46 files · ~79,433 words
+- 46 files · ~79,946 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 749 nodes · 1534 edges · 30 communities (27 shown, 3 thin omitted)
+- 756 nodes · 1565 edges · 30 communities (27 shown, 3 thin omitted)
 - Extraction: 96% EXTRACTED · 4% INFERRED · 0% AMBIGUOUS · INFERRED: 68 edges (avg confidence: 0.88)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8f7998d2`
+- Built from commit: `6dc995e5`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -49,14 +49,14 @@
 ## God Nodes (most connected - your core abstractions)
 1. `Run` - 35 edges
 2. `start()` - 27 edges
-3. `ArgumentError` - 22 edges
-4. `cli()` - 22 edges
-5. `provider()` - 21 edges
-6. `make_run()` - 19 edges
-7. `Event` - 18 edges
-8. `capture()` - 18 edges
-9. `run_cli()` - 17 edges
-10. `write_transcript()` - 17 edges
+3. `make_run()` - 23 edges
+4. `ArgumentError` - 22 edges
+5. `cli()` - 22 edges
+6. `capture()` - 22 edges
+7. `write_transcript()` - 21 edges
+8. `provider()` - 21 edges
+9. `user()` - 20 edges
+10. `Event` - 18 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Search Capability` --semantically_similar_to--> `Search Agent`  [INFERRED] [semantically similar]
@@ -132,8 +132,8 @@ Cohesion: 0.15
 Nodes (25): Path, _store: finding a run's session on disk and copying it somewhere it will…, The cursor describes the destination, not the source. If the copy is truncated…, Ephemeral CLI sessions were observed writing no rows at all -- neither sessions…, The supervisor appends and then records the new cursor as a separate step.…, The reason correlation is by marker and not by prompt text. Two parallel…, Aside creates the directory before the first message lands, and repl sessions…, Aside cleans up sessions on its own schedule. When the source is truncated or… (+17 more)
 
 ### Community 13 - "test_follow.py"
-Cohesion: 0.20
-Nodes (35): answer(), capture(), make_run(), fixture, Path, _follow: the only watcher, and the thing that wakes a caller when a run ends.…, Distinct from a terminal line on purpose: the caller has to be able to tell "it…, A parent investigation goes silent while its subagents work. If the watcher… (+27 more)
+Cohesion: 0.18
+Nodes (42): answer(), capture(), make_run(), fixture, Path, _follow: the only watcher, and the thing that wakes a caller when a run ends.…, Distinct from a terminal line on purpose: the caller has to be able to tell "it…, A parent investigation goes silent while its subagents work. If the watcher… (+34 more)
 
 ### Community 14 - "test_events.py"
 Cohesion: 0.18
@@ -189,16 +189,16 @@ Nodes (10): `follow`를 감독자 뷰로 — `log --level progress`, 검증 시�
 
 ## Knowledge Gaps
 - **40 isolated node(s):** `name`, `version`, `private`, `type`, `description` (+35 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 220 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 223 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **3 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `ArgumentError` connect `Run` to `Environment Doctor Command`, `Site Map and Crawl Commands`, `test_registry.py`, `Page Fetch Tests`, `Response Classification and Extraction`?**
-  _High betweenness centrality (0.084) - this node is a cross-community bridge._
+  _High betweenness centrality (0.083) - this node is a cross-community bridge._
 - **Why does `UltraSearchError` connect `Environment Doctor Command` to `Run`?**
-  _High betweenness centrality (0.076) - this node is a cross-community bridge._
+  _High betweenness centrality (0.075) - this node is a cross-community bridge._
 - **Why does `_doctor()` connect `Environment Doctor Command` to `test_commands.py`, `conftest.py`?**
   _High betweenness centrality (0.051) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `private` to the rest of the system?**

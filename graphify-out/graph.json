@@ -200,7 +200,7 @@
       "file_type": "code",
       "norm_label": "_drain()",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L71"
+      "source_location": "L73"
     },
     {
       "id": "claude_skills_ultra_search_scripts_follow_follow",
@@ -212,7 +212,7 @@
       "file_type": "code",
       "norm_label": "follow()",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L88"
+      "source_location": "L90"
     },
     {
       "id": "claude_skills_ultra_search_scripts_follow_format_cursor",
@@ -248,7 +248,7 @@
       "file_type": "code",
       "norm_label": "_streams()",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L63"
+      "source_location": "L65"
     },
     {
       "id": "claude_skills_ultra_search_scripts_registry_all_runs",
@@ -1916,7 +1916,7 @@
       "file_type": "code",
       "norm_label": "recorded_run()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L234"
+      "source_location": "L235"
     },
     {
       "id": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
@@ -1928,7 +1928,7 @@
       "file_type": "code",
       "norm_label": "test_a_follow_that_runs_out_of_time_says_the_run_is_still_going()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L134"
+      "source_location": "L135"
     },
     {
       "id": "tests_test_follow_test_a_group_cursor_round_trips_per_member",
@@ -1940,7 +1940,7 @@
       "file_type": "code",
       "norm_label": "test_a_group_cursor_round_trips_per_member()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L204"
+      "source_location": "L205"
     },
     {
       "id": "tests_test_follow_test_a_group_follow_exits_only_when_every_member_is_terminal",
@@ -1952,7 +1952,7 @@
       "file_type": "code",
       "norm_label": "test_a_group_follow_exits_only_when_every_member_is_terminal()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L182"
+      "source_location": "L183"
     },
     {
       "id": "tests_test_follow_test_a_second_read_from_the_cursor_repeats_nothing",
@@ -1967,6 +1967,30 @@
       "source_location": "L71"
     },
     {
+      "id": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "label": "test_a_single_runs_cursor_carries_its_children()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "code",
+      "norm_label": "test_a_single_runs_cursor_carries_its_children()",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L302"
+    },
+    {
+      "id": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "label": "test_a_target_never_breaks_the_line()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "code",
+      "norm_label": "test_a_target_never_breaks_the_line()",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L348"
+    },
+    {
       "id": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
       "label": "test_an_abandoned_run_is_a_terminal_line_too()",
       "_callable": true,
@@ -1976,7 +2000,7 @@
       "file_type": "code",
       "norm_label": "test_an_abandoned_run_is_a_terminal_line_too()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L158"
+      "source_location": "L159"
     },
     {
       "id": "tests_test_follow_test_child_activity_appears_in_the_parents_stream",
@@ -1988,7 +2012,7 @@
       "file_type": "code",
       "norm_label": "test_child_activity_appears_in_the_parents_stream()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L216"
+      "source_location": "L217"
     },
     {
       "id": "tests_test_follow_test_every_line_of_a_child_event_carries_the_childs_prefix",
@@ -2000,7 +2024,7 @@
       "file_type": "code",
       "norm_label": "test_every_line_of_a_child_event_carries_the_childs_prefix()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L283"
+      "source_location": "L284"
     },
     {
       "id": "tests_test_follow_test_follow_exits_on_the_terminal_line",
@@ -2012,7 +2036,7 @@
       "file_type": "code",
       "norm_label": "test_follow_exits_on_the_terminal_line()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L105"
+      "source_location": "L106"
     },
     {
       "id": "tests_test_follow_test_follow_waits_for_a_running_run_and_then_exits",
@@ -2024,7 +2048,7 @@
       "file_type": "code",
       "norm_label": "test_follow_waits_for_a_running_run_and_then_exits()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L114"
+      "source_location": "L115"
     },
     {
       "id": "tests_test_follow_test_full_level_includes_the_output",
@@ -2048,7 +2072,7 @@
       "file_type": "code",
       "norm_label": "test_group_members_are_labelled_so_interleaved_lines_stay_attributable()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L170"
+      "source_location": "L171"
     },
     {
       "id": "tests_test_follow_test_heartbeat_marks_a_silence_as_alive",
@@ -2060,7 +2084,7 @@
       "file_type": "code",
       "norm_label": "test_heartbeat_marks_a_silence_as_alive()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L146"
+      "source_location": "L147"
     },
     {
       "id": "tests_test_follow_test_prints_events_and_reports_a_cursor",
@@ -2075,6 +2099,18 @@
       "source_location": "L60"
     },
     {
+      "id": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "label": "test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "code",
+      "norm_label": "test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason()",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L330"
+    },
+    {
       "id": "tests_test_follow_test_progress_level_never_swallows_an_error_or_a_subagent_finishing",
       "label": "test_progress_level_never_swallows_an_error_or_a_subagent_finishing()",
       "_callable": true,
@@ -2084,7 +2120,7 @@
       "file_type": "code",
       "norm_label": "test_progress_level_never_swallows_an_error_or_a_subagent_finishing()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L267"
+      "source_location": "L268"
     },
     {
       "id": "tests_test_follow_test_progress_level_shows_what_the_run_reached_for_not_how_it_asked",
@@ -2096,7 +2132,19 @@
       "file_type": "code",
       "norm_label": "test_progress_level_shows_what_the_run_reached_for_not_how_it_asked()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L241"
+      "source_location": "L242"
+    },
+    {
+      "id": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "label": "test_progress_survives_an_argument_shape_it_has_never_seen()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "code",
+      "norm_label": "test_progress_survives_an_argument_shape_it_has_never_seen()",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L316"
     },
     {
       "id": "tests_test_follow_test_steps_level_does_not_paste_tool_output_into_the_reader",
@@ -2120,7 +2168,7 @@
       "file_type": "code",
       "norm_label": "test_steps_level_is_the_view_that_was_compact_before()",
       "source_file": "tests/test_follow.py",
-      "source_location": "L256"
+      "source_location": "L257"
     },
     {
       "id": "tests_test_follow_tool",
@@ -5300,7 +5348,7 @@
       "file_type": "code",
       "norm_label": "_assistant()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L100"
+      "source_location": "L107"
     },
     {
       "id": "claude_skills_ultra_search_scripts_render_clip",
@@ -5312,7 +5360,7 @@
       "file_type": "code",
       "norm_label": "_clip()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L125"
+      "source_location": "L132"
     },
     {
       "id": "claude_skills_ultra_search_scripts_render_first_line",
@@ -5324,7 +5372,7 @@
       "file_type": "code",
       "norm_label": "_first_line()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L130"
+      "source_location": "L137"
     },
     {
       "id": "claude_skills_ultra_search_scripts_render_progress",
@@ -5348,7 +5396,7 @@
       "file_type": "code",
       "norm_label": "_reached_for()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L72"
+      "source_location": "L74"
     },
     {
       "id": "claude_skills_ultra_search_scripts_render_render",
@@ -5372,7 +5420,7 @@
       "file_type": "code",
       "norm_label": "_target()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L88"
+      "source_location": "L90"
     },
     {
       "id": "claude_skills_ultra_search_scripts_render_tool_result",
@@ -5384,7 +5432,7 @@
       "file_type": "code",
       "norm_label": "_tool_result()",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L112"
+      "source_location": "L119"
     },
     {
       "id": "claude_skills_ultra_search_scripts_follow",
@@ -5530,7 +5578,7 @@
       "source_location": "L30"
     },
     {
-      "id": "claude_skills_ultra_search_scripts_follow_rationale_64",
+      "id": "claude_skills_ultra_search_scripts_follow_rationale_66",
       "label": "The parent transcript plus every child's, each with its own cursor key.",
       "_origin": "ast",
       "community": 0,
@@ -5538,7 +5586,7 @@
       "file_type": "rationale",
       "norm_label": "the parent transcript plus every child's, each with its own cursor key.",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L64"
+      "source_location": "L66"
     },
     {
       "id": "claude_skills_ultra_search_scripts_registry_rationale_1",
@@ -6300,7 +6348,7 @@
       "source_location": "L1"
     },
     {
-      "id": "tests_test_follow_rationale_135",
+      "id": "tests_test_follow_rationale_136",
       "label": "Distinct from a terminal line on purpose: the caller has to be able to tell \"it\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6308,10 +6356,10 @@
       "file_type": "rationale",
       "norm_label": "distinct from a terminal line on purpose: the caller has to be able to tell \"it...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L135"
+      "source_location": "L136"
     },
     {
-      "id": "tests_test_follow_rationale_217",
+      "id": "tests_test_follow_rationale_218",
       "label": "A parent investigation goes silent while its subagents work. If the watcher\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6319,10 +6367,10 @@
       "file_type": "rationale",
       "norm_label": "a parent investigation goes silent while its subagents work. if the watcher...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L217"
+      "source_location": "L218"
     },
     {
-      "id": "tests_test_follow_rationale_235",
+      "id": "tests_test_follow_rationale_236",
       "label": "A run recorded on 2026-08-29: a parent that spawned three subagents, plus one\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6330,10 +6378,10 @@
       "file_type": "rationale",
       "norm_label": "a run recorded on 2026-08-29: a parent that spawned three subagents, plus one...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L235"
+      "source_location": "L236"
     },
     {
-      "id": "tests_test_follow_rationale_242",
+      "id": "tests_test_follow_rationale_243",
       "label": "The reader is a supervisor deciding whether to keep waiting, collect, or\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6341,10 +6389,10 @@
       "file_type": "rationale",
       "norm_label": "the reader is a supervisor deciding whether to keep waiting, collect, or...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L242"
+      "source_location": "L243"
     },
     {
-      "id": "tests_test_follow_rationale_257",
+      "id": "tests_test_follow_rationale_258",
       "label": "Frozen from the previous renderer on the same transcript, with every line\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6352,10 +6400,10 @@
       "file_type": "rationale",
       "norm_label": "frozen from the previous renderer on the same transcript, with every line...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L257"
+      "source_location": "L258"
     },
     {
-      "id": "tests_test_follow_rationale_268",
+      "id": "tests_test_follow_rationale_269",
       "label": "Less is the means, not the rule: a failed tool and a finished child are exactly\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6363,10 +6411,10 @@
       "file_type": "rationale",
       "norm_label": "less is the means, not the rule: a failed tool and a finished child are exactly...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L268"
+      "source_location": "L269"
     },
     {
-      "id": "tests_test_follow_rationale_284",
+      "id": "tests_test_follow_rationale_285",
       "label": "One event can render as several lines. Attributing only the first leaves the\u2026",
       "_origin": "ast",
       "community": 13,
@@ -6374,7 +6422,40 @@
       "file_type": "rationale",
       "norm_label": "one event can render as several lines. attributing only the first leaves the...",
       "source_file": "tests/test_follow.py",
-      "source_location": "L284"
+      "source_location": "L285"
+    },
+    {
+      "id": "tests_test_follow_rationale_303",
+      "label": "The one-run cursor is a plain integer only while there is one stream. Once a\u2026",
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "rationale",
+      "norm_label": "the one-run cursor is a plain integer only while there is one stream. once a...",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L303"
+    },
+    {
+      "id": "tests_test_follow_rationale_317",
+      "label": "The transcript is another product's private surface. A call whose arguments are\u2026",
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "rationale",
+      "norm_label": "the transcript is another product's private surface. a call whose arguments are...",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L317"
+    },
+    {
+      "id": "tests_test_follow_rationale_331",
+      "label": "An unfamiliar block is still work that happened, and text beside an unfamiliar\u2026",
+      "_origin": "ast",
+      "community": 13,
+      "community_name": "test_follow.py",
+      "file_type": "rationale",
+      "norm_label": "an unfamiliar block is still work that happened, and text beside an unfamiliar...",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L331"
     },
     {
       "id": "tests_test_follow_rationale_82",
@@ -8247,7 +8328,7 @@
       "source_location": "L1"
     },
     {
-      "id": "claude_skills_ultra_search_scripts_render_rationale_73",
+      "id": "claude_skills_ultra_search_scripts_render_rationale_75",
       "label": "``webfetch\u00d74[nodejs.org] read_file\u00d72`` -- tools in first-use order, each with\u2026",
       "_origin": "ast",
       "community": 9,
@@ -8255,7 +8336,7 @@
       "file_type": "rationale",
       "norm_label": "``webfetch\u00d74[nodejs.org] read_file\u00d72`` -- tools in first-use order, each with...",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L73"
+      "source_location": "L75"
     },
     {
       "id": "tests_fixtures_html_news_ko_nepal_flood_coverage",
@@ -9683,7 +9764,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L73",
+      "source_location": "L75",
       "weight": 1.0
     },
     {
@@ -9695,7 +9776,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L100",
+      "source_location": "L102",
       "weight": 1.0
     },
     {
@@ -9707,7 +9788,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L110",
+      "source_location": "L112",
       "weight": 1.0
     },
     {
@@ -9719,7 +9800,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L141",
+      "source_location": "L143",
       "weight": 1.0
     },
     {
@@ -10427,7 +10508,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L104",
+      "source_location": "L111",
       "weight": 1.0
     },
     {
@@ -10463,7 +10544,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L78",
+      "source_location": "L80",
       "weight": 1.0
     },
     {
@@ -10475,7 +10556,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L84",
+      "source_location": "L86",
       "weight": 1.0
     },
     {
@@ -10535,7 +10616,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L122",
+      "source_location": "L129",
       "weight": 1.0
     },
     {
@@ -12347,24 +12428,12 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L236",
+      "source_location": "L237",
       "weight": 1.0
     },
     {
       "source": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
       "target": "tests_test_follow_make_run",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "call",
-      "source_file": "tests/test_follow.py",
-      "source_location": "L137",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
-      "target": "tests_test_follow_user",
       "relation": "calls",
       "_origin": "ast",
       "confidence": "EXTRACTED",
@@ -12376,6 +12445,18 @@
     },
     {
       "source": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L139",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
       "target": "tests_test_follow_write_transcript",
       "relation": "calls",
       "_origin": "ast",
@@ -12383,7 +12464,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L138",
+      "source_location": "L139",
       "weight": 1.0
     },
     {
@@ -12395,7 +12476,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L140",
+      "source_location": "L141",
       "weight": 1.0
     },
     {
@@ -12407,7 +12488,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L205",
+      "source_location": "L206",
       "weight": 1.0
     },
     {
@@ -12419,7 +12500,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L207",
+      "source_location": "L208",
       "weight": 1.0
     },
     {
@@ -12431,7 +12512,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L207",
+      "source_location": "L208",
       "weight": 1.0
     },
     {
@@ -12443,7 +12524,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L207",
+      "source_location": "L208",
       "weight": 1.0
     },
     {
@@ -12455,7 +12536,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L209",
+      "source_location": "L210",
       "weight": 1.0
     },
     {
@@ -12467,7 +12548,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L183",
+      "source_location": "L184",
       "weight": 1.0
     },
     {
@@ -12479,7 +12560,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L185",
+      "source_location": "L186",
       "weight": 1.0
     },
     {
@@ -12491,7 +12572,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L185",
+      "source_location": "L186",
       "weight": 1.0
     },
     {
@@ -12503,7 +12584,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L185",
+      "source_location": "L186",
       "weight": 1.0
     },
     {
@@ -12515,7 +12596,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L197",
+      "source_location": "L198",
       "weight": 1.0
     },
     {
@@ -12579,7 +12660,7 @@
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
       "target": "tests_test_follow_make_run",
       "relation": "calls",
       "_origin": "ast",
@@ -12587,12 +12668,120 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L159",
+      "source_location": "L305",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "target": "tests_test_follow_answer",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L306",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L306",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "target": "tests_test_follow_write_transcript",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L306",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "target": "tests_test_follow_capture",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L309",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_make_run",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L349",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_answer",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L352",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L352",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_write_transcript",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L352",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_capture",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L354",
       "weight": 1.0
     },
     {
       "source": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
-      "target": "tests_test_follow_user",
+      "target": "tests_test_follow_make_run",
       "relation": "calls",
       "_origin": "ast",
       "confidence": "EXTRACTED",
@@ -12604,6 +12793,18 @@
     },
     {
       "source": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L161",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
       "target": "tests_test_follow_write_transcript",
       "relation": "calls",
       "_origin": "ast",
@@ -12611,7 +12812,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L160",
+      "source_location": "L161",
       "weight": 1.0
     },
     {
@@ -12623,7 +12824,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L162",
+      "source_location": "L163",
       "weight": 1.0
     },
     {
@@ -12635,7 +12836,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L219",
+      "source_location": "L220",
       "weight": 1.0
     },
     {
@@ -12647,7 +12848,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L220",
+      "source_location": "L221",
       "weight": 1.0
     },
     {
@@ -12659,7 +12860,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L220",
+      "source_location": "L221",
       "weight": 1.0
     },
     {
@@ -12671,7 +12872,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L220",
+      "source_location": "L221",
       "weight": 1.0
     },
     {
@@ -12683,7 +12884,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L224",
+      "source_location": "L225",
       "weight": 1.0
     },
     {
@@ -12695,7 +12896,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L286",
+      "source_location": "L287",
       "weight": 1.0
     },
     {
@@ -12707,7 +12908,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L287",
+      "source_location": "L288",
       "weight": 1.0
     },
     {
@@ -12719,7 +12920,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L287",
+      "source_location": "L288",
       "weight": 1.0
     },
     {
@@ -12731,7 +12932,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L287",
+      "source_location": "L288",
       "weight": 1.0
     },
     {
@@ -12743,7 +12944,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L294",
+      "source_location": "L295",
       "weight": 1.0
     },
     {
@@ -12755,7 +12956,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L106",
+      "source_location": "L107",
       "weight": 1.0
     },
     {
@@ -12767,7 +12968,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L107",
+      "source_location": "L108",
       "weight": 1.0
     },
     {
@@ -12779,7 +12980,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L107",
+      "source_location": "L108",
       "weight": 1.0
     },
     {
@@ -12791,7 +12992,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L107",
+      "source_location": "L108",
       "weight": 1.0
     },
     {
@@ -12803,24 +13004,12 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L109",
+      "source_location": "L110",
       "weight": 1.0
     },
     {
       "source": "tests_test_follow_test_follow_waits_for_a_running_run_and_then_exits",
       "target": "tests_test_follow_make_run",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "call",
-      "source_file": "tests/test_follow.py",
-      "source_location": "L115",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_test_follow_test_follow_waits_for_a_running_run_and_then_exits",
-      "target": "tests_test_follow_user",
       "relation": "calls",
       "_origin": "ast",
       "confidence": "EXTRACTED",
@@ -12832,6 +13021,18 @@
     },
     {
       "source": "tests_test_follow_test_follow_waits_for_a_running_run_and_then_exits",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L117",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_follow_waits_for_a_running_run_and_then_exits",
       "target": "tests_test_follow_write_transcript",
       "relation": "calls",
       "_origin": "ast",
@@ -12839,7 +13040,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L116",
+      "source_location": "L117",
       "weight": 1.0
     },
     {
@@ -12851,7 +13052,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L127",
+      "source_location": "L128",
       "weight": 1.0
     },
     {
@@ -12935,7 +13136,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L171",
+      "source_location": "L172",
       "weight": 1.0
     },
     {
@@ -12947,7 +13148,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L173",
+      "source_location": "L174",
       "weight": 1.0
     },
     {
@@ -12959,7 +13160,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L173",
+      "source_location": "L174",
       "weight": 1.0
     },
     {
@@ -12971,7 +13172,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L173",
+      "source_location": "L174",
       "weight": 1.0
     },
     {
@@ -12983,7 +13184,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L176",
+      "source_location": "L177",
       "weight": 1.0
     },
     {
@@ -12995,7 +13196,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L147",
+      "source_location": "L148",
       "weight": 1.0
     },
     {
@@ -13007,7 +13208,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L148",
+      "source_location": "L149",
       "weight": 1.0
     },
     {
@@ -13019,7 +13220,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L148",
+      "source_location": "L149",
       "weight": 1.0
     },
     {
@@ -13031,7 +13232,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L150",
+      "source_location": "L151",
       "weight": 1.0
     },
     {
@@ -13095,6 +13296,66 @@
       "weight": 1.0
     },
     {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_make_run",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L333",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_answer",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L339",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L339",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_write_transcript",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L339",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_capture",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L341",
+      "weight": 1.0
+    },
+    {
       "source": "tests_test_follow_test_progress_level_never_swallows_an_error_or_a_subagent_finishing",
       "target": "tests_test_follow_make_run",
       "relation": "calls",
@@ -13103,7 +13364,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L270",
+      "source_location": "L271",
       "weight": 1.0
     },
     {
@@ -13115,7 +13376,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L273",
+      "source_location": "L274",
       "weight": 1.0
     },
     {
@@ -13127,7 +13388,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L273",
+      "source_location": "L274",
       "weight": 1.0
     },
     {
@@ -13139,7 +13400,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L273",
+      "source_location": "L274",
       "weight": 1.0
     },
     {
@@ -13151,7 +13412,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L273",
+      "source_location": "L274",
       "weight": 1.0
     },
     {
@@ -13163,7 +13424,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L275",
+      "source_location": "L276",
       "weight": 1.0
     },
     {
@@ -13175,7 +13436,67 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L245",
+      "source_location": "L246",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_make_run",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L319",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_answer",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L322",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_user",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L322",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_write_transcript",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L322",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_capture",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L324",
       "weight": 1.0
     },
     {
@@ -13259,7 +13580,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/test_follow.py",
-      "source_location": "L261",
+      "source_location": "L262",
       "weight": 1.0
     },
     {
@@ -14507,7 +14828,7 @@
       "confidence_score": 1.0,
       "context": "decorator",
       "source_file": "tests/test_follow.py",
-      "source_location": "L233",
+      "source_location": "L234",
       "weight": 1.0
     },
     {
@@ -14675,7 +14996,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L63",
+      "source_location": "L65",
       "weight": 1.0
     },
     {
@@ -15899,7 +16220,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L71",
+      "source_location": "L73",
       "weight": 1.0
     },
     {
@@ -15911,7 +16232,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L63",
+      "source_location": "L65",
       "weight": 1.0
     },
     {
@@ -17171,7 +17492,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L234",
+      "source_location": "L235",
       "weight": 1.0
     },
     {
@@ -17183,7 +17504,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L134",
+      "source_location": "L135",
       "weight": 1.0
     },
     {
@@ -17195,7 +17516,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L204",
+      "source_location": "L205",
       "weight": 1.0
     },
     {
@@ -17207,7 +17528,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L182",
+      "source_location": "L183",
       "weight": 1.0
     },
     {
@@ -17223,6 +17544,30 @@
       "weight": 1.0
     },
     {
+      "source": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "target": "tests_test_follow_py_path",
+      "relation": "references",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "parameter_type",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L302",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "target": "tests_test_follow_py_path",
+      "relation": "references",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "parameter_type",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L348",
+      "weight": 1.0
+    },
+    {
       "source": "tests_test_follow_test_an_abandoned_run_is_a_terminal_line_too",
       "target": "tests_test_follow_py_path",
       "relation": "references",
@@ -17231,7 +17576,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L158",
+      "source_location": "L159",
       "weight": 1.0
     },
     {
@@ -17243,7 +17588,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L216",
+      "source_location": "L217",
       "weight": 1.0
     },
     {
@@ -17255,7 +17600,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L283",
+      "source_location": "L284",
       "weight": 1.0
     },
     {
@@ -17267,7 +17612,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L105",
+      "source_location": "L106",
       "weight": 1.0
     },
     {
@@ -17279,7 +17624,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L114",
+      "source_location": "L115",
       "weight": 1.0
     },
     {
@@ -17303,7 +17648,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L170",
+      "source_location": "L171",
       "weight": 1.0
     },
     {
@@ -17315,7 +17660,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L146",
+      "source_location": "L147",
       "weight": 1.0
     },
     {
@@ -17331,6 +17676,18 @@
       "weight": 1.0
     },
     {
+      "source": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "target": "tests_test_follow_py_path",
+      "relation": "references",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "parameter_type",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L330",
+      "weight": 1.0
+    },
+    {
       "source": "tests_test_follow_test_progress_level_never_swallows_an_error_or_a_subagent_finishing",
       "target": "tests_test_follow_py_path",
       "relation": "references",
@@ -17339,7 +17696,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L267",
+      "source_location": "L268",
       "weight": 1.0
     },
     {
@@ -17351,7 +17708,19 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L241",
+      "source_location": "L242",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "target": "tests_test_follow_py_path",
+      "relation": "references",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "parameter_type",
+      "source_file": "tests/test_follow.py",
+      "source_location": "L316",
       "weight": 1.0
     },
     {
@@ -17375,7 +17744,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L256",
+      "source_location": "L257",
       "weight": 1.0
     },
     {
@@ -18623,7 +18992,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "tests/test_follow.py",
-      "source_location": "L234",
+      "source_location": "L235",
       "weight": 1.0
     },
     {
@@ -19505,7 +19874,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L63",
+      "source_location": "L65",
       "weight": 1.0
     },
     {
@@ -19516,7 +19885,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L71",
+      "source_location": "L73",
       "weight": 1.0
     },
     {
@@ -19527,7 +19896,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L88",
+      "source_location": "L90",
       "weight": 1.0
     },
     {
@@ -20275,7 +20644,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L100",
+      "source_location": "L107",
       "weight": 1.0
     },
     {
@@ -20286,7 +20655,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L112",
+      "source_location": "L119",
       "weight": 1.0
     },
     {
@@ -20297,7 +20666,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L125",
+      "source_location": "L132",
       "weight": 1.0
     },
     {
@@ -20308,7 +20677,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L130",
+      "source_location": "L137",
       "weight": 1.0
     },
     {
@@ -20341,7 +20710,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L72",
+      "source_location": "L74",
       "weight": 1.0
     },
     {
@@ -20352,7 +20721,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L88",
+      "source_location": "L90",
       "weight": 1.0
     },
     {
@@ -22519,7 +22888,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L105",
+      "source_location": "L106",
       "weight": 1.0
     },
     {
@@ -22530,7 +22899,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L114",
+      "source_location": "L115",
       "weight": 1.0
     },
     {
@@ -22541,7 +22910,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L134",
+      "source_location": "L135",
       "weight": 1.0
     },
     {
@@ -22552,7 +22921,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L146",
+      "source_location": "L147",
       "weight": 1.0
     },
     {
@@ -22563,7 +22932,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L158",
+      "source_location": "L159",
       "weight": 1.0
     },
     {
@@ -22574,7 +22943,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L170",
+      "source_location": "L171",
       "weight": 1.0
     },
     {
@@ -22585,7 +22954,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L182",
+      "source_location": "L183",
       "weight": 1.0
     },
     {
@@ -22596,7 +22965,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L204",
+      "source_location": "L205",
       "weight": 1.0
     },
     {
@@ -22607,7 +22976,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L216",
+      "source_location": "L217",
       "weight": 1.0
     },
     {
@@ -22618,7 +22987,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L234",
+      "source_location": "L235",
       "weight": 1.0
     },
     {
@@ -22629,7 +22998,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L241",
+      "source_location": "L242",
       "weight": 1.0
     },
     {
@@ -22640,7 +23009,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L256",
+      "source_location": "L257",
       "weight": 1.0
     },
     {
@@ -22651,7 +23020,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L267",
+      "source_location": "L268",
       "weight": 1.0
     },
     {
@@ -22662,7 +23031,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L283",
+      "source_location": "L284",
       "weight": 1.0
     },
     {
@@ -22674,6 +23043,50 @@
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
       "source_location": "L29",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow",
+      "target": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L302",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow",
+      "target": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L316",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow",
+      "target": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L330",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow",
+      "target": "tests_test_follow_test_a_target_never_breaks_the_line",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L348",
       "weight": 1.0
     },
     {
@@ -24272,14 +24685,14 @@
       "weight": 1.0
     },
     {
-      "source": "claude_skills_ultra_search_scripts_follow_rationale_64",
+      "source": "claude_skills_ultra_search_scripts_follow_rationale_66",
       "target": "claude_skills_ultra_search_scripts_follow_streams",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_follow.py",
-      "source_location": "L64",
+      "source_location": "L66",
       "weight": 1.0
     },
     {
@@ -24393,14 +24806,14 @@
       "weight": 1.0
     },
     {
-      "source": "claude_skills_ultra_search_scripts_render_rationale_73",
+      "source": "claude_skills_ultra_search_scripts_render_rationale_75",
       "target": "claude_skills_ultra_search_scripts_render_reached_for",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L73",
+      "source_location": "L75",
       "weight": 1.0
     },
     {
@@ -25075,80 +25488,113 @@
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_135",
+      "source": "tests_test_follow_rationale_136",
       "target": "tests_test_follow_test_a_follow_that_runs_out_of_time_says_the_run_is_still_going",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L135",
+      "source_location": "L136",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_217",
+      "source": "tests_test_follow_rationale_218",
       "target": "tests_test_follow_test_child_activity_appears_in_the_parents_stream",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L217",
+      "source_location": "L218",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_235",
+      "source": "tests_test_follow_rationale_236",
       "target": "tests_test_follow_recorded_run",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L235",
+      "source_location": "L236",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_242",
+      "source": "tests_test_follow_rationale_243",
       "target": "tests_test_follow_test_progress_level_shows_what_the_run_reached_for_not_how_it_asked",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L242",
+      "source_location": "L243",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_257",
+      "source": "tests_test_follow_rationale_258",
       "target": "tests_test_follow_test_steps_level_is_the_view_that_was_compact_before",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L257",
+      "source_location": "L258",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_268",
+      "source": "tests_test_follow_rationale_269",
       "target": "tests_test_follow_test_progress_level_never_swallows_an_error_or_a_subagent_finishing",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L268",
+      "source_location": "L269",
       "weight": 1.0
     },
     {
-      "source": "tests_test_follow_rationale_284",
+      "source": "tests_test_follow_rationale_285",
       "target": "tests_test_follow_test_every_line_of_a_child_event_carries_the_childs_prefix",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/test_follow.py",
-      "source_location": "L284",
+      "source_location": "L285",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_rationale_303",
+      "target": "tests_test_follow_test_a_single_runs_cursor_carries_its_children",
+      "relation": "rationale_for",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L303",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_rationale_317",
+      "target": "tests_test_follow_test_progress_survives_an_argument_shape_it_has_never_seen",
+      "relation": "rationale_for",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L317",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_test_follow_rationale_331",
+      "target": "tests_test_follow_test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason",
+      "relation": "rationale_for",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "tests/test_follow.py",
+      "source_location": "L331",
       "weight": 1.0
     },
     {
@@ -25989,7 +26435,7 @@
       "confidence_score": 0.95,
       "context": "parameter_type",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L100",
+      "source_location": "L107",
       "weight": 0.8
     },
     {
@@ -26013,7 +26459,7 @@
       "confidence_score": 0.95,
       "context": "parameter_type",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L72",
+      "source_location": "L74",
       "weight": 0.8
     },
     {
@@ -26037,7 +26483,7 @@
       "confidence_score": 0.95,
       "context": "parameter_type",
       "source_file": ".claude/skills/ultra-search/scripts/_render.py",
-      "source_location": "L112",
+      "source_location": "L119",
       "weight": 0.8
     },
     {
@@ -26687,5 +27133,5 @@
       "source_file": "README.md"
     }
   ],
-  "built_at_commit": "8f7998d2db6cb725b4c39f01747eb5df73ee1e0b"
+  "built_at_commit": "6dc995e58df0d088a014918b0b42942e6718e11f"
 }

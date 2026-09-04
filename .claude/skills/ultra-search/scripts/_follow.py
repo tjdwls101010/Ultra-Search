@@ -55,7 +55,9 @@ def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]
 
 
 def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:
-    if len(runs) == 1:
+    # A plain integer only while there is one stream to describe. Once a child exists an
+    # integer can only carry the parent's offset, and the next read replays the child.
+    if len(runs) == 1 and set(cursors.get(runs[0].run_id, {})) <= {""}:
         return cursors.get(runs[0].run_id, {}).get("", 0)
     return json.dumps(cursors, ensure_ascii=False, separators=(",", ":"))
 
@@ -81,7 +83,7 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
             # Every line, not just the first: a child's second call or the body of its
             # answer would otherwise read as the parent's.
             for line in rendered.splitlines():
-                lines.append(f"{prefix} {line}" if prefix else line)
+                lines.append(f"{prefix} {line}" if prefix and line else prefix or line)
     return lines
 
 

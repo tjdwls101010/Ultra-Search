@@ -56,11 +56,13 @@ def _progress(event: Event) -> str:
         if event.tool_calls:
             parts.append(_reached_for(event))
         if event.text.strip():
-            # A turn that ends without calling anything is the answer; text beside a call
-            # is the worker saying what it is about to do. The reader collects the first
-            # and waits through the second.
-            label = "says" if event.tool_calls else "answer"
+            # A turn that stopped is the answer; text in a turn that stopped to call a
+            # tool is the worker saying what it is about to do. The stop reason decides,
+            # not whether a call was parsed -- an unfamiliar tool block parses as no call.
+            label = "says" if event.stop_reason == "toolUse" or event.tool_calls else "answer"
             parts.append(f"{label}: {_first_line(event.text, 160)}")
+        if event.unknown_blocks:
+            parts.append(f"[{len(event.unknown_blocks)} unrecognised block(s)]")
         return " | ".join(parts)
     if event.kind == "tool_result":
         return f"{event.tool_name} ERROR: {_first_line(event.content, 120)}" if event.is_error else ""
@@ -85,12 +87,17 @@ def _reached_for(event: Event) -> str:
     return " ".join(out)
 
 
-def _target(arguments: dict) -> str:
+def _target(arguments: object) -> str:
+    if not isinstance(arguments, dict):
+        return ""
     for key in _TARGET_KEYS:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
-            m = _HOST_RE.match(value.strip())
-            return m.group(1) if m else value.strip()
+            # One physical line: a target carrying a newline would end the line early,
+            # and could forge a terminal line such as `run.completed`.
+            flat = " ".join(value.split())
+            m = _HOST_RE.match(flat)
+            return m.group(1) if m else flat
     return ""
 
 

@@ -71,7 +71,7 @@ write_todos out=221B
 [child 4kgZvArU4ipY0eIn] read_file out=1370B
 [child 4kgZvArU4ipY0eIn] read_file out=6856B
 [child 4kgZvArU4ipY0eIn] 공식 **What’s New in Python 3.14**만 확인해 정리했습니다. 중요도순입니다.
-[child 4kgZvArU4ipY0eIn] 
+[child 4kgZvArU4ipY0eIn]
 [child 4kgZvArU4ipY0eIn] 1. **[런타임·실행 모델] Free-threaded Python 정식 지원**
 [child 4kgZvArU4ipY0eIn]    - GIL 없는 빌드가 실험 단계를 벗어나 선택 가능한 지원 옵션이 됐습니다.
 [child 4kgZvArU4ipY0eIn]    - 원문: “**now supported and no longer experimental**”

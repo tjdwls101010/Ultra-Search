@@ -153,8 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--since",
         default="0",
         metavar="CURSOR",
-        help="Resume from a previous call's `# cursor=` value. A single run's cursor is a byte offset; "
-        "a group's is the JSON object that call printed, since members advance independently.",
+        help="Resume from a previous call's `# cursor=` value. A run with no children prints a byte offset; "
+        "one with children, or a group, prints a JSON object, since its streams advance independently.",
     )
     lg.add_argument(
         "--level",
@@ -162,9 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="progress",
         help="What each event becomes. progress: one line per turn -- what the run reached for (tool, count, "
         "the host or objective) and what it said; a result appears only when it errored, an answer as its "
-        "first line. steps: every call with its arguments and every result's size, for retracing why a "
-        "source was chosen. full: steps plus the first 2000 bytes of each result. raw: the stored records "
-        "unchanged. Default progress.",
+        "first line. steps: every call with the first 200 characters of its arguments and every result's "
+        "size, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
+        "characters of each result. raw: the stored records unchanged. Default progress.",
     )
     lg.add_argument("--follow", action="store_true", help="Keep printing until the run reaches a terminal state.")
     lg.add_argument(

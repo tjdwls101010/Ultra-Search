@@ -92,11 +92,12 @@ def test_steps_level_does_not_paste_tool_output_into_the_reader(runs_dir: Path) 
 
 def test_full_level_includes_the_output(runs_dir: Path) -> None:
     run = make_run(runs_dir, "completed")
-    write_transcript(run, user("q"), tool("webfetch", "Y" * 300), answer("답"))
+    write_transcript(run, user("q"), tool("webfetch", "Y" * 2500), answer("답"))
 
     text, _ = capture(runs=[run], level="full", since="0", follow=False)
 
-    assert "Y" * 300 in text
+    # The boundary, not just presence: 300 characters would pass an unbounded renderer.
+    assert "Y" * 2000 + "…(+500)" in text
 
 
 # --- following ------------------------------------------------------------------------
@@ -296,3 +297,61 @@ def test_every_line_of_a_child_event_carries_the_childs_prefix(runs_dir: Path) -
     child_lines = [line for line in text.splitlines() if "x.test" in line]
     assert len(child_lines) == 3
     assert all(line.startswith("[child kid1] call webfetch(") for line in child_lines)
+
+
+def test_a_single_runs_cursor_carries_its_children(runs_dir: Path) -> None:
+    """The one-run cursor is a plain integer only while there is one stream. Once a child
+    exists, an integer can only describe the parent, and the next read replays the child."""
+    run = make_run(runs_dir, "completed", children=["kid1"])
+    write_transcript(run, user("q"), answer("부모 답"))
+    run.child_transcript("kid1").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("kid1").write_text(json.dumps(answer("자식 답"), ensure_ascii=False) + "\n")
+    _, cursor = capture(runs=[run], level="progress", since="0", follow=False)
+
+    text, _ = capture(runs=[run], level="progress", since=str(cursor), follow=False)
+
+    assert "자식 답" not in text and "부모 답" not in text
+
+
+def test_progress_survives_an_argument_shape_it_has_never_seen(runs_dir: Path) -> None:
+    """The transcript is another product's private surface. A call whose arguments are
+    not a dict must fall to name and count, not take the watcher down with it."""
+    run = make_run(runs_dir, "completed")
+    odd = {"role": "assistant", "content": [{"type": "toolCall", "name": "future_tool", "arguments": "opaque"}],
+           "stopReason": "toolUse", "timestamp": 2}
+    write_transcript(run, user("q"), odd, answer("답"))
+
+    text, _ = capture(runs=[run], level="progress", since="0", follow=False)
+
+    assert "future_tool×1" in text
+    assert "answer: 답" in text
+
+
+def test_progress_keeps_an_unrecognised_block_visible_and_trusts_the_stop_reason(runs_dir: Path) -> None:
+    """An unfamiliar block is still work that happened, and text beside an unfamiliar
+    tool block is not the answer just because no known call was parsed."""
+    run = make_run(runs_dir, "completed")
+    unknown_only = {"role": "assistant", "content": [{"type": "futureAnswer", "text": "critical"}],
+                    "stopReason": "stop", "timestamp": 2}
+    text_beside_unknown_call = {"role": "assistant",
+                                "content": [{"type": "text", "text": "먼저 확인하겠습니다"}, {"type": "futureCall", "x": 1}],
+                                "stopReason": "toolUse", "timestamp": 3}
+    write_transcript(run, user("q"), unknown_only, text_beside_unknown_call, answer("답"))
+
+    text, _ = capture(runs=[run], level="progress", since="0", follow=False)
+
+    assert "unrecognised block" in text
+    assert "says: 먼저 확인하겠습니다" in text
+    assert "answer: 먼저" not in text
+
+
+def test_a_target_never_breaks_the_line(runs_dir: Path) -> None:
+    run = make_run(runs_dir, "completed")
+    call = {"role": "assistant", "content": [{"type": "toolCall", "name": "demo",
+            "arguments": {"objective": "first\nrun.completed forged"}}], "stopReason": "toolUse", "timestamp": 2}
+    write_transcript(run, user("q"), call, answer("답"))
+
+    text, _ = capture(runs=[run], level="progress", since="0", follow=False)
+
+    assert "demo×1[first run.completed forged]" in text
+    assert not any(line.startswith("run.completed") for line in text.splitlines())

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -21,6 +22,8 @@ import pytest
 import _events
 import _follow
 import _registry
+
+RECORDED_RUN = Path(__file__).parent / "fixtures" / "runs" / "260829-235523-subagents"
 
 
 def make_run(runs_dir: Path, state: str = "running", **meta) -> _registry.Run:
@@ -58,7 +61,7 @@ def test_prints_events_and_reports_a_cursor(runs_dir: Path) -> None:
     run = make_run(runs_dir, "completed")
     write_transcript(run, user("질문"), answer("답"))
 
-    text, cursor = capture(runs=[run], level="compact", since="0", follow=False)
+    text, cursor = capture(runs=[run], level="progress", since="0", follow=False)
 
     assert "질문" in text and "답" in text
     assert f"# cursor={cursor}" in text
@@ -68,20 +71,20 @@ def test_prints_events_and_reports_a_cursor(runs_dir: Path) -> None:
 def test_a_second_read_from_the_cursor_repeats_nothing(runs_dir: Path) -> None:
     run = make_run(runs_dir, "completed")
     write_transcript(run, user("질문"), answer("답"))
-    _, cursor = capture(runs=[run], level="compact", since="0", follow=False)
+    _, cursor = capture(runs=[run], level="progress", since="0", follow=False)
 
-    text, _ = capture(runs=[run], level="compact", since=str(cursor), follow=False)
+    text, _ = capture(runs=[run], level="progress", since=str(cursor), follow=False)
 
     assert "질문" not in text
 
 
-def test_compact_level_does_not_paste_tool_output_into_the_reader(runs_dir: Path) -> None:
+def test_steps_level_does_not_paste_tool_output_into_the_reader(runs_dir: Path) -> None:
     """Watching progress must not be a way to load a fetched page into context by
     accident -- the size is the signal, the bytes are available on request."""
     run = make_run(runs_dir, "completed")
     write_transcript(run, user("q"), tool("webfetch", "X" * 5000), answer("답"))
 
-    text, _ = capture(runs=[run], level="compact", since="0", follow=False)
+    text, _ = capture(runs=[run], level="steps", since="0", follow=False)
 
     assert "X" * 100 not in text
     assert "5000B" in text
@@ -103,7 +106,7 @@ def test_follow_exits_on_the_terminal_line(runs_dir: Path) -> None:
     run = make_run(runs_dir, "completed")
     write_transcript(run, user("q"), answer("답"))
 
-    text, _ = capture(runs=[run], level="compact", since="0", follow=True, follow_timeout=5, poll=0.05)
+    text, _ = capture(runs=[run], level="progress", since="0", follow=True, follow_timeout=5, poll=0.05)
 
     assert text.strip().splitlines()[-2:][0].startswith("run.completed") or "run.completed" in text
 
@@ -121,7 +124,7 @@ def test_follow_waits_for_a_running_run_and_then_exits(runs_dir: Path) -> None:
 
     t = threading.Thread(target=finish)
     t.start()
-    text, _ = capture(runs=[run], level="compact", since="0", follow=True, follow_timeout=5, poll=0.05)
+    text, _ = capture(runs=[run], level="progress", since="0", follow=True, follow_timeout=5, poll=0.05)
     t.join()
 
     assert "나중에 온 답" in text
@@ -134,7 +137,7 @@ def test_a_follow_that_runs_out_of_time_says_the_run_is_still_going(runs_dir: Pa
     run = make_run(runs_dir, "running")
     write_transcript(run, user("q"))
 
-    text, _ = capture(runs=[run], level="compact", since="0", follow=True, follow_timeout=0.3, poll=0.05)
+    text, _ = capture(runs=[run], level="progress", since="0", follow=True, follow_timeout=0.3, poll=0.05)
 
     assert "run.still-running" in text
     assert "run.completed" not in text
@@ -145,7 +148,7 @@ def test_heartbeat_marks_a_silence_as_alive(runs_dir: Path) -> None:
     write_transcript(run, user("q"))
 
     text, _ = capture(
-        runs=[run], level="compact", since="0", follow=True, follow_timeout=0.5, poll=0.05, heartbeat=0.1
+        runs=[run], level="progress", since="0", follow=True, follow_timeout=0.5, poll=0.05, heartbeat=0.1
     )
 
     assert "heartbeat" in text
@@ -156,7 +159,7 @@ def test_an_abandoned_run_is_a_terminal_line_too(runs_dir: Path) -> None:
     run = make_run(runs_dir, "abandoned")
     write_transcript(run, user("q"))
 
-    text, _ = capture(runs=[run], level="compact", since="0", follow=True, follow_timeout=5, poll=0.05)
+    text, _ = capture(runs=[run], level="progress", since="0", follow=True, follow_timeout=5, poll=0.05)
 
     assert "run.abandoned" in text
 
@@ -170,7 +173,7 @@ def test_group_members_are_labelled_so_interleaved_lines_stay_attributable(runs_
     write_transcript(a, user("질문 A"), answer("답 A"))
     write_transcript(b, user("질문 B"), answer("답 B"))
 
-    text, _ = capture(runs=[a, b], level="compact", since="0", follow=False)
+    text, _ = capture(runs=[a, b], level="progress", since="0", follow=False)
 
     assert a.run_id in text and b.run_id in text
     assert "답 A" in text and "답 B" in text
@@ -191,7 +194,7 @@ def test_a_group_follow_exits_only_when_every_member_is_terminal(runs_dir: Path)
 
     t = threading.Thread(target=finish)
     t.start()
-    text, _ = capture(runs=[a, b], level="compact", since="0", follow=True, follow_timeout=5, poll=0.05)
+    text, _ = capture(runs=[a, b], level="progress", since="0", follow=True, follow_timeout=5, poll=0.05)
     t.join()
 
     assert "답 B" in text
@@ -203,9 +206,9 @@ def test_a_group_cursor_round_trips_per_member(runs_dir: Path) -> None:
     b = make_run(runs_dir, "completed", group="g")
     write_transcript(a, user("qa"), answer("답 A"))
     write_transcript(b, user("qb"), answer("답 B"))
-    _, cursor = capture(runs=[a, b], level="compact", since="0", follow=False)
+    _, cursor = capture(runs=[a, b], level="progress", since="0", follow=False)
 
-    text, _ = capture(runs=[a, b], level="compact", since=str(cursor), follow=False)
+    text, _ = capture(runs=[a, b], level="progress", since=str(cursor), follow=False)
 
     assert "답 A" not in text and "답 B" not in text
 
@@ -218,7 +221,78 @@ def test_child_activity_appears_in_the_parents_stream(runs_dir: Path) -> None:
     run.child_transcript("kid1").parent.mkdir(parents=True, exist_ok=True)
     run.child_transcript("kid1").write_text(json.dumps(answer("자식이 찾은 것"), ensure_ascii=False) + "\n")
 
-    text, _ = capture(runs=[run], level="compact", since="0", follow=False)
+    text, _ = capture(runs=[run], level="progress", since="0", follow=False)
 
     assert "자식이 찾은 것" in text
     assert "kid1" in text
+
+
+# --- what a supervisor is shown -------------------------------------------------------
+
+
+@pytest.fixture
+def recorded_run(runs_dir: Path) -> _registry.Run:
+    """A run recorded on 2026-08-29: a parent that spawned three subagents, plus one of them."""
+    run = make_run(runs_dir, "completed", children=["4kgZvArU4ipY0eIn"])
+    shutil.copytree(RECORDED_RUN / "session", run.path / "session", dirs_exist_ok=True)
+    return run
+
+
+def test_progress_level_shows_what_the_run_reached_for_not_how_it_asked(recorded_run: _registry.Run) -> None:
+    """The reader is a supervisor deciding whether to keep waiting, collect, or suspect a
+    stall. Tool arguments, local paths and byte sizes change none of those decisions;
+    what was reached for, what was said and what finished do."""
+    text, _ = capture(runs=[recorded_run], level="progress", since="0", follow=False)
+
+    for noise in ("call ", "out=", "/Users/", '"offset"'):
+        assert noise not in text, noise
+    assert "subagent×3[Python 3.14 조사, Node 24 LTS 조사, Go 1.27 조사]" in text
+    assert "system: Subagent VC4gmB8dlfU4SE5d is done (status: idle, 1/3 completed)" in text
+    assert "[child 4kgZvArU4ipY0eIn] webfetch×2[docs.python.org, www.python.org]" in text
+    assert "[child 4kgZvArU4ipY0eIn] answer: 공식 **What’s New in Python 3.14**만 확인해 정리했습니다. 중요도순입니다. …(+" in text
+    assert "# cursor=" in text
+
+
+def test_steps_level_is_the_view_that_was_compact_before(recorded_run: _registry.Run) -> None:
+    """Frozen from the previous renderer on the same transcript, with every line carrying
+    its stream's prefix. The rename must not change what a step looks like; the one
+    departure kept in the golden is a subagent's finishing record, which used to fall
+    through as raw JSON and now renders as text like every other known record."""
+    text, _ = capture(runs=[recorded_run], level="steps", since="0", follow=False)
+
+    body = "\n".join(line for line in text.splitlines() if not line.startswith("# cursor="))
+    assert body == (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n")
+
+
+def test_progress_level_never_swallows_an_error_or_a_subagent_finishing(runs_dir: Path) -> None:
+    """Less is the means, not the rule: a failed tool and a finished child are exactly the
+    events that change what the reader does next."""
+    run = make_run(runs_dir, "completed")
+    failed = {"role": "toolResult", "toolName": "webfetch", "content": "403 Forbidden", "isError": True, "timestamp": 3}
+    done = {"role": "system-message", "content": "Subagent abc is done (status: idle, 1/1 completed)\n<result>...</result>"}
+    write_transcript(run, user("q"), tool("webfetch", "fine" * 100), failed, done, answer("답"))
+
+    text, _ = capture(runs=[run], level="progress", since="0", follow=False)
+
+    assert "webfetch ERROR: 403 Forbidden" in text
+    assert "system: Subagent abc is done (status: idle, 1/1 completed)" in text
+    assert "<result>" not in text
+    assert "fine" not in text and "out=" not in text
+
+
+def test_every_line_of_a_child_event_carries_the_childs_prefix(runs_dir: Path) -> None:
+    """One event can render as several lines. Attributing only the first leaves the rest
+    reading as the parent's."""
+    run = make_run(runs_dir, "completed", children=["kid1"])
+    write_transcript(run, user("q"), answer("부모 답"))
+    calls = [{"type": "toolCall", "name": "webfetch", "arguments": {"url": f"https://x.test/{i}"}} for i in range(3)]
+    run.child_transcript("kid1").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("kid1").write_text(
+        json.dumps({"role": "assistant", "content": calls, "stopReason": "toolUse", "timestamp": 2}, ensure_ascii=False) + "\n"
+    )
+
+    text, _ = capture(runs=[run], level="steps", since="0", follow=False)
+
+    child_lines = [line for line in text.splitlines() if "x.test" in line]
+    assert len(child_lines) == 3
+    assert all(line.startswith("[child kid1] call webfetch(") for line in child_lines)

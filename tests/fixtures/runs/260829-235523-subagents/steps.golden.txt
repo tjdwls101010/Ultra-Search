@@ -1,0 +1,79 @@
+user: 세 가지를 각각 별도의 서브에이전트로 병렬 조사해라: (1) Python 3.14의 주요 신기능, (2) Node.js 24 LTS의 주요 변경점, (3) Go 1.27의 주요 변경점. 각각 공식 릴리스 노트를 근거로 하고, 셋을 모두 기다렸다가 하나로 정리해라.
+
+(ultra-search:260829-235523-subagents — ignore this…(+6)
+call write_todos({"merge": false, "todos": [{"id": "py", "content": "Python 3.14 공식 릴리스 노트 조사", "status": "in_progress"}, {"id": "node", "content": "Node.js 24 LTS 공식 릴리스 자료 조사", "status": "in_progress"}, {"id": "go",…(+132))
+공식 릴리스 노트만 근거로 세 주제를 각각 독립 서브에이전트에 맡겨 병렬 조사하겠습니다. 세 결과가 모두 나온 뒤 공통 형식으로 통합하겠습니다.
+write_todos out=225B
+call subagent({"action": "spawn", "description": "Python 3.14 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Python 3.14의 주요 신기능을 공식 Python 3.14 릴리스 노트/What'…(+226))
+call subagent({"action": "spawn", "description": "Node 24 LTS 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Node.js 24 LTS의 주요 변경점을 Node.js 공식 릴리스 블로그, 공식 v…(+246))
+call subagent({"action": "spawn", "description": "Go 1.27 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Go 1.27의 주요 변경점을 go.dev의 공식 Go 1.27 릴리스 노트와 공식 Go 블로…(+260))
+subagent out=106B
+subagent out=106B
+subagent out=106B
+call subagent_wait({"task_ids": ["4kgZvArU4ipY0eIn", "GZ0SJQM23WNehVgp", "VC4gmB8dlfU4SE5d"]})
+subagent_wait out=11187B
+system: Subagent VC4gmB8dlfU4SE5d is done (status: idle, 1/3 completed)
+<result>
+## 공개 상태
+
+**정식 릴리스**입니다. Go 공식 릴리스 이력은 `go1.27.0`을 **2026-08-19 released**로 기록하며, 다운로드 페이지도 이를 Stable version으로 제공합니다. RC나 초안이 …(+2808)
+system: Subagent GZ0SJQM23WNehVgp is done (status: idle, 2/3 completed)
+<result>
+공식 페이지를 직접 확인한 조사 결과입니다.
+
+**시점 구분**
+- **최초 릴리스:** 2025-05-06, **v24.0.0 (Current)**. 당시 공지는 “*will enter long-term support (LTS…(+3064)
+system: Subagent 4kgZvArU4ipY0eIn is done (status: idle, 3/3 completed)
+<result>
+공식 **What’s New in Python 3.14**만 확인해 정리했습니다. 중요도순입니다.
+
+1. **[런타임·실행 모델] Free-threaded Python 정식 지원**
+   - GIL 없는 빌드가 실험 단계를 벗어…(+4524)
+call write_todos({"merge": true, "todos": [{"id": "py", "content": "Python 3.14 공식 릴리스 노트 조사", "status": "completed"}, {"id": "node", "content": "Node.js 24 LTS 공식 릴리스 자료 조사", "status": "completed"}, {"id": "go", "con…(+127))
+세 서브에이전트의 조사가 모두 끝났습니다. 이제 정식 여부, 핵심 기능, 업그레이드 위험을 같은 기준으로 맞춰 통합하겠습니다.
+write_todos out=221B
+세 서브에이전트가 각각 공식 릴리스 자료를 조사한 결과를 통합했습니다.
+
+## 한눈에 보기
+
+| 버전 | 상태 | 가장 큰 변화 |
+|---|---|---|
+| Python 3.14 | 정식 | Free-threaded 빌드 공식 지원, 지연 애너테이션, 템플릿 문자열 |
+| Node.js 24 | LTS, 코드명 Krypton | V8 13.6, npm 11, Permission Model 개선 |
+| Go 1.27 | 2026-08-19 정식 출시 | 제네릭 메서드, JSON v2, 할당 성능 개선 |
+
+## 1. Python 3.14
+
+공식 자료: [What’s New in Python 3.14](https://docs.python.org/3.14/whatsnew/3.14.html)
+
+1. **Free…(+4531)
+[child 4kgZvArU4ipY0eIn] user: Python 3.14의 주요 신기능을 공식 Python 3.14 릴리스 노트/What's New 문서만 근거로 조사하라. 실제 공식 페이지를 webfetch로 읽고 검색결과 스니펫에 의존하지 말 것. 핵심 변경 6~10개를 중요도순으로 요약하고, 각 항목마다 정확한 공식 URL과 뒷받침하는 짧은 원문 인용을 포함하라. 언어 문법/런타임/표준 라이브러리/성능…(+72)
+[child 4kgZvArU4ipY0eIn] call webfetch({"url": "https://docs.python.org/3.14/whatsnew/3.14.html", "timeout": 120})
+[child 4kgZvArU4ipY0eIn] call webfetch({"url": "https://www.python.org/downloads/release/python-3140/", "timeout": 120})
+[child 4kgZvArU4ipY0eIn] webfetch out=4373B sources=1
+[child 4kgZvArU4ipY0eIn] webfetch out=91B sources=1
+[child 4kgZvArU4ipY0eIn] call bash({"title": "Finding Python 3.14 documentation sections", "command": "grep -nE '^## |^### ' /Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt | hea…(+8))
+[child 4kgZvArU4ipY0eIn] bash out=3039B
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 49, "limit": 202})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 327, "limit": 210})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 479, "limit": 55})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 986, "limit": 37})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 1591, "limit": 31})
+[child 4kgZvArU4ipY0eIn] read_file out=4133B
+[child 4kgZvArU4ipY0eIn] read_file out=19846B
+[child 4kgZvArU4ipY0eIn] read_file out=5572B
+[child 4kgZvArU4ipY0eIn] read_file out=2905B
+[child 4kgZvArU4ipY0eIn] read_file out=3392B
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 86, "limit": 165})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 1008, "limit": 21})
+[child 4kgZvArU4ipY0eIn] call read_file({"path": "/Users/seongjin/.aside/u/0/sessions/2026-08-29_4kgZvArU4ipY0eIn/tmp/webfetch-result-Bop6MmOjl32NcQpR.txt", "offset": 1625, "limit": 49})
+[child 4kgZvArU4ipY0eIn] read_file out=14601B
+[child 4kgZvArU4ipY0eIn] read_file out=1370B
+[child 4kgZvArU4ipY0eIn] read_file out=6856B
+[child 4kgZvArU4ipY0eIn] 공식 **What’s New in Python 3.14**만 확인해 정리했습니다. 중요도순입니다.
+[child 4kgZvArU4ipY0eIn] 
+[child 4kgZvArU4ipY0eIn] 1. **[런타임·실행 모델] Free-threaded Python 정식 지원**
+[child 4kgZvArU4ipY0eIn]    - GIL 없는 빌드가 실험 단계를 벗어나 선택 가능한 지원 옵션이 됐습니다.
+[child 4kgZvArU4ipY0eIn]    - 원문: “**now supported and no longer experimental**”
+[child 4kgZvArU4ipY0eIn]    - 실무 의미: CPU 병렬 처리에 쓸 수 있지만, 기본값은 아니며 확장 모듈 호환성 검증이 필요합니다.
+[child 4kgZvArU4ipY0eIn]    - URL: https://docs.python.org/3.14/whatsnew/3.14.html#free-threaded-python-is-officially-supported <citation refs="DPk-HOLjCp032K…(+4241)

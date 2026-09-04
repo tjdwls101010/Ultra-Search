@@ -20,6 +20,7 @@ from pathlib import Path
 
 import _events
 import _registry
+import _render
 
 TERMINAL_STATES = frozenset({"completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"})
 POLL = 1.0
@@ -72,16 +73,15 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
     for key, path in _streams(run):
         events, cursor = _events.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
+        prefix = f"[{run.run_id}]" if label else ""
+        if key:
+            prefix += f"[child {key}]"
         for e in events:
-            rendered = _events.render(e, level=level)
-            if not rendered:
-                continue
-            prefix = ""
-            if label:
-                prefix = f"[{run.run_id}]"
-            if key:
-                prefix += f"[child {key}]"
-            lines.append(f"{prefix} {rendered}" if prefix else rendered)
+            rendered = _render.render(e, level=level)
+            # Every line, not just the first: a child's second call or the body of its
+            # answer would otherwise read as the parent's.
+            for line in rendered.splitlines():
+                lines.append(f"{prefix} {line}" if prefix else line)
     return lines
 
 
@@ -89,7 +89,7 @@ def follow(
     runs: list,
     *,
     out=None,
-    level: str = "compact",
+    level: str = "progress",
     since: str | int | None = None,
     follow: bool = False,
     follow_timeout: float = 570.0,

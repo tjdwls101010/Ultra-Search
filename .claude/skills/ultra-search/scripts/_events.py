@@ -129,6 +129,10 @@ def parse_record(line: str, index: int = 0) -> Event:
             is_error=bool(obj.get("isError")),
             timestamp=ts,
         )
+    if role == "system-message":
+        # Aside reports a subagent finishing this way. It is the one record a supervisor
+        # most wants to see, so it gets a kind of its own rather than the raw fallback.
+        return Event(kind="system", index=index, raw=obj, text=_as_text(obj.get("content")), timestamp=ts)
     return Event(kind="raw", index=index, raw=obj, content=json.dumps(obj, ensure_ascii=False), timestamp=ts)
 
 
@@ -347,53 +351,3 @@ def total_usage(events: list[Event]) -> dict:
 
 def last_timestamp(events: list[Event]) -> int:
     return max((e.timestamp for e in events if e.timestamp), default=0)
-
-
-# --- rendering -------------------------------------------------------------------
-
-_LEVELS = ("compact", "normal", "full", "raw")
-
-
-def render(event: Event, level: str = "compact") -> str:
-    if level == "raw":
-        return json.dumps(event.raw, ensure_ascii=False)
-    if event.kind == "user":
-        return f"user: {_clip(event.text, 200 if level == 'compact' else 2000)}"
-    if event.kind == "assistant":
-        return _render_assistant(event, level)
-    if event.kind == "tool_result":
-        return _render_tool_result(event, level)
-    return f"raw[{event.index}]: {_clip(event.content, 200)}"
-
-
-def _render_assistant(event: Event, level: str) -> str:
-    parts = []
-    if event.thinking and level in ("full",):
-        parts.append(f"thinking: {_clip(event.thinking, 4000)}")
-    for c in event.tool_calls:
-        args = json.dumps(c.arguments, ensure_ascii=False)
-        parts.append(f"call {c.name}({_clip(args, 200 if level == 'compact' else 4000)})")
-    if event.text:
-        parts.append(_clip(event.text, 400 if level == "compact" else 100000))
-    if event.unknown_blocks:
-        parts.append(f"[{len(event.unknown_blocks)} unrecognised block(s)]")
-    return "\n".join(parts) if parts else f"assistant[{event.stop_reason}]"
-
-
-def _render_tool_result(event: Event, level: str) -> str:
-    n = len(event.content)
-    head = f"{event.tool_name} {'ERROR ' if event.is_error else ''}out={n}B"
-    srcs = (event.details or {}).get("sources") or []
-    if srcs:
-        head += f" sources={len(srcs)}"
-    if level == "compact":
-        # The size, not the bytes: a tool that printed a whole page would otherwise put
-        # that page into the reader's context as a byproduct of watching progress.
-        return head
-    limit = 2000 if level == "normal" else 200000
-    return f"{head}\n{_clip(event.content, limit)}"
-
-
-def _clip(s: str, n: int) -> str:
-    s = s or ""
-    return s if len(s) <= n else s[:n] + f"…(+{len(s) - n})"

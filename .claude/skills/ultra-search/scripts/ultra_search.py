@@ -27,7 +27,7 @@ EXIT_EMPTY = 5
 
 EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
 SPEED_CHOICES = ("default", "fast")
-LEVEL_CHOICES = ("compact", "normal", "full", "raw")
+LEVEL_CHOICES = ("progress", "steps", "full", "raw")
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
 
@@ -153,15 +153,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--since",
         default="0",
         metavar="CURSOR",
-        help="Resume from a previous call's `# cursor=` value. A single run's cursor is a byte offset; "
-        "a group's is the JSON object that call printed, since members advance independently.",
+        help="Resume from a previous call's `# cursor=` value. A run with no children prints a byte offset; "
+        "one with children, or a group, prints a JSON object, since its streams advance independently.",
     )
     lg.add_argument(
         "--level",
         choices=LEVEL_CHOICES,
-        default="compact",
-        help="How much of each event to print. compact withholds tool output and reports its size instead; "
-        "raw prints the stored records unchanged. Default compact.",
+        default="progress",
+        help="What each event becomes. progress: one line per turn -- what the run reached for (tool, count, "
+        "the host or objective) and what it said; a result appears only when it errored, an answer as its "
+        "first line. steps: every call with the first 200 characters of its arguments and every result's "
+        "size, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
+        "characters of each result. raw: the stored records unchanged. Default progress.",
     )
     lg.add_argument("--follow", action="store_true", help="Keep printing until the run reaches a terminal state.")
     lg.add_argument(
@@ -207,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="Index into this run's tool RESULTS, in order, counting from 0 -- not into all "
-        "events. `log --level normal` lists them.",
+        "events. `log --level steps` lists them.",
     )
     _add_runs_dir(sh)
 

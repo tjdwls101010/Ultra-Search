@@ -1,34 +1,35 @@
-# Graph Report - Ultra-Search  (2026-09-01)
+# Graph Report - Ultra-Search  (2026-09-04)
 
 ## Corpus Check
-- cluster-only mode — file stats not available
+- 46 files · ~79,433 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 718 nodes · 1473 edges · 28 communities (25 shown, 3 thin omitted)
-- Extraction: 96% EXTRACTED · 4% INFERRED · 0% AMBIGUOUS · INFERRED: 63 edges (avg confidence: 0.87)
-- Token cost: 25,704 input · 406 output
+- 749 nodes · 1534 edges · 30 communities (27 shown, 3 thin omitted)
+- Extraction: 96% EXTRACTED · 4% INFERRED · 0% AMBIGUOUS · INFERRED: 68 edges (avg confidence: 0.88)
+- Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `bcd72939`
+- Built from commit: `8f7998d2`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- Run Watching CLI
+- Run
 - Environment Doctor Command
-- CLI Command Tests
+- test_commands.py
 - Site Map and Crawl Commands
-- Shared Test Fixtures
+- test_registry.py
 - Supervisor Tests
 - Architecture Documentation
 - Page Fetch Tests
 - Response Classification and Extraction
-- Session Event Parsing
+- _events.py
 - Extraction Tests
 - Session Store
 - Session Store Tests
-- Follow Watcher Tests
-- Event Parsing Tests
+- test_follow.py
+- test_events.py
 - Fake Aside Contract Tests
 - Run Supervisor State Machine
 - Live End-to-End Tests
@@ -42,18 +43,20 @@
 - Graphify Navigation Rules
 - Tab Cleanup Snippet
 - Single Tab Snippet
+- conftest.py
+- `follow`를 감독자 뷰로 — `log --level progress`
 
 ## God Nodes (most connected - your core abstractions)
-1. `Run` - 32 edges
+1. `Run` - 35 edges
 2. `start()` - 27 edges
 3. `ArgumentError` - 22 edges
-4. `cli()` - 21 edges
+4. `cli()` - 22 edges
 5. `provider()` - 21 edges
-6. `run_cli()` - 17 edges
-7. `run_to_completion()` - 17 edges
-8. `AsideUnavailable` - 16 edges
-9. `make_run()` - 16 edges
-10. `Event` - 15 edges
+6. `make_run()` - 19 edges
+7. `Event` - 18 edges
+8. `capture()` - 18 edges
+9. `run_cli()` - 17 edges
+10. `write_transcript()` - 17 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Search Capability` --semantically_similar_to--> `Search Agent`  [INFERRED] [semantically similar]
@@ -74,9 +77,9 @@
 - **Aside Developer Tool Surface** — tests_fixtures_html_docs_page_aside_cli, tests_fixtures_html_docs_page_aside_account_management, tests_fixtures_html_docs_page_aside_mcp, tests_fixtures_html_docs_page_aside_repl [EXTRACTED 1.00]
 - **Ultra-Search User-Facing Capabilities** — readme_search_capability, readme_fetch_capability, readme_crawl_capability, readme_run_observability_capability [EXTRACTED 1.00]
 
-## Communities (28 total, 3 thin omitted)
+## Communities (30 total, 3 thin omitted)
 
-### Community 0 - "Run Watching CLI"
+### Community 0 - "Run"
 Cohesion: 0.06
 Nodes (65): ArgumentError, The caller asked for something the CLI will not do -- refused before any work., A run ended without a usable answer, or was abandoned while still going., RunFailed, _drain(), follow(), format_cursor(), parse_since() (+57 more)
 
@@ -84,17 +87,17 @@ Nodes (65): ArgumentError, The caller asked for something the CLI will not do --
 Cohesion: 0.06
 Nodes (54): ArgumentParser, _account_status(), _check(), _daemon_status(), dispatch(), _doctor(), Path, `doctor`, `setup` and `repl-api` -- the environment, and the browser's own API… (+46 more)
 
-### Community 2 - "CLI Command Tests"
+### Community 2 - "test_commands.py"
 Cohesion: 0.08
-Nodes (49): cli(), fixture, Path, The commands, end to end through the real argparse, against the fake aside…, An honest zero is neither success nor failure: reporting it as success teaches…, Attaching to a live session was measured waiting for the current turn and then…, The parent's own files are deliberately made old and only the child's is fresh,…, The other half of the pair: when nothing anywhere has written recently, the… (+41 more)
+Nodes (51): cli(), fixture, Path, The commands, end to end through the real argparse, against the fake aside…, The command `next` hands back names no level, so the default is what a caller…, An honest zero is neither success nor failure: reporting it as success teaches…, Attaching to a live session was measured waiting for the current turn and then…, The parent's own files are deliberately made old and only the child's is fresh,… (+43 more)
 
 ### Community 3 - "Site Map and Crawl Commands"
 Cohesion: 0.09
 Nodes (35): build_manifest(), _crawl_cmd(), _default_out(), dispatch(), _map(), _number_files(), _providers(), Path (+27 more)
 
-### Community 4 - "Shared Test Fixtures"
-Cohesion: 0.08
-Nodes (39): Config, Item, aside_home(), fake_aside(), fixtures(), fixture, MonkeyPatch, Path (+31 more)
+### Community 4 - "test_registry.py"
+Cohesion: 0.13
+Nodes (25): MonkeyPatch, Path, _registry: run directories, run ids, and metadata that survives a crash. The…, The supervisor is a separate process started later; it learns its group from…, The lock gives up after its timeout rather than refusing to record a run's…, Processes, not threads: the lock is a file, and a threads-only test would pass…, Run ids are timestamps, and a group starts every member at once. Reserving the…, The supervisor rewrites meta.json while `status` may be reading it. A half-… (+17 more)
 
 ### Community 5 - "Supervisor Tests"
 Cohesion: 0.13
@@ -112,9 +115,9 @@ Nodes (37): out_paths(), provider(), Path, _page: fetch orchestration -- batchin
 Cohesion: 0.11
 Nodes (33): classify_response(), count_words(), Document, extract_document(), extract_html(), _first_heading(), _has_strong_challenge_marker(), _is_document_type() (+25 more)
 
-### Community 9 - "Session Event Parsing"
-Cohesion: 0.12
-Nodes (32): _as_text(), _assistant(), child_session_ids(), _clip(), collect_sources(), _count_lines_before(), Event, final_answer() (+24 more)
+### Community 9 - "_events.py"
+Cohesion: 0.10
+Nodes (38): _as_text(), _assistant(), child_session_ids(), collect_sources(), _count_lines_before(), Event, final_answer(), _flatten_text() (+30 more)
 
 ### Community 10 - "Extraction Tests"
 Cohesion: 0.11
@@ -128,11 +131,11 @@ Nodes (25): aside_home(), copy_new_lines(), db_child_rows(), db_finished_at(), d
 Cohesion: 0.15
 Nodes (25): Path, _store: finding a run's session on disk and copying it somewhere it will…, The cursor describes the destination, not the source. If the copy is truncated…, Ephemeral CLI sessions were observed writing no rows at all -- neither sessions…, The supervisor appends and then records the new cursor as a separate step.…, The reason correlation is by marker and not by prompt text. Two parallel…, Aside creates the directory before the first message lands, and repl sessions…, Aside cleans up sessions on its own schedule. When the source is truncated or… (+17 more)
 
-### Community 13 - "Follow Watcher Tests"
-Cohesion: 0.33
-Nodes (24): answer(), capture(), make_run(), Path, _follow: the only watcher, and the thing that wakes a caller when a run ends.…, Distinct from a terminal line on purpose: the caller has to be able to tell "it…, A parent investigation goes silent while its subagents work. If the watcher…, Watching progress must not be a way to load a fetched page into context by… (+16 more)
+### Community 13 - "test_follow.py"
+Cohesion: 0.20
+Nodes (35): answer(), capture(), make_run(), fixture, Path, _follow: the only watcher, and the thing that wakes a caller when a run ends.…, Distinct from a terminal line on purpose: the caller has to be able to tell "it…, A parent investigation goes silent while its subagents work. If the watcher… (+27 more)
 
-### Community 14 - "Event Parsing Tests"
+### Community 14 - "test_events.py"
 Cohesion: 0.18
 Nodes (20): fixture, Path, _events: turning a session's messages.jsonl into things a caller can act on.…, simple(), test_a_citation_to_an_unknown_source_keeps_its_label(), test_a_completed_line_is_picked_up_on_the_next_read(), test_a_fetched_page_counts_as_opened(), test_a_half_written_line_is_left_for_the_next_read() (+12 more)
 
@@ -176,25 +179,33 @@ Nodes (3): countWords(), main(), read()
 Cohesion: 0.67
 Nodes (3): Yonhap Page Not Found, Nepal Flood Coverage, Yonhap News Portal
 
+### Community 28 - "conftest.py"
+Cohesion: 0.21
+Nodes (14): Config, Item, aside_home(), fake_aside(), fixtures(), fixture, MonkeyPatch, Path (+6 more)
+
+### Community 29 - "`follow`를 감독자 뷰로 — `log --level progress`"
+Cohesion: 0.18
+Nodes (10): `follow`를 감독자 뷰로 — `log --level progress`, 검증 시나리오, 단계·의존·완료 판정, 리스크·가정·비차단 유예, 목적과 요약, 범위·비범위·제약, 성공 기준, 인터페이스·산출물 (+2 more)
+
 ## Knowledge Gaps
-- **31 isolated node(s):** `description`, `name`, `private`, `type`, `version` (+26 more)
-  These have ≤1 connection - possible missing edges or undocumented components.
+- **40 isolated node(s):** `name`, `version`, `private`, `type`, `description` (+35 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 220 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **3 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ArgumentError` connect `Run Watching CLI` to `Environment Doctor Command`, `Site Map and Crawl Commands`, `Shared Test Fixtures`, `Page Fetch Tests`, `Response Classification and Extraction`?**
-  _High betweenness centrality (0.089) - this node is a cross-community bridge._
-- **Why does `UltraSearchError` connect `Environment Doctor Command` to `Run Watching CLI`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
-- **Why does `_doctor()` connect `Environment Doctor Command` to `CLI Command Tests`, `Shared Test Fixtures`?**
-  _High betweenness centrality (0.053) - this node is a cross-community bridge._
-- **What connects `description`, `name`, `private` to the rest of the system?**
-  _31 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Run Watching CLI` be split into smaller, more focused modules?**
+- **Why does `ArgumentError` connect `Run` to `Environment Doctor Command`, `Site Map and Crawl Commands`, `test_registry.py`, `Page Fetch Tests`, `Response Classification and Extraction`?**
+  _High betweenness centrality (0.084) - this node is a cross-community bridge._
+- **Why does `UltraSearchError` connect `Environment Doctor Command` to `Run`?**
+  _High betweenness centrality (0.076) - this node is a cross-community bridge._
+- **Why does `_doctor()` connect `Environment Doctor Command` to `test_commands.py`, `conftest.py`?**
+  _High betweenness centrality (0.051) - this node is a cross-community bridge._
+- **What connects `name`, `version`, `private` to the rest of the system?**
+  _40 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Run` be split into smaller, more focused modules?**
   _Cohesion score 0.06004543979227524 - nodes in this community are weakly interconnected._
 - **Should `Environment Doctor Command` be split into smaller, more focused modules?**
   _Cohesion score 0.057859703020993344 - nodes in this community are weakly interconnected._
-- **Should `CLI Command Tests` be split into smaller, more focused modules?**
-  _Cohesion score 0.08489795918367347 - nodes in this community are weakly interconnected._
+- **Should `test_commands.py` be split into smaller, more focused modules?**
+  _Cohesion score 0.08069381598793364 - nodes in this community are weakly interconnected._

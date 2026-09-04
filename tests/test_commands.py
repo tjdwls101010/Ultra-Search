@@ -102,6 +102,20 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     assert json.loads(collected.stdout.splitlines()[-1])["answer"] == "느린 답."
 
 
+def test_log_defaults_to_the_supervisors_view(cli) -> None:
+    """The command `next` hands back names no level, so the default is what a caller
+    following a delegated run actually reads: what it reached for and said, not the
+    arguments it used."""
+    _, payload, _ = cli("search", "질문", "--wait", "30")
+    run_id = payload["runs"][0]["run_id"]
+
+    _, _, text = cli("log", "--run", run_id)
+
+    assert "prompt: 질문" in text
+    assert "answer: " in text
+    assert "call " not in text and "out=" not in text
+
+
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(
     runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
 ) -> None:

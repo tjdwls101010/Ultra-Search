@@ -210,7 +210,7 @@ def _show(args, runs_root: Path) -> int:
         if not 0 <= args.item < len(results):
             raise ArgumentError(
                 f"run {run.run_id} has {len(results)} tool result(s); no item {args.item}",
-                fix="Index them with `log --level normal`.",
+                fix="Index them with `log --level steps`.",
             )
         e = results[args.item]
         payload = {"ok": True, "command": "show", "run_id": run.run_id, "item": args.item,

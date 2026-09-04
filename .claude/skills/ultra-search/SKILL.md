@@ -34,6 +34,8 @@ Several prompts in one call run in parallel as a group.
 
 `search` waits by default and hands you the answer inline, which is what usually happens. When a run outlasts the wait it is left alive and the reply carries a `next` object: the exact command to run, the Bash timeout to give it, and that it goes in the background. Run it as written. It exits when the run finishes, and a background Bash call that exits is what notifies you — that exit *is* the wake-up.
 
+What that follow prints is a supervisor's view: what the run reached for and what it said, one line per turn, not how it asked. Delegating only saves context if watching stays small -- measured on a run that spawned three subagents, the view with every call's arguments was five times the size, and none of those arguments changed what to do next. Retracing why a source was chosen is `log --level steps`; the answer and the pages behind it are `result` and `show`.
+
 Then collect with `next.then`. Starting a background run and never coming back for it is the failure this field exists to prevent; if you have nothing to do meanwhile, say you are waiting and hand the turn back armed, rather than filling the time.
 
 If this is your only turn — nothing will wake you — run the follow in the *foreground* as the turn's last call, and raise that Bash call's own timeout to match the one `next` gives you.

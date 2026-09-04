@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import _events
+import _render
 
 
 @pytest.fixture
@@ -141,11 +142,11 @@ def test_a_completed_line_is_picked_up_on_the_next_read(unknown: Path, tmp_path:
     assert cursor2 == growing.stat().st_size
 
 
-def test_compact_level_reports_tool_output_size_instead_of_its_bytes(simple: Path) -> None:
+def test_steps_level_reports_tool_output_size_instead_of_its_bytes(simple: Path) -> None:
     events, _ = _events.read_events(simple)
     result = next(e for e in events if e.kind == "tool_result")
 
-    line = _events.render(result, level="compact")
+    line = _render.render(result, level="steps")
     assert "websearch" in line
     # The exact byte count, not just the letter B -- "out=…B" contains a B whatever the
     # number is, so the laxer form passes even when the size is wrong or absent.
@@ -159,4 +160,4 @@ def test_raw_level_prints_the_stored_record_unchanged(simple: Path) -> None:
 
     # Round-tripped, not spot-checked: "unchanged" means every field survives, and
     # asserting one key would pass on a record that had been summarised down to it.
-    assert json.loads(_events.render(result, level="raw")) == result.raw
+    assert json.loads(_render.render(result, level="raw")) == result.raw

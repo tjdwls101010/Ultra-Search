@@ -199,7 +199,7 @@ def test_a_group_follow_exits_only_when_every_member_is_terminal(runs_dir: Path)
     t.join()
 
     assert "답 B" in text
-    assert "group.completed" in text
+    assert "group.finished" in text
 
 
 def test_a_group_cursor_round_trips_per_member(runs_dir: Path) -> None:

@@ -72,9 +72,24 @@ def _streams(run: _registry.Run) -> list[tuple[str, Path]]:
 
 def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
     lines: list[str] = []
-    for key, path in _streams(run):
+    streams = _streams(run)
+    start_line = 0
+    meta = run.meta()
+    if meta.get("resume_session_id"):
+        # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
+        history, _ = _events.read_events(run.session_transcript)
+        marker = meta.get("marker") or _registry.marker_for(run.run_id)
+        start = _events.turn_start_index(history, marker)
+        if not history or history[start].kind != "user" or marker not in history[start].text:
+            return lines
+        start_line = history[start].index
+        children = set(_events.child_session_ids(history[start:]))
+        streams = [(key, path) for key, path in streams if not key or key in children]
+    for key, path in streams:
         events, cursor = _events.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
+        if not key:
+            events = [event for event in events if event.index >= start_line]
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"
@@ -122,7 +137,7 @@ def follow(
             for run in runs:
                 emit(f"run.{states[run.run_id]} {run.run_id}")
             if label:
-                emit(f"group.completed {len(runs)} run(s)")
+                emit(f"group.finished {len(runs)} run(s)")
             break
 
         now = time.time()

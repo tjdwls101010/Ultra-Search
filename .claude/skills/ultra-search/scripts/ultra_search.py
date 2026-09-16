@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """ultra-search — search, read, map and save the web through the user's logged-in Aside browser.
 
-Every command prints one JSON line on stdout (``log`` streams events first, then a
-terminal line and a ``# cursor=<n>`` comment). Exit codes are the contract:
+Every command prints one JSON response on stdout; ``log`` prints events and its cursor before the response. Exit codes describe the command, not the quality or completeness of an investigation:
 
     0  success
     2  bad arguments
     3  aside unavailable (binary missing, daemon unreachable)
     4  run failed or abandoned
-    5  completed but empty -- an honest zero, not an error
+    5  no result data
 """
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import pathlib
 import sys
@@ -30,6 +30,12 @@ SPEED_CHOICES = ("default", "fast")
 LEVEL_CHOICES = ("progress", "steps", "full", "raw")
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
+NEXT_HELP = (
+    "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout, "
+    "and run_in_background selects background execution. Execute it as returned; use that call's latest next, "
+    "not a saved earlier one. A log response selects another watch with its cursor while work remains, "
+    "or result collection when every target is terminal. Watch expiry does not stop the investigation."
+)
 
 
 def _add_runs_dir(p: argparse.ArgumentParser) -> None:
@@ -71,10 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ultra_search.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
-        epilog="Exit codes: 0 ok | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 completed but empty.",
+        epilog="Exit codes: 0 command handled (inspect run/item states) | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 no result data.",
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("--version", action="version", version="ultra-search 1.0")
-    sub = p.add_subparsers(dest="command", metavar="COMMAND", required=True)
+    sub = p.add_subparsers(
+        dest="command", metavar="COMMAND", required=True,
+        parser_class=partial(argparse.ArgumentParser, formatter_class=argparse.RawTextHelpFormatter),
+    )
 
     # --- search -------------------------------------------------------------
     s = sub.add_parser(
@@ -83,7 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
         "as one group. Synchronous by default: if the work finishes within --wait you get the answer, "
         "sources and usage inline; if it does not, the run is left alive and you get a handle plus a "
-        "`next` object naming the exact command that will wake you when it finishes.",
+        "`next` action for watching it. Finished entries include their state; a partial snapshot is not a complete investigation.",
+        epilog=NEXT_HELP,
     )
     s.add_argument("prompt", nargs="+", metavar="PROMPT", help="Research objective. Repeat for parallel runs.")
     s.add_argument(
@@ -109,7 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
         "already worked out. Takes a run id from `search` or any session id from `sessions`, so a "
         "conversation started in the Aside app can be picked up here. Creates a new run id recording its "
         "lineage. Refused while the session is still working: attaching to a live one waits for the current "
-        "turn and cannot steer it.",
+        "turn and cannot steer it. The returned run's log and result describe only this new turn.",
+        epilog=NEXT_HELP,
     )
     r.add_argument(
         "target",
@@ -145,8 +157,10 @@ def build_parser() -> argparse.ArgumentParser:
     lg = sub.add_parser(
         "log",
         help="Stream a run's events; the only watcher.",
-        description="Print a run's events from a byte cursor. With --follow this exits on the run's terminal "
-        "line, which is what makes it usable as a background Bash call that wakes you when the run ends.",
+        description="Print this run's events, then a cursor and a final JSON response with runs (per-run state), "
+        "cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires. "
+        "Exit 0 means the log was read, not that research finished or succeeded. A resumed run excludes earlier turns and their children.",
+        epilog=NEXT_HELP,
     )
     _add_target(lg)
     lg.add_argument(
@@ -166,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
         "size, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
         "characters of each result. raw: the stored records unchanged. Default progress.",
     )
-    lg.add_argument("--follow", action="store_true", help="Keep printing until the run reaches a terminal state.")
+    lg.add_argument("--follow", action="store_true", help="Keep printing until all targets are terminal or the watching deadline expires.")
     lg.add_argument(
         "--follow-timeout",
         type=float,
@@ -189,7 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
         "result",
         help="A finished run's answer and sources.",
         description="The answer with <citation> tags resolved to URL footnotes, plus every source with "
-        "`opened` telling you which were actually read rather than merely listed by a search.",
+        "`opened` telling you which were actually read rather than merely listed by a search. "
+        "empty means no answer and no sources, not that a claim was disproved; a textual negative finding is still an answer. "
+        "completed_with_orphans is a saved snapshot: orphan_children identifies unfinished children whose late results are not collected. "
+        "abandoned means watching stopped, not that the daemon or its credit use stopped.",
     )
     _add_target(rs)
     rs.add_argument("--sources-only", action="store_true", help="Omit the answer text.")
@@ -344,6 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.script_path = str(pathlib.Path(__file__).absolute())
 
     from _errors import UltraSearchError
 

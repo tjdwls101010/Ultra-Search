@@ -60,12 +60,7 @@ class RunFailed(UltraSearchError):
 
 
 class EmptyResult(UltraSearchError):
-    """The work completed and genuinely found nothing.
-
-    Distinct from RunFailed on purpose: reporting an honest zero as a failure teaches a
-    caller to retry work that will return the same nothing, and reporting it as a
-    success teaches them to trust an empty answer.
-    """
+    """No result data was produced; this does not establish a negative finding."""
 
     exit_code = EXIT_EMPTY
     kind = "empty_result"

@@ -10,8 +10,6 @@ would be a handle nobody comes back for.
 from __future__ import annotations
 
 import json
-import shlex
-import sys
 import time
 from pathlib import Path
 
@@ -20,11 +18,7 @@ import _exec
 import _registry
 from _errors import ArgumentError, RunFailed
 from _follow import TERMINAL_STATES
-
-SCRIPT = Path(__file__).resolve().parent / "ultra_search.py"
-#: Comfortably above `log --follow`'s own 570s default, so Bash is never the thing that
-#: cuts the watch short.
-FOLLOW_BASH_TIMEOUT_MS = 600_000
+from _watch_cmds import next_step, run_summary
 
 
 def dispatch(args) -> int:
@@ -156,38 +150,15 @@ def _await_and_report(runs: list, args, runs_root: Path, group: str | None) -> i
 
     pending = [r for r, e in zip(runs, entries) if e["state"] not in TERMINAL_STATES]
     if pending:
-        payload["next"] = _next_step(pending, group, args.runs_dir)
-        payload["note"] = (
-            "still running -- the run was left alive. Run `next.command` as a background Bash call "
-            "with that timeout; it exits when the run finishes, which is what notifies you."
-        )
+        payload["next"] = next_step(runs, group, runs_root, args.script_path)
+        payload["note"] = "Still running. Execute next, then follow its response; a watcher exiting does not mean the investigation finished."
     print(json.dumps(payload, ensure_ascii=False))
     return _exit_code(entries)
 
 
-def _next_step(pending: list, group: str | None, runs_dir: str | None) -> dict:
-    target = ["--group", group] if group and len(pending) > 1 else ["--run", pending[0].run_id]
-    argv = [sys.executable, str(SCRIPT), "log", *target, "--follow"]
-    if runs_dir:
-        argv += ["--runs-dir", str(runs_dir)]
-    collect = [sys.executable, str(SCRIPT), "result", *target]
-    if runs_dir:
-        collect += ["--runs-dir", str(runs_dir)]
-    return {
-        "command": " ".join(shlex.quote(a) for a in argv),
-        "bash_timeout_ms": FOLLOW_BASH_TIMEOUT_MS,
-        "run_in_background": True,
-        "then": " ".join(shlex.quote(a) for a in collect),
-    }
-
-
 def _entry(run: _registry.Run) -> dict:
     meta = run.meta()
-    entry = {
-        "run_id": run.run_id,
-        "state": meta.get("state") or "unknown",
-        "label": meta.get("label"),
-    }
+    entry = {**run_summary(run), "label": meta.get("label")}
     for key in ("resumed_from", "session_id", "orphan_children"):
         if meta.get(key):
             entry[key] = meta[key]
@@ -206,7 +177,7 @@ def _entry(run: _registry.Run) -> dict:
             }
         )
         if result.get("note"):
-            entry["note"] = result["note"]
+            entry["note"] = " ".join(filter(None, (entry.get("note"), result["note"])))
     return entry
 
 

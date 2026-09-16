@@ -13,6 +13,7 @@ children work -- so it labels the silence and leaves the judgement to the caller
 from __future__ import annotations
 
 import json
+import shlex
 import time
 from pathlib import Path
 
@@ -99,8 +100,7 @@ def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
     state = meta.get("state") or "unknown"
     live = state not in _follow.TERMINAL_STATES
     entry = {
-        "run_id": run.run_id,
-        "state": state,
+        **run_summary(run),
         "label": meta.get("label"),
         "session_id": meta.get("session_id"),
         "children": len(children),
@@ -112,8 +112,6 @@ def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
     }
     if meta.get("group"):
         entry["group"] = meta["group"]
-    if meta.get("orphan_children"):
-        entry["orphan_children"] = meta["orphan_children"]
     if meta.get("session_id"):
         # Aside documents a run pausing for an approval or MFA prompt. It has never been
         # observed here, so it is surfaced rather than interpreted.
@@ -138,12 +136,43 @@ def _usage(run: _registry.Run) -> dict:
     return total
 
 
+def run_summary(run: _registry.Run) -> dict:
+    meta = run.meta()
+    entry = {"run_id": run.run_id, "state": meta.get("state") or "unknown"}
+    notes = []
+    if meta.get("orphan_children"):
+        entry["orphan_children"] = meta["orphan_children"]
+        notes.append("Partial snapshot: these children were still running; late results are not collected automatically.")
+    if entry["state"] == "abandoned":
+        entry["daemon_run_continues"] = True
+        notes.append("Only watching stopped. Aside keeps working and spending credits; cancel in the Aside app UI.")
+    if notes:
+        entry["note"] = " ".join(notes)
+    return entry
+
+
 # --- log ------------------------------------------------------------------------------
+
+
+def next_step(runs: list, group: str | None, runs_root: Path, script: str, *, since=None) -> dict:
+    pending = any(r.meta().get("state") not in _follow.TERMINAL_STATES for r in runs)
+    target = ["--group", group] if group else ["--run", runs[0].run_id]
+    argv = ["log" if pending else "result", *target, "--runs-dir", str(runs_root)]
+    if pending:
+        argv += ["--follow"]
+        if since is not None:
+            argv += ["--since", str(since)]
+    quoted_script = script.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return {
+        "command": f'python3 "{quoted_script}" {shlex.join(argv)}',
+        "bash_timeout_ms": 600_000 if pending else 120_000,
+        "run_in_background": pending,
+    }
 
 
 def _log(args, runs_root: Path) -> int:
     runs = _targets(args, runs_root)
-    _follow.follow(
+    cursor = _follow.follow(
         runs,
         level=args.level,
         since=args.since,
@@ -151,6 +180,14 @@ def _log(args, runs_root: Path) -> int:
         follow_timeout=args.follow_timeout,
         heartbeat=args.heartbeat,
     )
+    group = None if args.run else (args.group or runs[0].meta().get("group"))
+    print(json.dumps({
+        "ok": True,
+        "command": "log",
+        "runs": [run_summary(r) for r in runs],
+        "cursor": cursor,
+        "next": next_step(runs, group, runs_root, args.script_path, since=cursor),
+    }, ensure_ascii=False))
     return 0
 
 
@@ -187,12 +224,13 @@ def _result_entry(run: _registry.Run, sources_only: bool) -> dict:
             "sources": [],
             "empty": True,
             "note": "no result yet" if state not in _follow.TERMINAL_STATES else "the run ended without writing a result",
+            **run_summary(run),
         }
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise RunFailed(f"run {run.run_id} has an unreadable result.json: {e}") from e
-    result["state"] = state
+    result.update(run_summary(run))
     if sources_only:
         result.pop("answer", None)
     return result

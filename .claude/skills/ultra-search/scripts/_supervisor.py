@@ -270,8 +270,6 @@ def _finish(run, session_id, marker, exit_code, orphans, children) -> dict:
         "usage": usage,
         "children": children,
         "orphan_children": orphans,
-        # An honest zero, flagged rather than left for the caller to infer from an empty
-        # string: a run that found nothing and a run that broke look identical otherwise.
         "empty": not answer.strip() and not sources,
         "exit_code": exit_code,
     }

@@ -97,7 +97,12 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     assert f"run.completed {payload['runs'][0]['run_id']}" in done.stdout
     assert waited > 1.0, "the follower has to wait for the run, not return on a run already over"
 
-    collected = subprocess.run(shlex.split(nxt["then"]), capture_output=True, text=True, timeout=120)
+    assert "then" not in nxt
+    finished = json.loads(done.stdout.splitlines()[-1])
+    assert finished["command"] == "log"
+    assert finished["runs"][0]["state"] == "completed"
+    assert finished["next"]["run_in_background"] is False
+    collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
     assert collected.returncode == 0
     assert json.loads(collected.stdout.splitlines()[-1])["answer"] == "느린 답."
 
@@ -159,16 +164,24 @@ def test_a_failed_run_exits_four(runs_dir: Path, aside_home: Path, fake_aside: P
     assert payload["runs"][0]["state"] == "failed"
 
 
-def test_a_run_that_found_nothing_exits_five(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch) -> None:
-    """An honest zero is neither success nor failure: reporting it as success teaches a
-    caller to trust an empty answer, and as failure teaches it to retry for the same
-    nothing."""
+def test_a_run_without_answer_or_sources_exits_five(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "empty")
 
     code, payload, _ = run_cli("search", "질문", "--wait", "30", "--runs-dir", str(runs_dir))
 
     assert code == 5
     assert payload["runs"][0]["empty"] is True
+
+
+def test_a_negative_finding_is_an_answer_not_empty_output(cli, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "negative")
+
+    code, payload, _ = cli("search", "관련 사례가 있는가?", "--wait", "30")
+
+    assert code == 0
+    assert payload["runs"][0]["answer"] == "관련 사례를 찾지 못했습니다."
+    assert payload["runs"][0]["sources"] == []
+    assert payload["runs"][0]["empty"] is False
 
 
 def test_a_missing_aside_binary_exits_three_instead_of_hanging(
@@ -183,7 +196,129 @@ def test_a_missing_aside_binary_exits_three_instead_of_hanging(
     assert payload["fix"]
 
 
+@pytest.mark.parametrize("runs_arg", [None, "relative runs"])
+def test_next_commands_preserve_the_installed_path_and_run_store(
+    tmp_path: Path, aside_home: Path, fake_aside: Path, monkeypatch, runs_arg
+) -> None:
+    import shlex
+    import subprocess
+
+    installed = tmp_path / r'installed "quote" $(touch injected) `touch leaked` \\ path'
+    installed.symlink_to(Path(ultra_search.__file__).parent, target_is_directory=True)
+    script = installed / "ultra_search.py"
+    started_in = tmp_path / "start"
+    collected_in = tmp_path / "elsewhere"
+    started_in.mkdir()
+    collected_in.mkdir()
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "0.5")
+    argv = [sys.executable, str(script), "search", "path-test", "--background"]
+    if runs_arg:
+        argv += ["--runs-dir", runs_arg]
+    started = subprocess.run(argv, cwd=started_in, capture_output=True, text=True, timeout=10)
+    assert started.returncode == 0
+    payload = json.loads(started.stdout)
+
+    for command in ("log", "result"):
+        nxt = payload["next"]
+        args = shlex.split(nxt["command"])
+        assert args[0] == "python3" and args[2] == command
+        assert args[1].startswith(str(installed.parent / "installed "))
+        assert nxt["command"].startswith('python3 "')
+        root = Path(args[args.index("--runs-dir") + 1])
+        assert root == started_in / (runs_arg or ".ultra-search")
+        called = subprocess.run(nxt["command"], shell=True, cwd=collected_in, capture_output=True, text=True, timeout=15)
+        assert called.returncode == 0, called.stderr + called.stdout
+        payload = json.loads(called.stdout.splitlines()[-1])
+    assert payload["answer"] == "느린 답."
+    assert not (collected_in / "injected").exists()
+    assert not (collected_in / "leaked").exists()
+
+
+@pytest.mark.parametrize("group", [None, "mixed-group"])
+def test_timed_out_follow_continues_from_each_stream_and_collects_all_runs(runs_dir: Path, group) -> None:
+    import subprocess
+    import _registry
+
+    runs = [_registry.create_run(runs_dir, label=name, group=group) for name in (["a", "b"] if group else ["a"])]
+    for run in runs:
+        run.update_meta(state="running")
+        run.session_transcript.parent.mkdir(parents=True, exist_ok=True)
+        run.session_transcript.write_text(json.dumps({"role": "user", "content": f"seen-{run.run_id}"}) + "\n")
+        run.child_transcript("kid").parent.mkdir(parents=True, exist_ok=True)
+        run.child_transcript("kid").write_text(json.dumps({"role": "user", "content": f"seen-child-{run.run_id}"}) + "\n")
+    if group:
+        runs[0].update_meta(state="completed")
+    target = ["--group", group] if group else ["--run", runs[0].run_id]
+
+    code, waiting, text = run_cli("log", *target, "--follow", "--follow-timeout", "0", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert "run.still-running" in text
+    assert waiting["next"]["run_in_background"] is True
+    assert "then" not in waiting["next"]
+    for run in runs:
+        with run.child_transcript("kid").open("a") as f:
+            f.write(json.dumps({"role": "assistant", "content": f"new-child-{run.run_id}", "stopReason": "stop"}) + "\n")
+        (run.path / "result.json").write_text(json.dumps({"run_id": run.run_id, "answer": run.run_id, "sources": [], "empty": False}))
+        run.update_meta(state="completed")
+
+    followed = subprocess.run(waiting["next"]["command"], shell=True, capture_output=True, text=True, timeout=10)
+
+    assert followed.returncode == 0
+    assert "seen-" not in followed.stdout
+    for run in runs:
+        assert f"new-child-{run.run_id}" in followed.stdout
+    finished = json.loads(followed.stdout.splitlines()[-1])
+    collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=10)
+    result = json.loads(collected.stdout)
+    assert collected.returncode == 0
+    entries = result["runs"] if group else [result]
+    assert {entry["answer"] for entry in entries} == {run.run_id for run in runs}
+
+
 # --- resume -------------------------------------------------------------------------
+
+
+def test_resume_log_waits_for_its_turn_and_never_replays_old_children(runs_dir: Path) -> None:
+    import _registry
+
+    run = _registry.create_run(runs_dir, label="resumed", resume_session_id="existing-session")
+    marker = _registry.marker_for(run.run_id)
+    run.update_meta(state="running", marker=marker)
+    run.session_transcript.parent.mkdir(parents=True, exist_ok=True)
+    old = [
+        {"role": "user", "content": "old-prompt"},
+        {"role": "toolResult", "toolName": "subagent", "details": {"taskId": "old-kid"}},
+        {"role": "assistant", "content": "old-answer", "stopReason": "stop"},
+    ]
+    run.session_transcript.write_text("".join(json.dumps(r) + "\n" for r in old))
+    run.child_transcript("old-kid").parent.mkdir(parents=True, exist_ok=True)
+    run.child_transcript("old-kid").write_text(json.dumps({"role": "user", "content": "old-child"}) + "\n")
+    target = ["--run", run.run_id, "--runs-dir", str(runs_dir)]
+
+    _, waiting, text = run_cli("log", *target)
+
+    assert "old-" not in text
+    current = [
+        {"role": "user", "content": f"new-prompt {marker}"},
+        {"role": "toolResult", "toolName": "subagent", "details": {"taskId": "new-kid"}},
+        {"role": "assistant", "content": "new-answer", "stopReason": "stop"},
+    ]
+    with run.session_transcript.open("a") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in current))
+    run.child_transcript("new-kid").write_text(json.dumps({"role": "user", "content": "new-child"}) + "\n")
+    run.update_meta(state="completed")
+
+    _, finished, text = run_cli("log", *target, "--since", str(waiting["cursor"]))
+
+    assert "old-" not in text
+    for expected in ("new-prompt", "new-answer", "new-child"):
+        assert expected in text
+    _, _, repeated = run_cli("log", *target, "--since", str(finished["cursor"]))
+    assert "new-prompt" not in repeated and "new-child" not in repeated
+    _, _, from_start = run_cli("log", *target)
+    assert "new-prompt" in from_start and "old-" not in from_start
 
 
 def test_resume_continues_a_finished_run(cli) -> None:
@@ -300,6 +435,34 @@ def test_a_parent_whose_children_have_also_gone_quiet_is_flagged(
 # --- result and show ------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("state", ["failed", "abandoned", "completed_with_orphans"])
+def test_terminal_log_and_result_preserve_failure_and_incompleteness(runs_dir: Path, state) -> None:
+    import subprocess
+    import _registry
+
+    run = _registry.create_run(runs_dir, label="partial", group="g")
+    run.update_meta(state=state, orphan_children=["late-child"] if state == "completed_with_orphans" else [])
+    (run.path / "result.json").write_text(json.dumps({"run_id": run.run_id, "answer": "partial answer", "empty": False}))
+
+    code, logged, text = run_cli("log", "--group", "g", "--follow", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert "group.completed" not in text
+    assert logged["runs"][0]["state"] == state
+    assert logged["next"]["run_in_background"] is False
+    collected = subprocess.run(logged["next"]["command"], shell=True, capture_output=True, text=True, timeout=10)
+    result = json.loads(collected.stdout)
+    assert collected.returncode == (0 if state == "completed_with_orphans" else 4)
+    assert result["state"] == state
+    for entry in (logged["runs"][0], result):
+        if state == "completed_with_orphans":
+            assert entry["orphan_children"] == ["late-child"]
+            assert "snapshot" in entry["note"] and "not" in entry["note"]
+        elif state == "abandoned":
+            assert entry["daemon_run_continues"] is True
+            assert "credits" in entry["note"]
+
+
 def test_sources_only_omits_the_answer(cli) -> None:
     _, payload, _ = cli("search", "질문", "--wait", "30")
     run_id = payload["runs"][0]["run_id"]
@@ -356,6 +519,11 @@ def test_stop_says_plainly_that_the_run_itself_continues(
     assert code == 0
     assert stopped["daemon_run_continues"] is True
     assert "aside" in stopped["note"].lower()
+    for command in ("status", "log", "result"):
+        _, payload, _ = run_cli(command, "--run", run_id, "--runs-dir", str(runs_dir))
+        entry = payload["runs"][0] if command != "result" else payload
+        assert entry["daemon_run_continues"] is True
+        assert "credits" in entry["note"]
 
 
 # --- continuing a session this tool did not create --------------------------------------

@@ -253,6 +253,14 @@ def test_bad_arguments_answer_in_json_with_where_to_look(argv: list[str], comman
     assert payload["fix"] == (f"cli.py {command} --help" if command else "cli.py --help")
 
 
+def test_a_runs_dir_naming_an_unknown_home_is_refused_in_json() -> None:
+    code, payload, text = run_cli("status", "--runs-dir", "~no-such-user-9f3a/runs")
+
+    assert code == 2
+    assert payload["error"] == "bad_arguments" and payload["fix"]
+    assert len(text.strip().splitlines()) == 1
+
+
 def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 

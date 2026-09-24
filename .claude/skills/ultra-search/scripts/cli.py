@@ -15,6 +15,7 @@ import argparse
 from functools import partial
 import json
 import math
+import os
 import pathlib
 import sys
 from urllib.parse import urlparse
@@ -85,9 +86,22 @@ def _web_url(text: str) -> str:
     return text
 
 
+def _user_path(text: str) -> str:
+    """A path as typed, with `~` expanded here so a home that does not exist is refused now.
+
+    Expanded as a string: a trailing slash is part of what was asked (`--out notes/` is a
+    folder), and a Path would drop it.
+    """
+    expanded = os.path.expanduser(text)
+    if expanded.startswith("~"):
+        raise argparse.ArgumentTypeError(f"{text!r} names a home directory that does not exist")
+    return expanded
+
+
 def _add_runs_dir(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--runs-dir",
+        type=_user_path,
         metavar="DIR",
         help="Registry root holding run directories and saved pages "
         "(default: .ultra-search/ under the current working directory).",
@@ -341,6 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("url", nargs="+", type=_web_url, metavar="URL", help="Page or document URL.")
     f.add_argument(
         "--out",
+        type=_user_path,
         metavar="PATH",
         help="Output file (only legal with exactly one URL) or directory. Default: .ultra-search/pages/.",
     )
@@ -365,12 +380,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Discovers URLs from sitemaps and same-origin links, without extracting or saving pages. Cheap enough to run before deciding "
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
         "walked once.\n"
-        "The reply is a summary whatever the site's size: count, coverage (what could not be read, and whether a "
-        "budget or --max-urls cut discovery short), the first 10 URLs, and manifest_path, the file holding every URL.",
+        "The reply is a summary whatever the site's size: count, coverage (how many pages could not be read with the "
+        "first 10 of them, and whether a budget or --max-urls cut discovery short), the first 10 URLs, and "
+        "manifest_path, the file holding every URL and the full coverage.",
     )
     m.add_argument("url", type=_web_url, metavar="URL", help="Site or section root.")
     _add_discovery_opts(m)
-    m.add_argument("--out", metavar="FILE", help="Write the manifest here instead of .ultra-search/maps/<host>-<timestamp>.json.")
+    m.add_argument("--out", type=_user_path, metavar="FILE", help="Write the manifest here instead of .ultra-search/maps/<host>-<timestamp>.json.")
     m.add_argument("--list-all", action="store_true", help="Also print every URL in the reply, not only the first 10.")
     _add_runs_dir(m)
 
@@ -379,17 +395,18 @@ def build_parser() -> argparse.ArgumentParser:
         "crawl",
         help="Map a site and save every page as markdown.",
         description="map + fetch. Writes NNN-slug.md files and a manifest.json recording url, file, title, "
-        "status and via for each page. The reply counts pages by status and lists only the ones that are not ok.\n"
+        "status and via for each page. The reply counts pages by status and lists the first 10 that are not ok; the "
+        "manifest has every page.\n"
         "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "
         "crawled as it is, so discovery flags are refused.",
     )
     src = c.add_mutually_exclusive_group(required=True)
     src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Site root to crawl.")
-    src.add_argument("--from", dest="from_manifest", metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
+    src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
     c.add_argument("--max-pages", type=_count(1), default=25, metavar="N", help="Stop after this many pages. Default 25.")
     _add_discovery_opts(c)
     _add_fetch_opts(c)
-    c.add_argument("--out", metavar="DIR", help="An empty or new output directory. Default: a new "
+    c.add_argument("--out", type=_user_path, metavar="DIR", help="An empty or new output directory. Default: a new "
                    ".ultra-search/crawls/<host>/<timestamp>/.")
     _add_runs_dir(c)
 

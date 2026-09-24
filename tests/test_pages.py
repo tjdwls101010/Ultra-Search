@@ -954,7 +954,7 @@ def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -
                                "https://site.test/q?x=1&notebook;=2", "https://site.test/d/©한글"]
 
 
-@pytest.mark.parametrize("flag", [["--depth", "1"], ["--max-urls", "5"], ["--include", "*/a*"], ["--exclude", "*/b*"], ["--no-sitemap"]])
+@pytest.mark.parametrize("flag", [["--depth", "1"], ["--depth", "0"], ["--max-urls", "5"], ["--include", "*/a*"], ["--exclude", "*/b*"], ["--no-sitemap"]])
 def test_a_manifest_is_crawled_as_it_is_so_discovery_flags_are_refused(cli, routes, tmp_path: Path, fake_aside: Path, flag) -> None:
     """With --from nothing is discovered, so a discovery flag would silently do nothing."""
     routes({})
@@ -1012,3 +1012,43 @@ def test_crawl_replies_with_counts_and_only_what_went_wrong(cli, routes) -> None
     assert [(i["url"], i["status"], i["http_status"]) for i in payload["not_ok"]] == [("https://site.test/b", "blocked", 403)]
     assert payload["saved"] == 2 and payload["requested"] == 3
     assert Path(payload["manifest"]).parent == Path(payload["out_dir"])
+
+
+
+def test_what_discovery_missed_is_summarised_too(cli, routes, runs_dir: Path) -> None:
+    """A site that refuses most of its pages would otherwise answer with a list the size of
+    the site, the very thing the summary exists to avoid."""
+    hrefs = [f"/missing-{i}" for i in range(30)]
+    routes({"links": {"https://site.test/": hrefs}})
+
+    _, payload, text = cli("map", "https://site.test/", "--depth", "2")
+
+    coverage = payload["coverage"]
+    assert coverage["pages_missed_count"] == 30
+    assert len(coverage["pages_missed"]) == 10
+    assert len(text) < 2500
+    saved = json.loads(Path(payload["manifest_path"]).read_text())["coverage"]
+    assert len(saved["pages_missed"]) == 30
+
+
+def test_crawl_lists_the_first_failures_and_counts_the_rest(cli, routes, tmp_path: Path) -> None:
+    urls = [f"https://site.test/p{i}" for i in range(15)]
+    routes({"fetch_batch": {u: page("<p>no</p>", status=403) for u in urls}})
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"root": "https://site.test/", "urls": urls}))
+
+    _, payload, _ = cli("crawl", "--from", str(manifest), "--via", "fetch")
+
+    assert payload["not_ok_count"] == 15
+    assert [i["url"] for i in payload["not_ok"]] == urls[:10]
+    assert payload["statuses"] == {"blocked": 15}
+
+
+def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+
+    _, payload, _ = cli("fetch", "https://example.org/a", "--out", "~/v1.2/")
+
+    assert (tmp_path / "v1.2").is_dir()
+    assert Path(item_of(payload)["path"]).parent == tmp_path / "v1.2"

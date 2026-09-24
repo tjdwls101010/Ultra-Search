@@ -102,12 +102,12 @@ def _map(args, runs_root: Path) -> int:
         use_sitemap=not args.no_sitemap,
         **_providers(args),
     )
-    manifest = discover.build_manifest(args.url, [], urls=urls)
+    manifest = {**discover.build_manifest(args.url, [], urls=urls), "coverage": coverage}
     out = Path(args.out).expanduser() if args.out else _new_file(Path(runs_root) / "maps", _host(args.url), ".json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     # The list lives in the manifest; the reply is sized for reading whatever the site's size.
-    reply = {"ok": True, "command": "map", "root": args.url, "count": len(urls), "coverage": coverage,
+    reply = {"ok": True, "command": "map", "root": args.url, "count": len(urls), "coverage": _brief(coverage),
              "sample": urls[:SAMPLE], "manifest_path": str(out)}
     if args.list_all:
         reply["urls"] = urls
@@ -124,7 +124,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
     if args.from_manifest:
         given = [flag for flag, value in (("--max-urls", args.max_urls), ("--depth", args.depth),
                                           ("--include", args.include), ("--exclude", args.exclude),
-                                          ("--no-sitemap", args.no_sitemap)) if value not in (None, False)]
+                                          ("--no-sitemap", args.no_sitemap)) if value is not None and value is not False]
         if given:
             raise ArgumentError(
                 f"{', '.join(given)} {'does' if len(given) == 1 else 'do'} not apply to --from: the manifest is crawled as it is",
@@ -171,10 +171,13 @@ def _crawl_cmd(args, runs_root: Path) -> int:
     )
     items = envelope["items"]
     manifest = discover.build_manifest(root, items)
+    if coverage is not None:
+        manifest["coverage"] = coverage
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Counts and what went wrong; every page's record is in the manifest.
+    # Counts and the first of what went wrong; every page's record is in the manifest.
+    not_ok = [i for i in items if i["status"] != "ok"]
     statuses: dict[str, int] = {}
     for i in items:
         statuses[i["status"]] = statuses.get(i["status"], 0) + 1
@@ -188,9 +191,10 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             "requested": len(urls),
             "saved": statuses.get("ok", 0),
             "statuses": statuses,
+            "not_ok_count": len(not_ok),
             "not_ok": [{k: i[k] for k in ("url", "status", "http_status", "error", "path") if i.get(k) is not None}
-                       for i in items if i["status"] != "ok"],
-            **({"coverage": coverage} if coverage is not None else {}),
+                       for i in not_ok[:SAMPLE]],
+            **({"coverage": _brief(coverage)} if coverage is not None else {}),
         },
         ensure_ascii=False,
     ))
@@ -209,6 +213,12 @@ def _refuse_used_folder(out: Path) -> None:
 
 #: How many URLs a map's reply shows before pointing at its manifest.
 SAMPLE = 10
+
+
+def _brief(coverage: dict) -> dict:
+    """Coverage sized for a reply: how many pages were missed, and the first of them."""
+    missed = coverage["pages_missed"]
+    return {**coverage, "pages_missed_count": len(missed), "pages_missed": missed[:SAMPLE]}
 
 
 def _host(url: str) -> str:

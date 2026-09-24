@@ -78,7 +78,7 @@ def _streams(run: registry.Run) -> list[tuple[str, Path]]:
     return out
 
 
-def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
+def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool, numbering: dict[str, int]) -> list[str]:
     lines: list[str] = []
     streams = _streams(run)
     starts: dict[str, int] = {}
@@ -96,7 +96,7 @@ def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool) 
         events, cursor = transcript.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
         events = [event for event in events if event.index >= starts.get(key, 0)]
-        ordinals = _ordinals(path, starts.get(key, 0)) if not key and level in ("steps", "full") and events else {}
+        ordinals = _number(run, path, events, starts.get(key, 0), numbering) if not key and level in ("steps", "full") else {}
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"
@@ -109,15 +109,27 @@ def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool) 
     return lines
 
 
-def _ordinals(path, start_line: int) -> dict[int, int]:
+def _number(run: registry.Run, path, events: list, start_line: int, numbering: dict[str, int]) -> dict[int, int]:
     """Line index -> N for this turn's own tool results, the numbering `show --item N` uses.
 
-    Counted over the whole turn, not the chunk being printed, so a read from a cursor
-    carries on where the last one stopped.
+    Counted over the whole turn, not the chunk being printed, so a read from a cursor carries
+    on where the last one stopped. The results before the first chunk are counted once per
+    `log` call; after that the count is carried.
     """
-    events, _ = transcript.read_events(path)
-    results = [e for e in events if e.kind == "tool_result" and e.index >= start_line]
-    return {e.index: n for n, e in enumerate(results)}
+    if not events:
+        return {}
+    n = numbering.get(run.run_id)
+    if n is None:
+        first = events[0].index
+        earlier, _ = transcript.read_events(path) if first > start_line else ([], 0)
+        n = sum(1 for e in earlier if e.kind == "tool_result" and start_line <= e.index < first)
+    ordinals = {}
+    for e in events:
+        if e.kind == "tool_result":
+            ordinals[e.index] = n
+            n += 1
+    numbering[run.run_id] = n
+    return ordinals
 
 
 def _live_children(run: registry.Run) -> int:
@@ -136,6 +148,7 @@ def follow(
     heartbeat: float | None = None,
 ) -> str | int:
     cursors = parse_since(since, runs)
+    numbering: dict[str, int] = {}
     label = len(runs) > 1
     started = time.time()
     last_beat = started
@@ -145,7 +158,7 @@ def follow(
 
     while True:
         for run in runs:
-            for line in _drain(run, cursors.setdefault(run.run_id, {}), level, label):
+            for line in _drain(run, cursors.setdefault(run.run_id, {}), level, label, numbering):
                 emit(line)
 
         states = {r.run_id: (r.meta().get("state") or "unknown") for r in runs}

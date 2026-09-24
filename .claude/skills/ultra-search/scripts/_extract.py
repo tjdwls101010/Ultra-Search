@@ -233,6 +233,8 @@ def extract_document(path: str | Path) -> Document:
     code, out, err = _run_anydoc(p)
     if code == 0:
         text = out or ""
+        if not count_words(text):
+            return Document(kind="document", status="unsupported", error="the document converted to no text")
         return Document(markdown=text, title=_first_heading(text), kind="document",
                         words=count_words(text), status="ok")
     if code == 3:

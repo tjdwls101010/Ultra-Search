@@ -216,8 +216,11 @@ def final_answer(events: list[Event], sources: list[Source] | None = None) -> st
     whose last finished turn said nothing, has no answer: the caller gets "" and decides
     whether that is an honest zero or an interrupted run -- this module will not guess.
     """
+    # Only the latest turn: a child given a second task keeps its transcript, and until the
+    # new task finishes the answer in it is to the old one.
+    last_prompt = max((i for i, e in enumerate(events) if e.kind == "user"), default=0)
     text = ""
-    for e in events:
+    for e in events[last_prompt:]:
         if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
             text = e.text
     if not text.strip():

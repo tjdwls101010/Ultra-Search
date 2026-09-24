@@ -24,6 +24,8 @@ snippet named on the snippet's `// snippet: <name>` line and then by URL:
     sitemap               candidate URL -> the page URLs that sitemap lists
     links                 page URL -> the raw hrefs on that page; "__hit_budget__": true
                           ends the call the way a snippet cut off by its budget does
+    sitemap, links        "__timeout__": true prints what was found and then dies the way
+                          the daemon's 120s snippet kill does, with no closing record
 
 A URL with no route answers as the real browser would: fetch_batch gets an HTTP 404
 page, tab_one a navigation error, sitemap a miss, links a miss.
@@ -289,6 +291,10 @@ def do_repl(code: str) -> int:
         return 2
     routes = load_routes().get(snippet) or {}
     for rec in SNIPPETS[snippet](args, routes):
+        if routes.get("__timeout__") and rec.get("kind") in ("sitemap_done", "links_done"):
+            print("fetch failed: other side closed", file=sys.stderr)
+            print("Aside daemon is not reachable", file=sys.stderr)
+            return 1
         print(json.dumps(rec, ensure_ascii=False))
         sys.stdout.flush()
     return 0

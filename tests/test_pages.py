@@ -735,7 +735,8 @@ def test_max_pages_caps_what_a_crawl_fetches(cli, routes, fake_aside: Path) -> N
     assert sum(len(c["urls"]) for c in repl_calls(fake_aside, "fetch_batch")) == 2
 
 
-@pytest.mark.parametrize("manifest", [[], {"pages": ["https://site.test/a"]}, {"urls": "https://site.test/a"}])
+@pytest.mark.parametrize("manifest", [[], {"pages": ["https://site.test/a"]}, {"urls": "https://site.test/a"},
+                                      {"root": 123, "urls": ["https://site.test/a"]}])
 def test_a_manifest_of_the_wrong_shape_is_refused(cli, routes, tmp_path: Path, manifest) -> None:
     routes({})
     path = tmp_path / "manifest.json"
@@ -770,7 +771,7 @@ def test_same_site_means_same_scheme_host_and_port_over_http(cli, routes) -> Non
     routes({
         "sitemap": {"https://site.test/sitemap.xml": ["ftp://site.test/listed", "https://site.test/listed"]},
         "links": {"https://site.test/": ["ftp://site.test/file", "http://site.test/insecure",
-                                         "https://site.test:8443/other-port", "/same"]},
+                                         "https://site.test:8443/other-port", "https://site.test:0/port-zero", "/same"]},
     })
 
     code, from_sitemap, _ = cli("map", "https://site.test/")
@@ -881,5 +882,50 @@ def test_an_empty_body_is_not_a_page_that_was_read(cli, routes, ct: str) -> None
 
     assert item_of(payload)["status"] != "ok"
     assert "empty" in item_of(payload)["error"]
+    assert item_of(payload)["path"] is None
+    assert code == 4
+
+
+def test_a_miss_after_the_cap_is_reached_is_still_reported(cli, routes) -> None:
+    routes({"links": {"https://site.test/": ["/a", "/b"], "https://site.test/a": ["/c"]}})
+
+    _, payload, _ = cli("map", "https://site.test/", "--depth", "2", "--max-urls", "4")
+
+    assert payload["coverage"]["max_urls_reached"] is True
+    assert [m["url"] for m in payload["coverage"]["pages_missed"]] == ["https://site.test/b"]
+
+
+@pytest.mark.parametrize("snippet", ["links", "sitemap"])
+def test_a_discovery_snippet_cut_off_by_the_repl_limit_is_reported(cli, routes, snippet: str) -> None:
+    """The daemon kills a snippet at 120 seconds and says nothing more. What it printed
+    before that is kept; that the list is incomplete has to be said too."""
+    table = {
+        "links": {"links": {"https://site.test/": ["/a"], "__timeout__": True}},
+        "sitemap": {"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"], "__timeout__": True}},
+    }[snippet]
+    routes(table)
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    assert code == 0
+    assert payload["urls"]
+    assert payload["coverage"]["budget_exhausted"] is True
+
+
+def test_one_malformed_link_does_not_lose_the_rest_of_the_page(cli, routes) -> None:
+    routes({"links": {"https://site.test/": ["http://[broken", "/ok"]}})
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    assert code == 0
+    assert payload["urls"] == ["https://site.test/", "https://site.test/ok"]
+
+
+def test_a_document_that_converts_to_nothing_is_not_a_page_that_was_read(cli, routes) -> None:
+    routes({"fetch_batch": {"https://example.org/data.csv": document("empty.csv", ct="text/csv")}})
+
+    code, payload, _ = cli("fetch", "https://example.org/data.csv")
+
+    assert item_of(payload)["status"] != "ok"
     assert item_of(payload)["path"] is None
     assert code == 4

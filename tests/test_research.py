@@ -1306,7 +1306,7 @@ def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, mon
 # --- inputs the JSON contract has to survive ---------------------------------------------
 
 
-@pytest.mark.parametrize("cursor", ["garbage", "[1]", '{"RUN": {"": "abc"}}', '{"RUN": {"": -5}}', "-3"])
+@pytest.mark.parametrize("cursor", ["garbage", "[1]", '{"RUN": {"": "abc"}}', '{"RUN": {"": -5}}', "-3", "²"])
 def test_a_cursor_that_is_not_one_is_refused_rather_than_replayed(cli, cursor: str) -> None:
     """A cursor this command did not print would otherwise restart the log from the top --
     or crash -- and either way the caller reads the whole run again believing it is new."""
@@ -1412,3 +1412,13 @@ def test_heartbeat_counts_only_the_children_still_working(cli, replay, aside_hom
     beats = [line for line in lines_of(text) if line.startswith("heartbeat ")]
     assert beats and beats[-1].endswith("running=1 children=1")
     cli("stop", "--run", run_id)
+
+
+def test_an_empty_read_does_not_hide_what_a_search_already_showed(cli, replay) -> None:
+    src = {"id": "s1", "url": "https://e.test/a", "title": "A"}
+    replay([tool("websearch", "검색 본문", sources=[src]), tool("webfetch", "", sources=[src]), answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert shown["content"] == "검색 본문"

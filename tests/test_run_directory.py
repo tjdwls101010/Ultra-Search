@@ -373,3 +373,19 @@ def test_a_turn_that_never_appears_is_not_reported_from_the_turn_before(
     assert meta["state"] == "completed_unstructured"
     assert result["answer"] == "이어서 답합니다.", "stdout is the only record of this turn"
     assert "never appeared" in result["note"]
+
+
+def test_a_reused_childs_earlier_answer_is_not_its_answer_now(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A child given a second task keeps its transcript. Until the new task finishes, the
+    answer in it is to the old one."""
+    aside_session(aside_home, "ReusedChild00001", user("이전 과제"), answer("이전 답"),
+                  user("추가 조사"), calling(("webfetch", {"url": "https://x.test"})))
+    replay([tool("subagent", "spawned", taskId="ReusedChild00001"), answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["orphan_children"] == ["ReusedChild00001"]
+    assert "이전 답" not in result_of(run)["answer"]

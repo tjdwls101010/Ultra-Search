@@ -35,7 +35,7 @@ def origin(url: str) -> tuple[str, str, int] | None:
     if p.scheme not in ("http", "https") or not p.hostname:
         return None
     try:
-        port = p.port or (443 if p.scheme == "https" else 80)
+        port = p.port if p.port is not None else (443 if p.scheme == "https" else 80)
     except ValueError:
         return None
     return p.scheme, p.hostname.lower(), port
@@ -81,11 +81,9 @@ def discover(
         return urls[:max_urls], coverage
 
     if use_sitemap and sitemap_provider:
-        found = [
-            normalise(r["url"])
-            for r in sitemap_provider(sitemap_candidates(root))
-            if r.get("kind") == "url" and r.get("url")
-        ]
+        records = sitemap_provider(sitemap_candidates(root))
+        found = [normalise(r["url"]) for r in records if r.get("kind") == "url" and r.get("url")]
+        coverage["budget_exhausted"] = any(r.get("hit_budget") for r in records)
         same_site = [u for u in found if origin(u) == site]
         if same_site:
             coverage["sitemap"] = True
@@ -118,7 +116,9 @@ def discover(
                     {k: record[k] for k in ("url", "status", "error") if record.get(k) is not None})
             elif kind == "links_done" and record.get("hit_budget"):
                 coverage["budget_exhausted"] = True
-            if kind != "url" or not record.get("url"):
+            # Past the cap, URLs are no longer taken, but the rest of the round is still read:
+            # a page that failed after the cap was hit is still a page that was missed.
+            if kind != "url" or not record.get("url") or coverage["max_urls_reached"]:
                 continue
             u = normalise(record["url"])
             if u in seen or origin(u) != site:
@@ -129,7 +129,6 @@ def discover(
                 kept.append(u)
                 if len(kept) >= max_urls:
                     coverage["max_urls_reached"] = True
-                    break
     return done(kept)
 
 
@@ -170,7 +169,7 @@ def build_manifest(root: str, pages: list[dict], urls: list[str] | None = None) 
 
 def urls_from_manifest(manifest: object) -> list[str] | None:
     """The URLs a manifest lists, or None when it is not shaped like one `map` or `crawl` wrote."""
-    if not isinstance(manifest, dict):
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("root") or "", str):
         return None
     pages, urls = manifest.get("pages"), manifest.get("urls")
     if pages:

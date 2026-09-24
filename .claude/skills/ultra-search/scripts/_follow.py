@@ -40,7 +40,7 @@ def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]
     if since in (None, "", 0, "0"):
         return empty
     text = str(since)
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         return {runs[0].run_id: {"": int(text)}} if runs else empty
     bad = ArgumentError(
         f"--since {text!r} is not a cursor this command printed",

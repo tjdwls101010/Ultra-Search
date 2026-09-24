@@ -132,7 +132,8 @@ def sitemap(roots: list[str], *, per_url_ms: int = DEFAULT_PER_URL_MS,
     try:
         return run_snippet("sitemap.js", {"roots": roots, "perUrlTimeoutMs": per_url_ms, "budgetMs": budget_ms})
     except ReplTimeout as e:
-        return e.lines
+        # What it printed is kept; that the list stops short is said, as the budget would.
+        return e.lines + [{"kind": "sitemap_done", "hit_budget": True}]
 
 
 def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PER_URL_MS,
@@ -147,7 +148,7 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
     try:
         records = run_snippet("links.js", args)
     except ReplTimeout as e:
-        records = e.lines
+        records = e.lines + [{"kind": "links_done", "hit_budget": True}]
     return resolve_links(records, same_origin_as)
 
 
@@ -171,7 +172,11 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
         for href in rec.get("hrefs") or []:
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
-            absolute, _ = urldefrag(urljoin(base, href))
+            try:
+                absolute, _ = urldefrag(urljoin(base, href))
+            except ValueError:
+                # One malformed href (an unclosed IPv6 bracket) is one link lost, not the page.
+                continue
             if origin_of(absolute) != origin or absolute in seen:
                 continue
             seen.add(absolute)

@@ -71,7 +71,7 @@ class Turn:
                     continue
                 if not any(isinstance(s, dict) and s.get("url") == url for s in (e.details or {}).get("sources") or []):
                     continue
-                if _events.is_opening_tool(e.tool_name):
+                if _events.is_opening_tool(e.tool_name) and e.content:
                     return e.content
                 fallback = fallback or e.content
         return fallback

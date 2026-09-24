@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _contract
 import _events
 import _evidence
 import _exec
@@ -283,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001 - a detached process must record why it died
         run.update_meta(state="failed", reason=f"{type(e).__name__}: {e}", finished_at=time.time())
         raise
-    return 0 if meta.get("state", "").startswith("completed") else 1
+    return 0 if meta.get("state") in _contract.TERMINAL_STATES - _contract.FAILED_STATES else 1
 
 
 if __name__ == "__main__":

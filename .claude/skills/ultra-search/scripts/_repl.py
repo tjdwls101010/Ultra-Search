@@ -12,12 +12,11 @@ that was never broken, so it is translated here into what actually happened.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
-from _errors import AsideUnavailable
+from _contract import AsideUnavailable
 from _exec import aside_bin
 
 SNIPPETS = Path(__file__).resolve().parent / "page" / "snippets"
@@ -106,13 +105,12 @@ def _parse_ndjson(stdout: str) -> list[dict]:
     return out
 
 
-def fetch_batch(urls: list[str], *, save_dir: str | os.PathLike[str] | None = None,
-                per_url_ms: int = DEFAULT_PER_URL_MS, budget_ms: int = DEFAULT_BUDGET_MS) -> list[dict]:
+def fetch_batch(urls: list[str], *, per_url_ms: int = DEFAULT_PER_URL_MS,
+                budget_ms: int = DEFAULT_BUDGET_MS) -> list[dict]:
     """Fetch a batch; non-text responses are written to the browser session directory.
 
-    `save_dir` is accepted and ignored: the sandbox refuses writes outside the project and
-    session roots, so where downloads land is not the caller's choice. The caller gets the
-    path back and copies the file wherever it wants.
+    Where downloads land is not the caller's choice: the sandbox refuses writes outside the
+    project and session roots. The caller gets the path back and copies the file itself.
     """
     args = {"urls": list(urls), "perUrlTimeoutMs": per_url_ms, "budgetMs": budget_ms}
     try:
@@ -215,11 +213,3 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
             out.append({"kind": "url", "url": absolute, "from": rec.get("url")})
     return out
 
-
-def cleanup_tabs(urls: list[str]) -> list[dict]:
-    try:
-        return run_snippet("cleanup_tabs.js", {"urls": list(urls)}, timeout=60)
-    except (ReplTimeout, AsideUnavailable):
-        # Best-effort sweep of tabs an earlier timeout may have left open. Failing here
-        # must never fail the fetch whose content is already in hand.
-        return []

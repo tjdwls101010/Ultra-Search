@@ -16,17 +16,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import _errors
+import _contract
 import _extract
 import _registry
 import _repl
-from _errors import ArgumentError
+from _contract import ArgumentError
 
 DEFAULT_CONCURRENCY = 8
 DEFAULT_RETRIES = 1
-
-#: Statuses worth a second, isolated attempt. A 403 or a scanned PDF will not change.
-_RETRYABLE = frozenset({"error"})
 
 
 def dispatch(args) -> int:
@@ -83,10 +80,10 @@ def exit_code_for(items: list[dict]) -> int:
     """0 when anything was saved. The status still says what each page turned out to be:
     `--format html` writes a client-rendered document that has no article in it."""
     if not items:
-        return _errors.EXIT_EMPTY
+        return _contract.EXIT_EMPTY
     if any(i["status"] == "ok" or i.get("path") for i in items):
         return 0
-    return _errors.EXIT_RUN_FAILED
+    return _contract.EXIT_RUN_FAILED
 
 
 # --- the work ---------------------------------------------------------------------------
@@ -105,23 +102,19 @@ def fetch_urls(
     concurrency: int = DEFAULT_CONCURRENCY,
     retries: int = DEFAULT_RETRIES,
     numbered: bool = False,
-    fetch_provider=None,
-    tab_provider=None,
 ) -> dict:
     if out_file and len(urls) > 1:
         raise ArgumentError(
             f"--out names a single file but {len(urls)} URLs were given",
             fix="Pass a directory instead, or fetch one URL at a time.",
         )
-    fetch_provider = fetch_provider or _repl.fetch_batch
-    tab_provider = tab_provider or _repl.tab_one
     dest = out_file.parent if out_file else (out_dir or Path.cwd())
     dest.mkdir(parents=True, exist_ok=True)
 
     raw: dict[str, dict] = {}
     if via != "tab":
         for batch in _chunks(urls, max(1, concurrency)):
-            for record in fetch_provider(batch, save_dir=dest):
+            for record in _repl.fetch_batch(batch):
                 if record.get("kind") == "batch_done" or not record.get("url"):
                     continue
                 raw[record["url"]] = record
@@ -132,7 +125,7 @@ def fetch_urls(
             for u in missing:
                 # Alone, not re-batched: it gets the whole per-URL budget rather than a
                 # share of the one it already used up.
-                for record in fetch_provider([u], save_dir=dest):
+                for record in _repl.fetch_batch([u]):
                     if record.get("url"):
                         raw[record["url"]] = record
 
@@ -147,7 +140,7 @@ def fetch_urls(
             url=url, status="error", error="no response"
         )
         if via == "tab" or (via == "auto" and doc.status in ("shell", "challenge")):
-            doc = _escalate(url, doc, tab_provider)
+            doc = _escalate(url, doc)
         items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record, stem))
     return {"ok": True, "command": "fetch", "items": items}
 
@@ -177,7 +170,7 @@ def _to_document(url: str, record: dict) -> _extract.Document:
     return doc
 
 
-def _escalate(url: str, doc: _extract.Document, tab_provider) -> _extract.Document:
+def _escalate(url: str, doc: _extract.Document) -> _extract.Document:
     """Re-fetch through a real browser tab.
 
     Worth trying for both a client-rendered shell and a bot challenge: the tab runs the
@@ -185,7 +178,7 @@ def _escalate(url: str, doc: _extract.Document, tab_provider) -> _extract.Docume
     is still thin, the original verdict stands and is reported as escalated-and-still-empty
     rather than as a page.
     """
-    records = [r for r in (tab_provider(url) or []) if r.get("kind") == "text"]
+    records = [r for r in (_repl.tab_one(url) or []) if r.get("kind") == "text"]
     if not records:
         doc.status = "shell_escalated" if doc.status == "shell" else "blocked"
         return doc

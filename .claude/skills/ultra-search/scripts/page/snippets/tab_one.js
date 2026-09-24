@@ -55,7 +55,7 @@ try {
       await closeTab(page);
     } catch (e) {
       // Reported, not thrown: the page content is the answer and losing it over a failed
-      // cleanup would be the worse outcome. `cleanup_tabs.js` sweeps what is left behind.
+      // cleanup would be the worse outcome.
       console.log(JSON.stringify({ kind: 'warning', message: 'could not close tab', url }));
     }
   }

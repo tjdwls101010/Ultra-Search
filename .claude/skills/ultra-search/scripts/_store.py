@@ -23,10 +23,6 @@ from pathlib import Path
 DEFAULT_ASIDE_HOME = "~/.aside"
 ACCOUNT = "u/0"
 
-#: Aside deletes CLI sessions on its own schedule -- observed gone the next day. Anything
-#: worth keeping is copied out while the run is still alive.
-SESSION_LIFETIME_NOTE = "aside removes CLI sessions within about a day"
-
 
 @dataclass
 class SessionRef:
@@ -186,22 +182,6 @@ def _query(home, sql: str, args: tuple) -> list[dict]:
 def db_session_row(home: str | os.PathLike[str] | None, session_id: str) -> dict | None:
     rows = _query(home, "select * from sessions where id = ?", (session_id,))
     return rows[0] if rows else None
-
-
-def db_child_rows(home: str | os.PathLike[str] | None, session_id: str) -> list[dict]:
-    return _query(home, "select * from sessions where parent_id = ?", (session_id,))
-
-
-def db_finished_at(home: str | os.PathLike[str] | None, session_id: str) -> int | None:
-    rows = _query(
-        home,
-        "select finished_at from session_runs where session_id = ? order by id desc limit 1",
-        (session_id,),
-    )
-    if not rows:
-        return None
-    val = rows[0].get("finished_at")
-    return int(val) if val else None
 
 
 def db_suspension(home: str | os.PathLike[str] | None, session_id: str) -> object | None:

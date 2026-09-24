@@ -19,15 +19,11 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-EXIT_OK = 0
-EXIT_ARGS = 2
-EXIT_ASIDE = 3
-EXIT_RUN_FAILED = 4
-EXIT_EMPTY = 5
+from _contract import EXIT_OK  # noqa: E402 - after the path it is found on
+from _render import LEVELS  # noqa: E402
 
 EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
 SPEED_CHOICES = ("default", "fast")
-LEVEL_CHOICES = ("progress", "steps", "full", "raw")
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
 NEXT_HELP = (
@@ -172,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lg.add_argument(
         "--level",
-        choices=LEVEL_CHOICES,
+        choices=LEVELS,
         default="progress",
         help="What each event becomes. progress: one line per turn -- what the run reached for (tool, count, "
         "the host or objective) and what it said; a result appears only when it errored, an answer as its "
@@ -363,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.script_path = str(pathlib.Path(__file__).absolute())
 
-    from _errors import RunFailed, UltraSearchError
+    from _contract import RunFailed, UltraSearchError
 
     if args.command in ("search", "resume"):
         import _run_cmds as impl

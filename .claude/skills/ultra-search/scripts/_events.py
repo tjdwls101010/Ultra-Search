@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from _errors import is_safe_id
+from _contract import is_safe_id
 
 #: Tools whose result means the agent actually read a page, rather than merely being
 #: shown it in a result list. The distinction is what `opened` reports.
@@ -388,6 +388,3 @@ def total_usage(events: list[Event]) -> dict:
         "cost": round(cost, 6),
     }
 
-
-def last_timestamp(events: list[Event]) -> int:
-    return max((e.timestamp for e in events if e.timestamp), default=0)

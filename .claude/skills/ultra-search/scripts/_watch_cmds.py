@@ -17,12 +17,12 @@ import shlex
 import time
 from pathlib import Path
 
-import _errors
+import _contract
 import _evidence
 import _follow
 import _registry
 import _store
-from _errors import ArgumentError, RunFailed
+from _contract import ArgumentError, RunFailed
 
 
 def dispatch(args) -> int:
@@ -58,7 +58,7 @@ def _sessions(args, runs_root: Path) -> int:
         },
         ensure_ascii=False,
     ))
-    return 0 if rows else _errors.EXIT_EMPTY
+    return 0 if rows else _contract.EXIT_EMPTY
 
 
 def _targets(args, runs_root: Path) -> list:
@@ -82,7 +82,7 @@ def _status(args, runs_root: Path) -> int:
     runs = _targets(args, runs_root)
     entries = [_status_entry(r, now, args.stall_after) for r in runs]
     print(json.dumps({"ok": True, "command": "status", "runs": entries}, ensure_ascii=False))
-    return _errors.EXIT_RUN_FAILED if any(e["state"] in ("failed", "abandoned") for e in entries) else 0
+    return _contract.EXIT_RUN_FAILED if any(e["state"] in _contract.FAILED_STATES for e in entries) else 0
 
 
 def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
@@ -91,17 +91,12 @@ def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
     # whose children and tokens belong to the runs that asked for them.
     turn = _evidence.turn_of(run)
     children = turn.children
-    last = float(meta.get("last_activity_at") or 0)
     # The supervisor records activity as it syncs, but a status call between two syncs
     # would read a stale number -- so the files themselves get the last word.
-    for p in [run.stdout_path, run.session_transcript, *run.child_transcripts()]:
-        try:
-            last = max(last, p.stat().st_mtime)
-        except OSError:
-            pass
+    last = max(float(meta.get("last_activity_at") or 0), run.last_write())
     idle = round(now - last, 1) if last else None
     state = meta.get("state") or "unknown"
-    live = state not in _follow.TERMINAL_STATES
+    live = state not in _contract.TERMINAL_STATES
     entry = {
         **run_summary(run),
         "label": meta.get("label"),
@@ -148,7 +143,7 @@ def run_summary(run: _registry.Run) -> dict:
 
 
 def next_step(runs: list, group: str | None, runs_root: Path, script: str, *, since=None) -> dict:
-    pending = any(r.meta().get("state") not in _follow.TERMINAL_STATES for r in runs)
+    pending = any(r.meta().get("state") not in _contract.TERMINAL_STATES for r in runs)
     target = ["--group", group] if group else ["--run", runs[0].run_id]
     argv = ["log" if pending else "result", *target, "--runs-dir", str(runs_root)]
     if pending:
@@ -197,12 +192,12 @@ def _result(args, runs_root: Path) -> int:
     print(json.dumps(payload, ensure_ascii=False))
 
     states = [e["state"] for e in entries]
-    if any(s in ("failed", "abandoned") for s in states):
-        return _errors.EXIT_RUN_FAILED
-    if any(s not in _follow.TERMINAL_STATES for s in states):
-        return _errors.EXIT_RUN_FAILED
+    if any(s in _contract.FAILED_STATES for s in states):
+        return _contract.EXIT_RUN_FAILED
+    if any(s not in _contract.TERMINAL_STATES for s in states):
+        return _contract.EXIT_RUN_FAILED
     if all(e.get("empty") for e in entries):
-        return _errors.EXIT_EMPTY
+        return _contract.EXIT_EMPTY
     return 0
 
 
@@ -216,7 +211,7 @@ def _result_entry(run: _registry.Run, sources_only: bool) -> dict:
             "state": state,
             "sources": [],
             "empty": True,
-            "note": "no result yet" if state not in _follow.TERMINAL_STATES else "the run ended without writing a result",
+            "note": "no result yet" if state not in _contract.TERMINAL_STATES else "the run ended without writing a result",
             **run_summary(run),
         }
     try:
@@ -280,7 +275,7 @@ def _stop(args, runs_root: Path) -> int:
     stopped = []
     for run in runs:
         meta = run.meta()
-        if (meta.get("state") or "") in _follow.TERMINAL_STATES:
+        if (meta.get("state") or "") in _contract.TERMINAL_STATES:
             continue
         run.update_meta(stop_requested=True)
         # The supervisor notices the flag and writes `abandoned` itself. Give it a moment
@@ -290,7 +285,7 @@ def _stop(args, runs_root: Path) -> int:
         if not _await_terminal(run, 1.5):
             _terminate(meta.get("supervisor_pid"))
             _terminate(meta.get("pid"))
-            if (run.meta().get("state") or "") not in _follow.TERMINAL_STATES:
+            if (run.meta().get("state") or "") not in _contract.TERMINAL_STATES:
                 run.update_meta(state="abandoned", reason="stop requested",
                                 daemon_run_continues=True, finished_at=time.time())
         if run.meta().get("state") == "abandoned":
@@ -312,7 +307,7 @@ def _stop(args, runs_root: Path) -> int:
 def _await_terminal(run: _registry.Run, timeout: float) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if (run.meta().get("state") or "") in _follow.TERMINAL_STATES:
+        if (run.meta().get("state") or "") in _contract.TERMINAL_STATES:
             return True
         time.sleep(0.05)
     return False

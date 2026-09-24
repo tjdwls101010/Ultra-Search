@@ -13,11 +13,10 @@ import json
 import time
 from pathlib import Path
 
-import _errors
+import _contract
 import _exec
 import _registry
-from _errors import ArgumentError, RunFailed
-from _follow import TERMINAL_STATES
+from _contract import FAILED_STATES, TERMINAL_STATES, ArgumentError
 from _watch_cmds import next_step, run_summary
 
 
@@ -79,7 +78,7 @@ def _resumable_session(session_id: str) -> str:
     import _store
 
     home = _store.aside_home()
-    if not _errors.is_safe_id(session_id) or _store.session_dir(home, session_id) is None:
+    if not _contract.is_safe_id(session_id) or _store.session_dir(home, session_id) is None:
         raise ArgumentError(
             f"no run and no Aside session called {session_id!r}",
             fix="List what exists with `sessions`. Aside deletes sessions within about a day.",
@@ -185,9 +184,9 @@ def _entry(run: _registry.Run) -> dict:
 
 def _exit_code(entries: list[dict]) -> int:
     states = [e["state"] for e in entries]
-    if any(s in ("failed", "abandoned") for s in states):
-        return _errors.EXIT_RUN_FAILED
+    if any(s in FAILED_STATES for s in states):
+        return _contract.EXIT_RUN_FAILED
     finished = [e for e in entries if e["state"] in TERMINAL_STATES]
     if finished and all(e.get("empty") for e in finished) and len(finished) == len(entries):
-        return _errors.EXIT_EMPTY
+        return _contract.EXIT_EMPTY
     return 0

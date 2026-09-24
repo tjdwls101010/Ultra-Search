@@ -158,7 +158,6 @@ def build_manifest(root: str, pages: list[dict], urls: list[str] | None = None) 
                 "status": p.get("status"),
                 "via": p.get("via"),
                 "words": p.get("words", 0),
-                "depth": p.get("depth"),
             }
         )
     if urls is not None:

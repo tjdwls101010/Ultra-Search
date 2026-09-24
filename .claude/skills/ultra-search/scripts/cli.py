@@ -30,10 +30,12 @@ SPEED_CHOICES = ("default", "fast")
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
 NEXT_HELP = (
-    "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout, "
-    "and run_in_background selects background execution. Execute it as returned; use that call's latest next, "
-    "not a saved earlier one. A log response selects another watch with its cursor while work remains, "
-    "or result collection when every target is terminal. Watch expiry does not stop the investigation."
+    "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout it needs, "
+    "and run_in_background says whether to run it in the background. Background is for when something will "
+    "receive its completion notification; with nothing to wake -- a single-turn context -- run the same command "
+    "in the foreground with that bash_timeout_ms. Execute it as returned and use that call's latest next, not a "
+    "saved earlier one. A log response selects another watch with its cursor while work remains, or result "
+    "collection when every target is terminal. Watch expiry does not stop the investigation."
 )
 
 
@@ -103,6 +105,39 @@ def _add_target(p: argparse.ArgumentParser, *, all_flag: bool = False) -> None:
     # about.
 
 
+def _add_wait_opts(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--wait",
+        type=_seconds(),
+        default=100.0,
+        metavar="SEC",
+        help="Seconds to stay attached before handing back a handle. Never kills the run. "
+        "Default 100, which sits under the Bash tool's 120s default so the handle is never lost.",
+    )
+    p.add_argument("--background", action="store_true", help="Return the handle immediately instead of waiting.")
+
+
+def _add_fetch_opts(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--via",
+        choices=VIA_CHOICES,
+        default="auto",
+        help="auto fetches first and promotes to a real browser tab when the response is a JavaScript shell "
+        "or a bot challenge -- the tab runs the page's JavaScript or clears the check; fetch and tab force one "
+        "path. Default auto.",
+    )
+    p.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
+    p.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
+
+
+def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--max-urls", type=_count(1), metavar="N", help="Stop discovering after this many URLs. Default 200.")
+    p.add_argument("--depth", type=_count(0), metavar="N", help="Rounds of link-following from the root. Default 2.")
+    p.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
+    p.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
+    p.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
+
+
 def _add_exec_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--label", help="Short name for the run directory, so a later `status` is readable.")
     p.add_argument("--effort", choices=EFFORT_CHOICES, help="Aside reasoning effort. Default: the account's setting.")
@@ -142,19 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=NEXT_HELP,
     )
     s.add_argument("prompt", nargs="+", metavar="PROMPT", help="Research objective. Repeat for parallel runs.")
-    s.add_argument(
-        "--wait",
-        type=_seconds(),
-        default=100.0,
-        metavar="SEC",
-        help="Seconds to stay attached before handing back a handle. Never kills the run. "
-        "Default 100, which sits under the Bash tool's 120s default so the handle is never lost.",
-    )
-    s.add_argument(
-        "--background",
-        action="store_true",
-        help="Return the handle immediately instead of waiting.",
-    )
+    _add_wait_opts(s)
     _add_exec_opts(s)
 
     # --- resume -------------------------------------------------------------
@@ -175,8 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         "session started in the Aside app or by a bare `aside exec`, which this did not create.",
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
-    r.add_argument("--wait", type=_seconds(), default=100.0, metavar="SEC", help="As for `search`.")
-    r.add_argument("--background", action="store_true", help="As for `search`.")
+    _add_wait_opts(r)
     _add_exec_opts(r)
 
     # --- status -------------------------------------------------------------
@@ -247,11 +269,19 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser(
         "result",
         help="A finished run's answer and sources.",
-        description="The answer with <citation> tags resolved to URL footnotes, plus every source with "
-        "`opened` telling you which were actually read rather than merely listed by a search. "
-        "empty means no answer and no sources, not that a claim was disproved; a textual negative finding is still an answer. "
-        "completed_with_orphans is a saved snapshot: orphan_children identifies unfinished children whose late results are not collected. "
-        "abandoned means watching stopped, not that the daemon or its credit use stopped.",
+        description="The answer with <citation> tags resolved to URL footnotes, and every source the run and its "
+        "children touched. empty means no answer and no sources, not that a claim was disproved; a textual "
+        "negative finding is still an answer.\n"
+        "`opened` means a page-opening tool (webfetch, repl, read_file) returned that URL: an inference that the "
+        "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
+        "Each run ends in one state:\n"
+        "completed: the process exited, its session was read, and every child finished.\n"
+        "completed_with_orphans: as completed, but orphan_children were still running -- a saved snapshot; their "
+        "late results are not collected.\n"
+        "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
+        "sources come from stdout only.\n"
+        "failed: aside exited non-zero.\n"
+        "abandoned: watching stopped -- the daemon's work and its credit use did not.",
     )
     _add_target(rs)
     rs.add_argument("--sources-only", action="store_true", help="Omit the answer text.")
@@ -266,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sh.add_argument("--run", metavar="ID", help="Run id. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
-    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, or its source id.")
+    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0, or any of its source ids.")
     g.add_argument(
         "--item",
         type=_count(0),
@@ -292,7 +322,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one or more URLs into clean markdown files.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
         "(PDF, docx, pptx, xlsx, epub...) are converted too. Full text always goes to a file; use --print "
-        "to also get it inline.",
+        "to also get it inline. Exit 0 means at least one file was written.\n"
+        "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
+        "ok: the text was extracted and saved.\n"
+        "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
+        "shell_escalated: still almost no text after opening it in a real tab.\n"
+        "challenge: a bot check answered instead of the page.\n"
+        "blocked: an HTTP error, or a challenge a real tab could not clear.\n"
+        "needs_ocr: a document with no text layer; nothing was sent anywhere for OCR.\n"
+        "unsupported: a response or document that could not be converted.\n"
+        "error: the fetch itself failed (timeout, network).\n"
+        "Markdown conversion can lose tables, figures and layout: --format html saves the document itself, and a "
+        "converted document's original file is kept at original_path.",
     )
     f.add_argument("url", nargs="+", type=_web_url, metavar="URL", help="Page or document URL.")
     f.add_argument(
@@ -309,33 +350,21 @@ def build_parser() -> argparse.ArgumentParser:
         "refused for a response that was not HTML (a PDF, a markdown file) rather than "
         "silently writing markdown into a .html file. Default md.",
     )
-    f.add_argument(
-        "--via",
-        choices=VIA_CHOICES,
-        default="auto",
-        help="auto fetches first and promotes to a real browser tab when the response turns out to be a "
-        "JavaScript shell; fetch and tab force one path. Default auto.",
-    )
+    _add_fetch_opts(f)
     f.add_argument("--print", dest="print_content", action="store_true", help="Include the content inline in the JSON.")
     f.add_argument("--max-chars", type=_count(1), default=20000, metavar="N", help="Inline content cap for --print. Default 20000.")
-    f.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
-    f.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
     _add_runs_dir(f)
 
     # --- map ----------------------------------------------------------------
     m = sub.add_parser(
         "map",
-        help="List a site's URLs without fetching their content.",
-        description="Discovers URLs from sitemaps and same-origin links. Cheap enough to run before deciding "
+        help="List a site's URLs without extracting or saving pages.",
+        description="Discovers URLs from sitemaps and same-origin links, without extracting or saving pages. Cheap enough to run before deciding "
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
         "walked once.",
     )
     m.add_argument("url", type=_web_url, metavar="URL", help="Site or section root.")
-    m.add_argument("--max-urls", type=_count(1), default=200, metavar="N", help="Stop after this many URLs. Default 200.")
-    m.add_argument("--depth", type=_count(0), default=2, metavar="N", help="Link-following depth from the root. Default 2.")
-    m.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
-    m.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
-    m.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
+    _add_discovery_opts(m)
     m.add_argument(
         "--out",
         metavar="FILE",
@@ -349,21 +378,18 @@ def build_parser() -> argparse.ArgumentParser:
         "crawl",
         help="Map a site and save every page as markdown.",
         description="map + fetch. Writes NNN-slug.md files and a manifest.json recording url, file, title, "
-        "status, depth and via for each page.",
+        "status and via for each page.\n"
+        "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "
+        "crawled as it is, so discovery flags are refused.",
     )
     src = c.add_mutually_exclusive_group(required=True)
     src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Site root to crawl.")
     src.add_argument("--from", dest="from_manifest", metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
     c.add_argument("--max-pages", type=_count(1), default=25, metavar="N", help="Stop after this many pages. Default 25.")
-    c.add_argument("--max-urls", type=_count(1), default=200, metavar="N", help="Discovery cap before --max-pages applies. Default 200.")
-    c.add_argument("--depth", type=_count(0), default=2, metavar="N", help="Link-following depth. Default 2.")
-    c.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
-    c.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
-    c.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
-    c.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
-    c.add_argument("--via", choices=VIA_CHOICES, default="auto", help="As for `fetch`. Default auto.")
-    c.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
-    c.add_argument("--out", metavar="DIR", help="Output directory. Default: .ultra-search/crawls/<host>/.")
+    _add_discovery_opts(c)
+    _add_fetch_opts(c)
+    c.add_argument("--out", metavar="DIR", help="An empty or new output directory. Default: a new "
+                   ".ultra-search/crawls/<host>/<timestamp>/.")
     _add_runs_dir(c)
 
     # --- sessions -----------------------------------------------------------

@@ -80,6 +80,12 @@ def exit_code_for(items: list[dict]) -> int:
     return contract.EXIT_RUN_FAILED
 
 
+def _discovery(args) -> dict:
+    """The discovery settings the caller gave; discover() supplies the rest."""
+    given = {"depth": args.depth, "max_urls": args.max_urls}
+    return {k: v for k, v in given.items() if v is not None}
+
+
 def _providers(args):
     return {
         "sitemap_provider": None if getattr(args, "no_sitemap", False) else browser.sitemap,
@@ -90,8 +96,7 @@ def _providers(args):
 def _map(args, runs_root: Path) -> int:
     urls, coverage = discover.discover(
         args.url,
-        depth=args.depth,
-        max_urls=args.max_urls,
+        **_discovery(args),
         include=args.include,
         exclude=args.exclude,
         use_sitemap=not args.no_sitemap,
@@ -114,6 +119,14 @@ def _crawl_cmd(args, runs_root: Path) -> int:
     if args.out:
         _refuse_used_folder(Path(args.out).expanduser())
     if args.from_manifest:
+        given = [flag for flag, value in (("--max-urls", args.max_urls), ("--depth", args.depth),
+                                          ("--include", args.include), ("--exclude", args.exclude),
+                                          ("--no-sitemap", args.no_sitemap)) if value not in (None, False)]
+        if given:
+            raise ArgumentError(
+                f"{', '.join(given)} {'does' if len(given) == 1 else 'do'} not apply to --from: the manifest is crawled as it is",
+                fix="Drop the flag, or run `map` again with it and crawl that manifest.",
+            )
         source = Path(args.from_manifest).expanduser()
         try:
             manifest = json.loads(source.read_text(encoding="utf-8"))
@@ -131,8 +144,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
         root = args.url
         urls, coverage = discover.discover(
             root,
-            depth=args.depth,
-            max_urls=args.max_urls,
+            **_discovery(args),
             include=args.include,
             exclude=args.exclude,
             use_sitemap=not args.no_sitemap,

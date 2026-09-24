@@ -253,3 +253,61 @@ def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
 
     assert "under the current working directory" in text
     assert "current project" not in text
+
+
+# --- what each command's help promises -----------------------------------------------------
+
+COMMANDS = ["search", "resume", "status", "log", "result", "show", "stop", "fetch", "map", "crawl",
+            "sessions", "repl-api", "doctor", "setup"]
+
+
+def help_of(command: str) -> str:
+    code, _, text = run_cli(command, "--help")
+    assert code == 0
+    return text
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_every_help_stands_on_its_own(command: str) -> None:
+    """A caller reads one command's help, at the moment it needs it. A pointer to another
+    command's help is a second lookup at the worst moment."""
+    assert "As for" not in help_of(command)
+
+
+@pytest.mark.parametrize("command", ["search", "resume", "log"])
+def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
+    text = help_of(command)
+
+    assert "run_in_background" in text and "foreground" in text and "bash_timeout_ms" in text
+
+
+def test_result_help_names_every_end_state_and_what_opened_means() -> None:
+    text = help_of("result")
+
+    for state in ("completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"):
+        assert state in text
+    assert "opened" in text and "not a check" in text
+
+
+def test_fetch_help_names_every_item_status_and_what_conversion_loses() -> None:
+    text = help_of("fetch")
+
+    for status in ("ok", "shell", "shell_escalated", "challenge", "blocked", "needs_ocr", "unsupported", "error"):
+        assert f"{status}:" in text, status
+    assert "--format html" in text and "original_path" in text and "tables" in text
+
+
+def test_show_says_how_sources_are_counted() -> None:
+    assert "Source index from `result`, counting from 0" in help_of("show")
+
+
+def test_map_help_says_what_it_does_not_do() -> None:
+    assert "without extracting or saving pages" in help_of("map")
+
+
+def test_crawl_help_says_which_flags_apply_to_a_manifest() -> None:
+    text = help_of("crawl")
+
+    assert "With --from" in text
+    for flag in ("--max-pages", "--via", "--concurrency", "--no-frontmatter", "--out"):
+        assert flag in text.split("With --from", 1)[1].split("\n", 1)[0], flag

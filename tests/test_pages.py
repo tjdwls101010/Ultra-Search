@@ -719,6 +719,7 @@ def test_a_crawl_writes_numbered_pages_and_a_manifest_that_crawls_again(cli, rou
 
     manifest = json.loads(Path(payload["manifest"]).read_text())
     assert manifest["root"] == "https://site.test/"
+    assert all(set(page) == {"n", "url", "final_url", "file", "title", "status", "via", "words"} for page in manifest["pages"])
     assert [p["url"] for p in manifest["pages"]] == [i["url"] for i in payload["items"]]
     assert sorted(p.name[:4] for p in out.glob("*.md")) == ["000-", "001-", "002-"]
     code, again, _ = cli("crawl", "--from", payload["manifest"], "--out", str(tmp_path / "again"))
@@ -945,3 +946,17 @@ def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -
                                "https://site.test/q?id=1&copy=2&notebook=3",
                                "https://site.test/n?id=1&lang=en", "https://site.test/c/©",
                                "https://site.test/q?x=1&notebook;=2", "https://site.test/d/©한글"]
+
+
+@pytest.mark.parametrize("flag", [["--depth", "1"], ["--max-urls", "5"], ["--include", "*/a*"], ["--exclude", "*/b*"], ["--no-sitemap"]])
+def test_a_manifest_is_crawled_as_it_is_so_discovery_flags_are_refused(cli, routes, tmp_path: Path, fake_aside: Path, flag) -> None:
+    """With --from nothing is discovered, so a discovery flag would silently do nothing."""
+    routes({})
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"root": "https://site.test/", "urls": ["https://site.test/"]}))
+
+    code, err, _ = cli("crawl", "--from", str(manifest), *flag)
+
+    assert code == 2 and err["error"] == "bad_arguments"
+    assert flag[0] in err["message"]
+    assert repl_calls(fake_aside, "fetch_batch") == []

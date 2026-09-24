@@ -13,11 +13,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import _crawl
-import _errors
+import _contract
 import _page
-import _registry
 import _repl
-from _errors import ArgumentError
+from _contract import ArgumentError
 
 
 def dispatch(args, runs_root: Path) -> int:
@@ -51,7 +50,7 @@ def _map(args, runs_root: Path) -> int:
     # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
     # root itself is listed.
     saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
-    return 0 if urls and saw_site else _errors.EXIT_EMPTY
+    return 0 if urls and saw_site else _contract.EXIT_EMPTY
 
 
 def _crawl_cmd(args, runs_root: Path) -> int:

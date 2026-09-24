@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -47,7 +47,6 @@ _CHALLENGE_WEAK = (
     "ray id",
 )
 
-_DOC_EXTENSIONS = {"pdf", "doc", "docx", "odt", "ppt", "pptx", "odp", "xls", "xlsx", "ods", "rtf", "epub", "csv"}
 _CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
 _SLUG_STRIP = re.compile(r"[^a-zA-Z0-9._-]+")
 

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from _errors import ArgumentError, is_safe_id
+from _contract import ArgumentError, is_safe_id
 
 RUNS_SUBDIR = "runs"
 PAGES_SUBDIR = "pages"
@@ -71,8 +71,22 @@ class Run:
         except OSError:
             return []
 
+    def last_write(self) -> float:
+        """Newest write among the files the run itself keeps: stdout and every transcript copy.
+
+        A parent that spawned subagents goes silent while they work, so the children's
+        copies count -- measuring only the parent would call that silence a stall.
+        """
+        newest = 0.0
+        for p in [self.stdout_path, self.session_transcript, *self.child_transcripts()]:
+            try:
+                newest = max(newest, p.stat().st_mtime)
+            except OSError:
+                pass
+        return newest
+
     def write_meta(self, meta: dict) -> None:
-        _atomic_write_json(self.meta_path, meta)
+        atomic_write_json(self.meta_path, meta)
 
     def update_meta(self, **changes: object) -> dict:
         """Merge changes into meta.json, serialised against other processes.
@@ -90,7 +104,7 @@ class Run:
                 with _meta_lock(self.path):
                     meta = load_meta(self.path)
                     meta.update(changes)
-                    _atomic_write_json(self.meta_path, meta)
+                    atomic_write_json(self.meta_path, meta)
                     return meta
             except (TimeoutError, OSError) as e:
                 last = e
@@ -100,7 +114,7 @@ class Run:
         meta = load_meta(self.path)
         meta.update(changes)
         meta["meta_lock_contended"] = str(last)
-        _atomic_write_json(self.meta_path, meta)
+        atomic_write_json(self.meta_path, meta)
         return meta
 
     def meta(self) -> dict:
@@ -181,7 +195,7 @@ def _meta_lock(run_path: Path, timeout: float = 10.0):
         os.close(fd)
 
 
-def _atomic_write_json(path: Path, obj: dict) -> None:
+def atomic_write_json(path: Path, obj: dict) -> None:
     """Serialise first, then rename.
 
     `status` may read this file at any moment. Serialising before touching the

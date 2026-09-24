@@ -15,15 +15,14 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-import _errors
+import _contract
 import _exec
 import _registry
 import _repl
 import _store
-from _errors import AsideUnavailable
+from _contract import AsideUnavailable
 
 PAGE_DIR = Path(__file__).resolve().parent / "page"
 DAEMON_URL = "http://127.0.0.1:21420/"
@@ -143,7 +142,7 @@ def _doctor(args) -> int:
         ],
     }
     print(json.dumps(payload, ensure_ascii=False))
-    return 0 if ok else _errors.EXIT_ASIDE
+    return 0 if ok else _contract.EXIT_ASIDE
 
 
 def _check(name: str, ok: bool, detail: str, fix: str | None = None) -> dict:
@@ -246,7 +245,7 @@ def _setup() -> int:
         },
         ensure_ascii=False,
     ))
-    return 0 if ok else _errors.EXIT_ASIDE
+    return 0 if ok else _contract.EXIT_ASIDE
 
 
 # --- repl-api -----------------------------------------------------------------------------

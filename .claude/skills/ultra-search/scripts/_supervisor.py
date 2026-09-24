@@ -19,7 +19,6 @@ from a process that has no channel back to them.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -40,8 +39,6 @@ DISCOVERY_DEADLINE = 30.0
 #: After the parent exits, how long a child gets to reach a terminal state.
 SETTLE = 10.0
 
-TERMINAL_STATES = ("completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned")
-
 _URL_IN_STDOUT = re.compile(r'https?://[^\s"\'<>)\]]+')
 
 
@@ -52,7 +49,6 @@ def supervise(
     discovery_deadline: float = DISCOVERY_DEADLINE,
     settle: float = SETTLE,
     timeout: float | None = None,
-    stop_after: float | None = None,
 ) -> dict:
     meta = run.meta()
     prompt = meta.get("prompt") or ""
@@ -90,7 +86,7 @@ def supervise(
 
     while True:
         now = time.time()
-        if _stop_requested(run) or (stop_after is not None and now - started >= stop_after):
+        if _stop_requested(run):
             return _abandon(run, "stop requested", proc)
         if timeout is not None and now - started >= timeout:
             return _abandon(run, "watch timeout", proc)
@@ -161,18 +157,9 @@ def _sync(run, home, session_id, cursor, children, child_cursors):
 
 
 def _activity(run, home, session_id, children) -> float:
-    """Newest write anywhere this run touches -- its stdout, its transcript, its children's.
-
-    Measuring only the parent would call a subagent investigation stalled the moment the
-    parent stops narrating, which is most of its runtime.
-    """
-    newest = _store.last_activity(home, session_id, children) if session_id else 0.0
-    for p in [run.stdout_path, run.session_transcript, *run.child_transcripts()]:
-        try:
-            newest = max(newest, p.stat().st_mtime)
-        except OSError:
-            pass
-    return newest
+    """Newest write anywhere this run touches: its own files, and Aside's session directories."""
+    aside = _store.last_activity(home, session_id, children) if session_id else 0.0
+    return max(aside, run.last_write())
 
 
 def _stop_requested(run: _registry.Run) -> bool:
@@ -240,7 +227,7 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
             if session_id else
             "the session transcript was never found; answer and sources come from stdout only"
         )
-    _write_json(run.path / "result.json", result)
+    _registry.atomic_write_json(run.path / "result.json", result)
     return run.update_meta(
         state=state,
         exit_code=exit_code,
@@ -283,12 +270,6 @@ def _read_text(p: Path) -> str:
         return p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-
-
-def _write_json(path: Path, obj: dict) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def main(argv: list[str] | None = None) -> int:

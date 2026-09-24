@@ -14,7 +14,6 @@ would make a caller either collect nothing or wait forever.
 from __future__ import annotations
 
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -22,9 +21,7 @@ import _events
 import _evidence
 import _registry
 import _render
-from _errors import ArgumentError
-
-TERMINAL_STATES = frozenset({"completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"})
+from _contract import TERMINAL_STATES, ArgumentError
 POLL = 1.0
 
 
@@ -122,22 +119,19 @@ def _live_children(run: _registry.Run) -> int:
 def follow(
     runs: list,
     *,
-    out=None,
     level: str = "progress",
     since: str | int | None = None,
     follow: bool = False,
     follow_timeout: float = 570.0,
     heartbeat: float | None = None,
-    poll: float = POLL,
 ) -> str | int:
-    stream = out if out is not None else sys.stdout
     cursors = parse_since(since, runs)
     label = len(runs) > 1
     started = time.time()
     last_beat = started
 
     def emit(line: str) -> None:
-        print(line, file=stream, flush=True)
+        print(line, flush=True)
 
     while True:
         for run in runs:
@@ -170,7 +164,7 @@ def follow(
             waiting = [r.run_id for r in runs if states[r.run_id] not in TERMINAL_STATES]
             emit(f"heartbeat elapsed={round(now - started, 1)}s running={len(waiting)} children={live}")
 
-        time.sleep(poll)
+        time.sleep(POLL)
 
     cursor = format_cursor(cursors, runs)
     emit(f"# cursor={cursor}")

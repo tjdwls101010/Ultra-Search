@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _errors import AsideUnavailable
+from _contract import AsideUnavailable
 
 DEFAULT_BIN = "aside"
 #: The versions this skill's behaviour was measured against. `doctor` compares both,

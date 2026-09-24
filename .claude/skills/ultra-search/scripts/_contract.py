@@ -1,4 +1,4 @@
-"""The failure half of the CLI contract.
+"""The CLI's contract: exit codes, run states, errors, and what an id may be.
 
 Every command prints one JSON line whether it worked or not, so a caller parses one
 shape rather than branching on stderr. Each error carries the recovery step in the
@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import re
 
+EXIT_OK = 0
 EXIT_ARGS = 2
 EXIT_ASIDE = 3
 EXIT_RUN_FAILED = 4
 EXIT_EMPTY = 5
+
+#: Every state a run can end in. Anything else is still going.
+TERMINAL_STATES = frozenset({"completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"})
+#: Ends that exit EXIT_RUN_FAILED. `abandoned` is one: the watching stopped, not the work.
+FAILED_STATES = frozenset({"failed", "abandoned"})
 
 
 #: Run, session and child ids each become one path segment. Starting with a letter or digit
@@ -70,9 +76,3 @@ class RunFailed(UltraSearchError):
     exit_code = EXIT_RUN_FAILED
     kind = "run_failed"
 
-
-class EmptyResult(UltraSearchError):
-    """No result data was produced; this does not establish a negative finding."""
-
-    exit_code = EXIT_EMPTY
-    kind = "empty_result"

@@ -778,3 +778,37 @@ def test_same_site_means_same_scheme_host_and_port_over_http(cli, routes) -> Non
 
     assert from_sitemap["urls"] == ["https://site.test/listed"]
     assert from_links["urls"] == ["https://site.test/", "https://site.test/same"]
+
+
+@pytest.mark.parametrize("left_behind", ["manifest", "other"])
+def test_a_crawl_never_writes_into_a_folder_that_already_has_files(cli, routes, tmp_path: Path, left_behind: str) -> None:
+    """Numbered names repeat from one crawl to the next, so writing into a used folder
+    replaces pages from the earlier crawl -- or a file that was never a crawl's -- in place."""
+    routes({"links": SITE, "fetch_batch": {u: page(ARTICLE) for u in SITE}})
+    out = tmp_path / "site"
+    if left_behind == "manifest":
+        cli("crawl", "https://site.test/", "--depth", "1", "--out", str(out))
+    else:
+        out.mkdir()
+        (out / "000-notes.md").write_text("mine")
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+
+    code, err, _ = cli("crawl", "https://site.test/", "--depth", "1", "--out", str(out))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "--out" in err["fix"]
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+
+
+def test_crawls_without_out_each_get_their_own_folder(cli, routes, runs_dir: Path) -> None:
+    routes({"links": SITE, "fetch_batch": {u: page(ARTICLE) for u in SITE}})
+
+    _, first, _ = cli("crawl", "https://site.test/", "--depth", "1")
+    kept = {p: p.read_bytes() for p in Path(first["out_dir"]).iterdir()}
+    _, second, _ = cli("crawl", "https://site.test/", "--depth", "0")
+
+    assert Path(first["out_dir"]).parent == Path(second["out_dir"]).parent == runs_dir / "crawls" / "site.test"
+    assert first["out_dir"] != second["out_dir"]
+    assert {p: p.read_bytes() for p in Path(first["out_dir"]).iterdir()} == kept
+    assert sorted(p.name[:4] for p in Path(second["out_dir"]).glob("*.md")) == ["000-"]

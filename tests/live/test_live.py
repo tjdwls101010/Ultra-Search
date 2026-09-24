@@ -107,8 +107,8 @@ def test_map_finds_urls_without_downloading_them(tmp_path: Path) -> None:
     code, payload = cli("map", "https://docs.aside.com", "--max-urls", "50", "--out", str(manifest))
 
     assert code == 0
-    assert len(payload["urls"]) >= 10
-    assert manifest.exists()
+    assert payload["count"] >= 10
+    assert len(json.loads(manifest.read_text(encoding="utf-8"))["urls"]) == payload["count"]
     assert list(tmp_path.rglob("*.md")) == []
 
 

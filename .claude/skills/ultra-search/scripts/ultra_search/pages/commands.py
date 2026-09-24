@@ -103,12 +103,15 @@ def _map(args, runs_root: Path) -> int:
         **_providers(args),
     )
     manifest = discover.build_manifest(args.url, [], urls=urls)
-    if args.out:
-        out = Path(args.out).expanduser()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        manifest["manifest_path"] = str(out)
-    print(json.dumps({"ok": True, "command": "map", **manifest, "coverage": coverage}, ensure_ascii=False))
+    out = Path(args.out).expanduser() if args.out else _new_file(Path(runs_root) / "maps", _host(args.url), ".json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    # The list lives in the manifest; the reply is sized for reading whatever the site's size.
+    reply = {"ok": True, "command": "map", "root": args.url, "count": len(urls), "coverage": coverage,
+             "sample": urls[:SAMPLE], "manifest_path": str(out)}
+    if args.list_all:
+        reply["urls"] = urls
+    print(json.dumps(reply, ensure_ascii=False))
     # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
     # root itself is listed.
     saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
@@ -171,6 +174,10 @@ def _crawl_cmd(args, runs_root: Path) -> int:
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # Counts and what went wrong; every page's record is in the manifest.
+    statuses: dict[str, int] = {}
+    for i in items:
+        statuses[i["status"]] = statuses.get(i["status"], 0) + 1
     print(json.dumps(
         {
             "ok": True,
@@ -179,8 +186,10 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             "out_dir": str(out_dir),
             "manifest": str(manifest_path),
             "requested": len(urls),
-            "saved": sum(1 for i in items if i["status"] == "ok"),
-            "items": [{k: v for k, v in i.items() if k != "content"} for i in items],
+            "saved": statuses.get("ok", 0),
+            "statuses": statuses,
+            "not_ok": [{k: i[k] for k in ("url", "status", "http_status", "error", "path") if i.get(k) is not None}
+                       for i in items if i["status"] != "ok"],
             **({"coverage": coverage} if coverage is not None else {}),
         },
         ensure_ascii=False,
@@ -198,10 +207,31 @@ def _refuse_used_folder(out: Path) -> None:
         )
 
 
+#: How many URLs a map's reply shows before pointing at its manifest.
+SAMPLE = 10
+
+
+def _host(url: str) -> str:
+    return urlparse(url).netloc or "site"
+
+
+def _new_file(folder: Path, stem: str, suffix: str) -> Path:
+    """A file name nobody holds yet, reserved by creating it: <stem>-<timestamp><suffix>."""
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%y%m%d-%H%M%S")
+    for n in range(1, 100):
+        path = folder / (f"{stem}-{stamp}{suffix}" if n == 1 else f"{stem}-{stamp}-{n}{suffix}")
+        try:
+            path.open("x").close()
+            return path
+        except FileExistsError:
+            continue
+    raise ArgumentError(f"could not reserve a file under {folder}", fix="Pass one with --out.")
+
+
 def _default_out(runs_root: Path, root: str) -> Path:
     """A new folder per crawl under crawls/<host>/, reserved before anything is written."""
-    host = urlparse(root).netloc or "site"
-    base = Path(runs_root) / "crawls" / host
+    base = Path(runs_root) / "crawls" / _host(root)
     base.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%y%m%d-%H%M%S")
     for n in range(1, 100):

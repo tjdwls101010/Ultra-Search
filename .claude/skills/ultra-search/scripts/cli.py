@@ -361,16 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="List a site's URLs without extracting or saving pages.",
         description="Discovers URLs from sitemaps and same-origin links, without extracting or saving pages. Cheap enough to run before deciding "
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
-        "walked once.",
+        "walked once.\n"
+        "The reply is a summary whatever the site's size: count, coverage (what could not be read, and whether a "
+        "budget or --max-urls cut discovery short), the first 10 URLs, and manifest_path, the file holding every URL.",
     )
     m.add_argument("url", type=_web_url, metavar="URL", help="Site or section root.")
     _add_discovery_opts(m)
-    m.add_argument(
-        "--out",
-        metavar="FILE",
-        help="Also write the manifest here. The URL list is printed either way; redirect stdout "
-        "if a large site's manifest should not reach the caller.",
-    )
+    m.add_argument("--out", metavar="FILE", help="Write the manifest here instead of .ultra-search/maps/<host>-<timestamp>.json.")
+    m.add_argument("--list-all", action="store_true", help="Also print every URL in the reply, not only the first 10.")
     _add_runs_dir(m)
 
     # --- crawl --------------------------------------------------------------
@@ -378,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
         "crawl",
         help="Map a site and save every page as markdown.",
         description="map + fetch. Writes NNN-slug.md files and a manifest.json recording url, file, title, "
-        "status and via for each page.\n"
+        "status and via for each page. The reply counts pages by status and lists only the ones that are not ok.\n"
         "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "
         "crawled as it is, so discovery flags are refused.",
     )

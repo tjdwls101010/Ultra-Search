@@ -935,7 +935,7 @@ def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -
     """An href is HTML: `&amp;` in it is one `&` in the URL. Requesting it verbatim asks the
     site for a parameter called `amp;lang`."""
     routes({"links": {"https://site.test/": ["/article?id=1&amp;lang=ko", "/q?id=1&copy=2&notebook=3",
-                                             "/n?id=1&#38lang=en", "/c/&copy"]}})
+                                             "/n?id=1&#38lang=en", "/c/&copy", "/q?x=1&notebook;=2", "/d/&copy한글"]}})
 
     _, payload, _ = cli("map", "https://site.test/", "--depth", "1")
 
@@ -943,4 +943,5 @@ def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -
     # name only when neither "=" nor a letter or digit follows it.
     assert payload["urls"] == ["https://site.test/", "https://site.test/article?id=1&lang=ko",
                                "https://site.test/q?id=1&copy=2&notebook=3",
-                               "https://site.test/n?id=1&lang=en", "https://site.test/c/©"]
+                               "https://site.test/n?id=1&lang=en", "https://site.test/c/©",
+                               "https://site.test/q?x=1&notebook;=2", "https://site.test/d/©한글"]

@@ -159,22 +159,23 @@ _REFERENCE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*
 def _decode_attribute(value: str) -> str:
     """Character references in an attribute value, decoded the way a browser does.
 
-    Numeric references and ones closed by a semicolon always decode. A name without one
-    decodes as its longest known prefix -- unless "=" or a letter or digit follows that
-    prefix, when it is literal text: `?a=1&copy=2` keeps its `&copy`, `&notebook` its `&not`.
+    Numeric references always decode, and so does a known name closed by its semicolon. A
+    name without one decodes as its longest known prefix -- unless "=" or an ASCII letter or
+    digit follows that prefix, when it is literal text: `?a=1&copy=2` keeps its `&copy`,
+    `&notebook` its `&not`.
     """
     import html
     from html.entities import html5
 
     def sub(m: re.Match[str]) -> str:
         ref = m.group(0)
-        if ref.startswith("&#") or ref.endswith(";"):
+        if ref.startswith("&#") or (ref.endswith(";") and ref[1:] in html5):
             return html.unescape(ref)
         name = next((ref[1:k] for k in range(len(ref), 1, -1) if ref[1:k] in html5), None)
         if name is None:
             return ref
-        after = ref[len(name) + 1:] or value[m.end():m.end() + 1]
-        if after[:1] == "=" or after[:1].isalnum():
+        after = (ref[len(name) + 1:] or value[m.end():m.end() + 1])[:1]
+        if after == "=" or (after.isascii() and after.isalnum()):
             return ref
         return html5[name] + ref[len(name) + 1:]
 

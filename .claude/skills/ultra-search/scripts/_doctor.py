@@ -11,6 +11,7 @@ installed on this machine that decides what the snippets may use.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +27,11 @@ from _errors import AsideUnavailable
 
 PAGE_DIR = Path(__file__).resolve().parent / "page"
 DAEMON_URL = "http://127.0.0.1:21420/"
+
+
+def daemon_url() -> str:
+    """The daemon's health endpoint; ULTRA_SEARCH_DAEMON_URL points doctor at another one."""
+    return os.environ.get("ULTRA_SEARCH_DAEMON_URL") or DAEMON_URL
 
 
 def dispatch(args) -> int:
@@ -196,8 +202,9 @@ def _daemon_status() -> dict:
     import urllib.error
     import urllib.request
 
+    url = daemon_url()
     try:
-        with urllib.request.urlopen(DAEMON_URL, timeout=5) as r:
+        with urllib.request.urlopen(url, timeout=5) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
         sem = body.get("semaphore") or {}
         return {
@@ -207,7 +214,7 @@ def _daemon_status() -> dict:
             f"running={body.get('runningSessionCount')} slots={sem.get('available')}/{sem.get('capacity')}",
         }
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
-        return {"ok": False, "version": None, "detail": f"no answer from {DAEMON_URL} ({e})"}
+        return {"ok": False, "version": None, "detail": f"no answer from {url} ({e})"}
 
 
 # --- setup --------------------------------------------------------------------------------

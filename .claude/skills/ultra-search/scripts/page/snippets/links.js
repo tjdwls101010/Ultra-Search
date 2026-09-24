@@ -1,3 +1,4 @@
+// snippet: links
 // Collect the raw href attributes of a set of pages. Nothing is resolved or filtered here.
 //
 // The sandbox has no URL constructor, so joining a relative href to its base and deciding

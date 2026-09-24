@@ -7,6 +7,9 @@ fixtures is a test that reports the harness works everywhere when it does not.
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import shutil
 import sys
@@ -70,3 +73,112 @@ def fake_aside(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("FAKE_ASIDE_CALLS", str(calls))
     os.chmod(binary, 0o755)
     return calls
+
+
+# --- the CLI seam ------------------------------------------------------------------------
+
+
+def run_cli(*argv: str) -> tuple[int, dict, str]:
+    """argv in; the exit code, the last JSON line on stdout, and all of stdout out."""
+    import ultra_search
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            code = ultra_search.main(list(argv))
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 2
+    text = buf.getvalue()
+    last = [line for line in text.splitlines() if line.startswith("{")]
+    return code, (json.loads(last[-1]) if last else {}), text
+
+
+@pytest.fixture
+def cli(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch: pytest.MonkeyPatch):
+    """The CLI against the fake aside, with every command pointed at this test's registry."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    return lambda *a: run_cli(*a, "--runs-dir", str(runs_dir))
+
+
+@pytest.fixture
+def routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Install the browser's answers for the page snippets (see tests/fake_aside/aside)."""
+
+    def install(table: dict) -> None:
+        path = tmp_path / "repl-routes.json"
+        path.write_text(json.dumps(table, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setenv("FAKE_ASIDE_REPL_ROUTES", str(path))
+
+    return install
+
+
+def repl_calls(calls_dir: Path, snippet: str) -> list[dict]:
+    """The ARGS of every call the CLI made to one page snippet, in order."""
+    out = []
+    log = calls_dir / "calls.jsonl"
+    if not log.exists():
+        return out
+    for line in log.read_text(encoding="utf-8").splitlines():
+        argv = json.loads(line)["argv"]
+        if len(argv) < 3 or argv[1] != "repl":
+            continue
+        code = argv[-1].splitlines()
+        if len(code) > 1 and code[1] == f"// snippet: {snippet}":
+            out.append(json.loads(code[0][len("const ARGS = "):].rstrip(";")))
+    return out
+
+
+def exec_calls(calls_dir: Path) -> list[list[str]]:
+    """The argv of every `aside exec` the CLI started, in order."""
+    log = calls_dir / "calls.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+    return [r["argv"] for r in rows if len(r["argv"]) > 1 and r["argv"][1] == "exec"]
+
+
+@pytest.fixture
+def replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Make the next `aside exec` write these transcript records after its prompt.
+
+    Accepts records, or a recorded messages.jsonl whose bytes are replayed as they are.
+    ``{"__sleep__": SEC}`` holds the run open at that point.
+    """
+
+    def install(source) -> Path:
+        path = tmp_path / f"replay-{len(list(tmp_path.glob('replay-*')))}.jsonl"
+        if isinstance(source, (str, Path)):
+            path.write_bytes(Path(source).read_bytes())
+        else:
+            path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in source), encoding="utf-8")
+        monkeypatch.setenv("FAKE_ASIDE_REPLAY", str(path))
+        return path
+
+    return install
+
+
+def aside_session(home: Path, session_id: str, *records: dict) -> Path:
+    """A session as Aside itself would have left it on disk -- one the CLI did not start."""
+    d = home / "u" / "0" / "sessions" / f"2026-09-25_{session_id}"
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "messages.jsonl").open("a", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return d
+
+
+def user(text: str) -> dict:
+    return {"role": "user", "content": [{"type": "text", "text": text}], "timestamp": 1}
+
+
+def answer(text: str) -> dict:
+    return {"role": "assistant", "content": [{"type": "text", "text": text}], "stopReason": "stop", "timestamp": 2}
+
+
+def calling(*calls: tuple[str, object], text: str = "") -> dict:
+    content = [{"type": "toolCall", "name": n, "arguments": a} for n, a in calls]
+    if text:
+        content.append({"type": "text", "text": text})
+    return {"role": "assistant", "content": content, "stopReason": "toolUse", "timestamp": 2}
+
+
+def tool(name: str, content: str, **details: object) -> dict:
+    return {"role": "toolResult", "toolName": name, "content": content, "details": details, "timestamp": 3}

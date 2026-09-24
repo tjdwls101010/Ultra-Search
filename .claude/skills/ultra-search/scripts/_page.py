@@ -80,11 +80,11 @@ def _destinations(urls: list[str], out: str | None, runs_root: Path) -> tuple[Pa
 
 
 def exit_code_for(items: list[dict]) -> int:
+    """0 when anything was saved. The status still says what each page turned out to be:
+    `--format html` writes a client-rendered document that has no article in it."""
     if not items:
         return _errors.EXIT_EMPTY
-    if all(i["status"] == "ok" for i in items):
-        return 0
-    if any(i["status"] == "ok" for i in items):
+    if any(i["status"] == "ok" or i.get("path") for i in items):
         return 0
     return _errors.EXIT_RUN_FAILED
 

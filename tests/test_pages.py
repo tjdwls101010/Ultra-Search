@@ -858,3 +858,28 @@ def test_map_from_a_sitemap_says_so(cli, routes) -> None:
 
     assert code == 0
     assert payload["coverage"]["sitemap"] is True
+
+
+def test_a_file_that_was_written_counts_as_success(cli, routes) -> None:
+    """`--format html` saves the document even when no article was extracted from it. The
+    item keeps saying what the page is, but a command that wrote what was asked for has not
+    failed."""
+    routes({"fetch_batch": {"https://x.com/a": page(SHELL)}})
+
+    code, payload, _ = cli("fetch", "https://x.com/a", "--format", "html", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "shell"
+    assert item_of(payload)["path"] is not None
+    assert code == 0
+
+
+@pytest.mark.parametrize("ct", ["text/markdown", "text/plain"])
+def test_an_empty_body_is_not_a_page_that_was_read(cli, routes, ct: str) -> None:
+    routes({"fetch_batch": {"https://example.org/empty": page("  \n", ct=ct)}})
+
+    code, payload, _ = cli("fetch", "https://example.org/empty", "--via", "fetch")
+
+    assert item_of(payload)["status"] != "ok"
+    assert "empty" in item_of(payload)["error"]
+    assert item_of(payload)["path"] is None
+    assert code == 4

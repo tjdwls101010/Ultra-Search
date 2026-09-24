@@ -92,9 +92,10 @@ def _doctor(args) -> int:
         # A round trip, not just a health endpoint: the daemon answering HTTP and the
         # daemon running a snippet are different things, and only the second one matters.
         try:
-            lines = _repl_probe()
-            checks.append(_check("browser repl", bool(lines), "round trip ok" if lines else "no output"))
-            ok = ok and bool(lines)
+            probed, detail = _repl_probe()
+            checks.append(_check("browser repl", probed, detail,
+                                 None if probed else "Open the Aside app, then retry."))
+            ok = ok and probed
         except (AsideUnavailable, _repl.ReplTimeout) as e:
             ok = False
             checks.append(_check("browser repl", False, str(e), "Open the Aside app, then retry."))
@@ -152,21 +153,32 @@ def _check(name: str, ok: bool, detail: str, fix: str | None = None) -> dict:
     return out
 
 
-def _repl_probe() -> list[dict]:
+def _repl_probe() -> tuple[bool, str]:
+    """Run a snippet whose output is known and check that exact output came back.
+
+    Any output is not enough: a sandbox that refuses the snippet still prints its refusal.
+    """
     code = 'console.log(JSON.stringify({ok:true}));'
     try:
         proc = subprocess.run([_exec.aside_bin(), "repl", code], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         raise AsideUnavailable(f"repl round trip failed: {e}") from e
-    return [json.loads(l) for l in proc.stdout.splitlines() if l.strip().startswith("{")]
+    if proc.returncode == 0 and {"ok": True} in _repl._parse_ndjson(proc.stdout):
+        return True, "round trip ok"
+    said = (proc.stdout or proc.stderr or "").strip()[:200] or "no output"
+    return False, f"exit {proc.returncode}: {said}"
 
 
 def _writable(path: Path) -> tuple[bool, str]:
-    probe = Path(path) / ".write-probe"
+    import tempfile
+
     try:
-        probe.parent.mkdir(parents=True, exist_ok=True)
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
+        Path(path).mkdir(parents=True, exist_ok=True)
+        # A fresh name each time: a fixed one can collide with something already there and
+        # report a writable directory as unwritable.
+        fd, probe = tempfile.mkstemp(prefix=".write-probe-", dir=path)
+        os.close(fd)
+        os.unlink(probe)
         return True, str(path)
     except OSError as e:
         return False, f"{path} is not writable ({e})"

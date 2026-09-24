@@ -220,3 +220,29 @@ def test_the_version_is_reported() -> None:
 
     assert code == 0
     assert text.strip().startswith("ultra-search ")
+
+
+def test_a_repl_that_answers_without_running_the_probe_fails_doctor(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
+) -> None:
+    """Printing something is not a round trip. A sandbox that replies with a refusal would
+    pass a check that only looked for output, and every page command would then fail."""
+    monkeypatch.setenv("FAKE_ASIDE_REPL_PROBE", "fail")
+
+    code, payload = doctor(runs_dir)
+
+    assert code == 3
+    assert check(payload, "browser repl")["ok"] is False
+    assert check(payload, "browser repl")["fix"]
+
+
+def test_the_writability_probe_cannot_collide_with_what_is_already_there(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon
+) -> None:
+    (runs_dir / ".write-probe").mkdir()
+
+    code, payload = doctor(runs_dir)
+
+    assert check(payload, "runs dir")["ok"] is True
+    assert code == 0
+    assert sorted(p.name for p in runs_dir.iterdir()) == [".write-probe"]

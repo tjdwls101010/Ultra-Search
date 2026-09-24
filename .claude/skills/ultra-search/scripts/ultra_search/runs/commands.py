@@ -194,11 +194,7 @@ def _log(args, runs_root: Path) -> int:
 def _result(args, runs_root: Path) -> int:
     runs = _targets(args, runs_root)
     entries = [_result_entry(r, args.sources_only) for r in runs]
-    if len(entries) == 1:
-        payload = {"ok": True, "command": "result", **entries[0]}
-    else:
-        payload = {"ok": True, "command": "result", "runs": entries}
-    print(json.dumps(payload, ensure_ascii=False))
+    print(json.dumps({"ok": True, "command": "result", "runs": entries}, ensure_ascii=False))
 
     states = [e["state"] for e in entries]
     if any(s in contract.FAILED_STATES for s in states):

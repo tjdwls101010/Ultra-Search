@@ -8,6 +8,24 @@ the only way to test them repeatedly.
 
 Behaviour is chosen by FAKE_ASIDE_SCENARIO. Every invocation appends its argv to
 $FAKE_ASIDE_CALLS/calls.jsonl so a contract test can assert what was actually run.
+
+FAKE_ASIDE_REPLAY names a JSONL file of transcript records to write after the prompt,
+for `exec` and for a resumed `exec --session` alike; a `{"__sleep__": SEC}` line pauses
+the writer, so a run can be held open at any point of its transcript, and a record
+carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains TEXT, so
+the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
+resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
+
+`repl` answers the page snippets from FAKE_ASIDE_REPL_ROUTES, a JSON file keyed by the
+snippet named on the snippet's `// snippet: <name>` line and then by URL:
+
+    fetch_batch, tab_one  URL -> a record, or {"sequence": [record, ...]} answered in
+                          call order (the last one repeats). `url` is filled in.
+    sitemap               candidate URL -> the page URLs that sitemap lists
+    links                 page URL -> the raw hrefs on that page
+
+A URL with no route answers as the real browser would: fetch_batch gets an HTTP 404
+page, tab_one a navigation error, sitemap a miss, links a miss.
 """
 from __future__ import annotations
 
@@ -82,6 +100,46 @@ SEARCH_SOURCES = {"sources": [
 ]}
 
 
+def replay(d: Path, prompt: str) -> bool:
+    """Write the records from FAKE_ASIDE_REPLAY after the prompt already in ``d``.
+
+    A recorded session's own opening prompt is skipped: the prompt this run was given, with
+    its marker, is already there, exactly as the real binary writes it. A recording that
+    ends without a newline ends the same way here -- half a record, as a transcript looks
+    while its writer is mid-line.
+    """
+    source = os.environ.get("FAKE_ASIDE_REPLAY")
+    if not source:
+        return False
+    text = Path(source).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    opening = True
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            rec = None
+        role = rec.get("role") if isinstance(rec, dict) else None
+        if isinstance(rec, dict) and "__sleep__" in rec:
+            time.sleep(float(rec["__sleep__"]))
+            continue
+        if isinstance(rec, dict) and "__if_prompt__" in rec:
+            if str(rec.pop("__if_prompt__")) not in prompt:
+                continue
+            line = json.dumps(rec, ensure_ascii=False)
+        if opening and role == "user":
+            opening = False
+            continue
+        if role in ("assistant", "toolResult"):
+            opening = False
+        torn = i == len(lines) - 1 and not text.endswith("\n")
+        with (d / "messages.jsonl").open("a", encoding="utf-8") as f:
+            f.write(line if torn else line + "\n")
+    return True
+
+
 def do_exec(prompt: str, session: str | None = None) -> int:
     if session:
         # Continuing an existing session: append to its transcript rather than creating a
@@ -95,8 +153,11 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         if d is None:
             print(f"no such session {session}", file=sys.stderr)
             return 1
+        time.sleep(float(os.environ.get("FAKE_ASIDE_PROMPT_DELAY", "0")))
         append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
                    "timestamp": int(time.time() * 1000)})
+        if replay(d, prompt):
+            return 0
         answer = "이어서 답합니다."
         # The reply can land after this process exits -- which is exactly when a supervisor
         # that stopped waiting would report the previous turn's answer instead.
@@ -128,6 +189,9 @@ def do_exec(prompt: str, session: str | None = None) -> int:
     sid, d = make_session(prompt)
     print(f"Thinking: starting {sid}")
     sys.stdout.flush()
+
+    if replay(d, prompt):
+        return 0
 
     if SCENARIO == "slow":
         delay = float(os.environ.get("FAKE_ASIDE_DELAY", "3"))
@@ -190,8 +254,6 @@ def do_exec(prompt: str, session: str | None = None) -> int:
 
 
 def do_repl(code: str) -> int:
-    """Snippets are identified by a marker the caller embeds, so the fake does not have
-    to parse JavaScript to know which reply to give."""
     if SCENARIO == "aside_down":
         print("fetch failed: other side closed", file=sys.stderr)
         print("Aside daemon is not reachable", file=sys.stderr)
@@ -203,15 +265,112 @@ def do_repl(code: str) -> int:
         print("Aside daemon is not reachable", file=sys.stderr)
         return 1
 
-    replies = os.environ.get("FAKE_ASIDE_REPL_NDJSON")
-    if replies:
-        for line in Path(replies).read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                print(line)
-                sys.stdout.flush()
-        return 0
-    print(json.dumps({"ok": True, "pwd": str(HOME / "u" / "0" / "sessions" / "fake")}))
+    snippet, args = snippet_of(code)
+    if snippet is None:
+        # The fake does not run JavaScript. The one untagged program it answers is doctor's
+        # round trip, with what that program really prints; anything else is refused rather
+        # than answered with output the real sandbox would never produce.
+        if code.strip() == DOCTOR_PROBE:
+            print(json.dumps({"ok": True}))
+            return 0
+        print("the fake aside cannot evaluate arbitrary JavaScript", file=sys.stderr)
+        return 2
+    routes = load_routes().get(snippet) or {}
+    for rec in SNIPPETS[snippet](args, routes):
+        print(json.dumps(rec, ensure_ascii=False))
+        sys.stdout.flush()
     return 0
+
+
+DOCTOR_PROBE = "console.log(JSON.stringify({ok:true}));"
+
+
+def snippet_of(code: str) -> tuple[str | None, dict]:
+    """The snippet named by its tag line, and the ARGS the caller prepended."""
+    lines = code.splitlines()
+    args: dict = {}
+    if lines and lines[0].startswith("const ARGS = "):
+        args = json.loads(lines[0][len("const ARGS = "):].rstrip().rstrip(";"))
+    for line in lines[:3]:
+        if line.startswith("// snippet:"):
+            return line.split(":", 1)[1].strip(), args
+    return None, args
+
+
+def load_routes() -> dict:
+    path = os.environ.get("FAKE_ASIDE_REPL_ROUTES")
+    if not path:
+        return {}
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def answer_for(snippet: str, url: str, route: object) -> dict | None:
+    """A route's answer for this call, advancing a {"sequence": [...]} one step per call."""
+    if isinstance(route, dict) and "sequence" in route:
+        steps = route["sequence"]
+        n = bump(f"{snippet} {url}")
+        return steps[min(n, len(steps) - 1)]
+    return route
+
+
+def bump(key: str) -> int:
+    """How many times this key was asked before, remembered across processes."""
+    d = os.environ.get("FAKE_ASIDE_CALLS")
+    if not d:
+        return 0
+    p = Path(d) / "repl_counts.json"
+    counts = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    n = counts.get(key, 0)
+    counts[key] = n + 1
+    p.write_text(json.dumps(counts), encoding="utf-8")
+    return n
+
+
+def fetch_batch(args: dict, routes: dict):
+    urls = args.get("urls") or []
+    for u in urls:
+        rec = answer_for("fetch_batch", u, routes.get(u))
+        if rec is None:
+            rec = {"status": 404, "content_type": "text/html", "kind": "text",
+                   "text": "<html><body><h1>Not Found</h1></body></html>"}
+        yield {"url": u, "final_url": u, **rec} if rec.get("kind") != "error" else {"url": u, **rec}
+    yield {"kind": "batch_done", "requested": len(urls), "elapsed_ms": 1, "hit_budget": False}
+
+
+def tab_one(args: dict, routes: dict):
+    u = args.get("url") or ""
+    rec = answer_for("tab_one", u, routes.get(u))
+    if rec is None:
+        rec = {"status": 0, "kind": "error", "error": "net::ERR_NAME_NOT_RESOLVED"}
+    yield {"url": u, "final_url": u, "via": "tab", **rec}
+
+
+def sitemap(args: dict, routes: dict):
+    seen: list[str] = []
+    for root in args.get("roots") or []:
+        found = routes.get(root)
+        if found is None:
+            yield {"kind": "sitemap_miss", "url": root, "status": 404}
+            continue
+        for u in found:
+            if u not in seen:
+                seen.append(u)
+                yield {"kind": "url", "url": u, "source": root}
+    yield {"kind": "sitemap_done", "count": len(seen), "elapsed_ms": 1}
+
+
+def links(args: dict, routes: dict):
+    pages = args.get("pages") or []
+    for page in pages:
+        hrefs = routes.get(page)
+        if hrefs is None:
+            yield {"kind": "link_miss", "url": page, "status": 404}
+            continue
+        yield {"kind": "hrefs", "url": page, "final_url": page, "hrefs": list(hrefs)}
+    yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": False}
+
+
+SNIPPETS = {"fetch_batch": fetch_batch, "tab_one": tab_one, "sitemap": sitemap, "links": links}
 
 
 def main(argv: list[str]) -> int:
@@ -239,7 +398,11 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"result": {"tools": [{"name": "repl", "description": "fake repl API description"}]}}))
         return 0
     if cmd == "account":
-        print(json.dumps({"accounts": [{"id": "u0", "status": "logged-in"}]}))
+        # FAKE_ASIDE_ACCOUNTS=none is a signed-out browser: the command succeeds with an
+        # empty roster, which is what the real one does.
+        signed_out = os.environ.get("FAKE_ASIDE_ACCOUNTS") == "none"
+        roster = [] if signed_out else [{"id": "u0", "status": "logged-in"}]
+        print(json.dumps({"accounts": roster}))
         return 0
     print(f"unknown command {cmd}", file=sys.stderr)
     return 2

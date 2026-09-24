@@ -149,7 +149,7 @@ def fetch_urls(
 
 
 def _needs_retry(record: dict | None) -> bool:
-    return record is None or (record.get("kind") == "error" and record.get("error") != "not in fixture")
+    return record is None or record.get("kind") == "error"
 
 
 def _chunks(seq: list, n: int):

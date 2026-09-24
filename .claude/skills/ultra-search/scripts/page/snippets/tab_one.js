@@ -1,3 +1,4 @@
+// snippet: tab_one
 // Open one URL in a real browser tab and return the rendered DOM.
 //
 // This is the escalation path for a page that `fetch` gets nothing useful from -- a

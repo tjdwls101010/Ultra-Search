@@ -1,3 +1,4 @@
+// snippet: fetch_batch
 // Fetch N URLs through the user's logged-in browser and report each one as it lands.
 //
 // Two budgets, because the REPL is killed at 120s with no partial output preserved by

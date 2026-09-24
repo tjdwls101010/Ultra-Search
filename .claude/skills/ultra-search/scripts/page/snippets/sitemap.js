@@ -1,3 +1,4 @@
+// snippet: sitemap
 // Collect a site's sitemap URLs, following sitemap-index files one level.
 //
 // Tried before link-following because a sitemap is the site telling you what it has,

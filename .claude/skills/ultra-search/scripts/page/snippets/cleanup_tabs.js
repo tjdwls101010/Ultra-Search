@@ -1,3 +1,4 @@
+// snippet: cleanup_tabs
 // Close tabs left open by an escalation that timed out before its `finally` ran.
 //
 // Only tabs whose URL is in the caller's list are touched. The user's own browser is the

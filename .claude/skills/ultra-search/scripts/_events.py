@@ -270,8 +270,18 @@ def collect_sources(events: list[Event]) -> list[Source]:
     return out
 
 
-def turn_start_index(events: list[Event], marker: str) -> int:
-    """Index of the user message that began this run's turn.
+def merge_sources(lists: list[list[Source]]) -> list[Source]:
+    """Several streams' sources as one list, one entry per URL, first seen first."""
+    out: list[Source] = []
+    for sources in lists:
+        for s in sources:
+            if all(s.url != existing.url for existing in out):
+                out.append(s)
+    return out
+
+
+def turn_start_index(events: list[Event], marker: str) -> int | None:
+    """Index of the user message that began this run's turn, or None if it is not there yet.
 
     A resumed run appends to a transcript that already holds earlier turns, so "the last
     assistant message" is the previous answer until the new one lands. The marker planted
@@ -280,13 +290,14 @@ def turn_start_index(events: list[Event], marker: str) -> int:
     the new result.
 
     A fresh run's marker is in the first record, so the boundary is 0 and the whole
-    transcript is this turn -- the same code path, not a special case.
+    transcript is this turn -- the same code path, not a special case. No marker means the
+    turn has not landed, which is not the same as the whole transcript being this turn.
     """
     for i in range(len(events) - 1, -1, -1):
         e = events[i]
         if e.kind == "user" and marker and marker in e.text:
             return i
-    return 0
+    return None
 
 
 def has_terminal_answer(events: list[Event]) -> bool:

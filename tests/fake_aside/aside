@@ -155,10 +155,15 @@ def do_exec(prompt: str, session: str | None = None) -> int:
             print(f"no such session {session}", file=sys.stderr)
             return 1
         time.sleep(float(os.environ.get("FAKE_ASIDE_PROMPT_DELAY", "0")))
-        append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
-                   "timestamp": int(time.time() * 1000)})
-        if replay(d, prompt):
-            return 0
+        opening = {"role": "user", "content": [{"type": "text", "text": prompt}],
+                   "timestamp": int(time.time() * 1000)}
+        # FAKE_ASIDE_RESUME_LATE=1 lands the whole turn, prompt included, after this process
+        # has exited: the transcript then shows only earlier turns for a while.
+        late = os.environ.get("FAKE_ASIDE_RESUME_LATE") == "1"
+        if not late:
+            append(d, opening)
+            if replay(d, prompt):
+                return 0
         answer = "이어서 답합니다."
         # The reply can land after this process exits -- which is exactly when a supervisor
         # that stopped waiting would report the previous turn's answer instead.
@@ -166,6 +171,8 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         if delay:
             if os.fork() == 0:
                 time.sleep(delay)
+                if late:
+                    append(d, opening)
                 append(d, assistant(texts=[answer]))
                 os._exit(0)
         else:

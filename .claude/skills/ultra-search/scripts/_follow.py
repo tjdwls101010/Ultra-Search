@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import _events
+import _evidence
 import _registry
 import _render
 from _errors import ArgumentError
@@ -89,13 +90,11 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
     meta = run.meta()
     if meta.get("resume_session_id"):
         # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
-        history, _ = _events.read_events(run.session_transcript)
-        marker = meta.get("marker") or _registry.marker_for(run.run_id)
-        start = _events.turn_start_index(history, marker)
-        if not history or history[start].kind != "user" or marker not in history[start].text:
+        turn = _evidence.turn_of(run)
+        if not turn.observed:
             return lines
-        start_line = history[start].index
-        children = set(_events.child_session_ids(history[start:]))
+        start_line = turn.start_line
+        children = set(turn.children)
         streams = [(key, path) for key, path in streams if not key or key in children]
     for key, path in streams:
         events, cursor = _events.read_events(path, cursors.get(key, 0))

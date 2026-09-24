@@ -309,13 +309,16 @@ def _stop(args, runs_root: Path) -> int:
         run.update_meta(stop_requested=True)
         # The supervisor notices the flag and writes `abandoned` itself. Give it a moment
         # to do so rather than racing it: two processes writing the terminal state is how
-        # an `abandoned` gets overwritten by a stale `running` a moment later.
-        if not _await_state(run, "abandoned", 1.5):
+        # an `abandoned` gets overwritten by a stale `running` a moment later. Any terminal
+        # state ends the wait -- a run that finished meanwhile keeps its result.
+        if not _await_terminal(run, 1.5):
             _terminate(meta.get("supervisor_pid"))
             _terminate(meta.get("pid"))
-            run.update_meta(state="abandoned", reason="stop requested",
-                            daemon_run_continues=True, finished_at=time.time())
-        stopped.append(run.run_id)
+            if (run.meta().get("state") or "") not in _follow.TERMINAL_STATES:
+                run.update_meta(state="abandoned", reason="stop requested",
+                                daemon_run_continues=True, finished_at=time.time())
+        if run.meta().get("state") == "abandoned":
+            stopped.append(run.run_id)
     payload = {
         "ok": True,
         "command": "stop",
@@ -330,10 +333,10 @@ def _stop(args, runs_root: Path) -> int:
     return 0
 
 
-def _await_state(run: _registry.Run, state: str, timeout: float) -> bool:
+def _await_terminal(run: _registry.Run, timeout: float) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if (run.meta().get("state") or "") == state:
+        if (run.meta().get("state") or "") in _follow.TERMINAL_STATES:
             return True
         time.sleep(0.05)
     return False

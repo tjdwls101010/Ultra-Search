@@ -293,3 +293,27 @@ def test_a_copy_that_got_ahead_of_the_cursor_is_not_duplicated(source: Path, tmp
 
     assert dst.read_bytes() == complete
     assert after == full
+
+
+def test_stop_never_overwrites_a_run_that_finished_while_it_waited(runs_dir: Path) -> None:
+    """`stop` asks the supervisor to let go and waits for it. A run that completes in that
+    window has a result; recording it as abandoned would hide that result behind a state
+    that says the work was cut off."""
+    from conftest import run_cli
+
+    run = _registry.create_run(runs_dir, label="race")
+    run.update_meta(state="running")
+
+    def supervisor_finishes_first() -> None:
+        while not run.meta().get("stop_requested"):
+            pass
+        run.update_meta(state="completed", finished_at=1.0)
+
+    t = threading.Thread(target=supervisor_finishes_first)
+    t.start()
+    code, payload, _ = run_cli("stop", "--run", run.run_id, "--runs-dir", str(runs_dir))
+    t.join()
+
+    assert code == 0
+    assert run.meta()["state"] == "completed"
+    assert payload["stopped_watching"] == []

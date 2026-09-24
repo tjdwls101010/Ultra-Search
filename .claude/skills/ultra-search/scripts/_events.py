@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _errors import is_safe_id
+
 #: Tools whose result means the agent actually read a page, rather than merely being
 #: shown it in a result list. The distinction is what `opened` reports.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
@@ -300,7 +302,8 @@ def child_session_ids(events: list[Event]) -> list[str]:
     """Child sessions spawned by this run, in spawn order.
 
     Read from the parent's own transcript rather than the database, because an ephemeral
-    CLI session and its children may never appear there at all.
+    CLI session and its children may never appear there at all. An id that could not be a
+    session id is skipped: it becomes a file name in the run directory.
     """
     out: list[str] = []
     for e in events:
@@ -309,12 +312,12 @@ def child_session_ids(events: list[Event]) -> list[str]:
         det = e.details or {}
         for key in ("taskId", "task_id", "sessionId", "session_id"):
             val = det.get(key)
-            if isinstance(val, str) and val and val not in out:
+            if is_safe_id(val) and val not in out:
                 out.append(val)
         for r in det.get("results") or []:
             if isinstance(r, dict):
                 val = r.get("taskId") or r.get("task_id")
-                if isinstance(val, str) and val and val not in out:
+                if is_safe_id(val) and val not in out:
                     out.append(val)
     return out
 

@@ -77,7 +77,7 @@ def _external_session(session_id: str) -> str:
     import _store
 
     home = _store.aside_home()
-    if _store.session_dir(home, session_id) is None:
+    if not _errors.is_safe_id(session_id) or _store.session_dir(home, session_id) is None:
         raise ArgumentError(
             f"no run and no Aside session called {session_id!r}",
             fix="List what exists with `sessions`. Aside deletes sessions within about a day.",

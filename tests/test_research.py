@@ -1234,3 +1234,52 @@ def test_sessions_can_be_searched_by_prompt(cli) -> None:
     _, payload, _ = cli("sessions", "--search", "Agent Teams")
 
     assert [s["session_id"] for s in payload["sessions"]] == ["SubagentParent01"]
+
+
+# --- ids that name paths -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["status", "log", "result", "show", "stop"])
+def test_a_run_id_that_names_a_path_outside_the_registry_is_refused(cli, tmp_path: Path, command: str) -> None:
+    """A run id reaches the filesystem as a directory name. One that walks out of the
+    registry must not be read, let alone written to by `stop`."""
+    finished_run_id(cli)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "meta.json").write_text(json.dumps({"state": "running"}))
+    (outside / "session").mkdir()
+    (outside / "session" / "messages.jsonl").write_text(json.dumps(tool("webfetch", "private")) + "\n")
+    extra = ["--item", "0"] if command == "show" else []
+
+    code, err, _ = cli(command, "--run", "../../outside", *extra)
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "private" not in json.dumps(err)
+    assert json.loads((outside / "meta.json").read_text()) == {"state": "running"}
+
+
+def test_resume_does_not_continue_a_session_named_by_a_path(cli, tmp_path: Path, fake_aside: Path) -> None:
+    finished_run_id(cli)
+    started = len(exec_calls(fake_aside))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "meta.json").write_text(json.dumps({"state": "completed", "session_id": "SimpleSearch00001"}))
+
+    code, err, _ = cli("resume", "../../outside", "후속")
+
+    assert code == 2
+    assert len(exec_calls(fake_aside)) == started
+
+
+def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
+    """Child ids are read out of the transcript, another product's data, and become file
+    names in the run directory."""
+    replay([tool("subagent", "spawned", taskId="../escaped"), answer("부모 답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    assert run["state"] == "completed"
+    _, result, _ = cli("result", "--run", run["run_id"])
+    assert result["children"] == []

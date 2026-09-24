@@ -1283,3 +1283,21 @@ def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
     assert run["state"] == "completed"
     _, result, _ = cli("result", "--run", run["run_id"])
     assert result["children"] == []
+
+
+def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, monkeypatch, fake_aside: Path) -> None:
+    """`stop` ends the watching, not the daemon's turn. Resuming the run it abandoned would
+    attach to that live turn, which waits for it and cannot steer it."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+    assert poll(lambda: first_run(cli("status", "--run", run_id)[1]).get("session_id"), timeout=10)
+    cli("stop", "--run", run_id)
+    started = len(exec_calls(fake_aside))
+
+    code, err, _ = cli("resume", run_id, "후속")
+
+    assert code == 2
+    assert "in flight" in err["message"]
+    assert len(exec_calls(fake_aside)) == started

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from _contract import ArgumentError, is_safe_id
+from ultra_search.contract import ArgumentError, is_safe_id
 
 RUNS_SUBDIR = "runs"
 PAGES_SUBDIR = "pages"

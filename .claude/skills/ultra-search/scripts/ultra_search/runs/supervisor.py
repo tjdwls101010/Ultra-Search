@@ -21,18 +21,14 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import _contract
-import _events
-import _evidence
-import _exec
-import _registry
-import _store
+from ultra_search import contract
+from ultra_search.aside import process, sessions, transcript
+from ultra_search.runs import evidence, registry
 
 POLL = 2.0
 #: How long to keep looking for the session before giving up and using stdout alone.
@@ -43,8 +39,35 @@ SETTLE = 10.0
 _URL_IN_STDOUT = re.compile(r'https?://[^\s"\'<>)\]]+')
 
 
+def spawn(run_path: str | os.PathLike[str]) -> int:
+    """Start the detached supervisor for a run and return its pid.
+
+    setsid, and output to a file rather than a pipe: an inherited pipe would keep the
+    supervisor's lifetime tied to a reader that is about to go away, which is the exact
+    coupling this is here to break.
+    """
+    run = Path(run_path).absolute()
+    log = run / "supervisor.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    handle = log.open("ab")
+    # Run as a module of the package it belongs to, found through the installed scripts
+    # directory -- the working directory is the run's, not the skill's.
+    scripts = Path(__file__).resolve().parents[2]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "ultra_search.runs.supervisor", "--run-path", str(run)],
+        stdout=handle,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+        cwd=str(run),
+        env=dict(os.environ, PYTHONPATH=str(scripts)),
+    )
+    return proc.pid
+
+
 def supervise(
-    run: _registry.Run,
+    run: registry.Run,
     *,
     poll: float = POLL,
     discovery_deadline: float = DISCOVERY_DEADLINE,
@@ -53,14 +76,14 @@ def supervise(
 ) -> dict:
     meta = run.meta()
     prompt = meta.get("prompt") or ""
-    marker = meta.get("marker") or _registry.marker_for(run.run_id)
+    marker = meta.get("marker") or registry.marker_for(run.run_id)
     if timeout is None and meta.get("watch_timeout") is not None:
         # `--timeout` is recorded by the CLI that started the run; the supervisor is a
         # separate process with no way to be passed it, so it is read back from disk here.
         timeout = float(meta["watch_timeout"])
 
-    argv = _exec.exec_argv(
-        _registry.decorate_prompt(prompt, marker),
+    argv = process.exec_argv(
+        registry.decorate_prompt(prompt, marker),
         session=meta.get("resume_session_id"),
         effort=meta.get("effort"),
         model=meta.get("model"),
@@ -71,7 +94,7 @@ def supervise(
     # reads. The id is already known here -- use it rather than hunting for it.
     session_id: str | None = meta.get("session_id") or meta.get("resume_session_id")
 
-    proc = _exec.spawn_exec(argv, run.stdout_path)
+    proc = process.spawn_exec(argv, run.stdout_path)
     started = time.time()
     opening = {"state": "running", "pid": proc.pid, "supervisor_pid": os.getpid(),
                "started_at": started, "argv": argv}
@@ -79,7 +102,7 @@ def supervise(
         opening["session_id"] = session_id
     run.update_meta(**opening)
 
-    home = _store.aside_home()
+    home = sessions.aside_home()
     cursor = int(meta.get("session_cursor") or 0)
     child_cursors: dict[str, int] = dict(meta.get("child_cursors") or {})
     children: list[str] = list(meta.get("children") or [])
@@ -93,7 +116,7 @@ def supervise(
             return _abandon(run, "watch timeout", proc)
 
         if session_id is None and now - started <= discovery_deadline:
-            found = _store.find_session_by_marker(home, marker)
+            found = sessions.find_session_by_marker(home, marker)
             if found:
                 session_id = found.session_id
                 run.update_meta(session_id=session_id)
@@ -113,19 +136,19 @@ def supervise(
     orphans: list[str] = []
     while True:
         if session_id is None and time.time() - started <= discovery_deadline:
-            found = _store.find_session_by_marker(home, marker)
+            found = sessions.find_session_by_marker(home, marker)
             if found:
                 session_id = found.session_id
                 run.update_meta(session_id=session_id)
         if session_id:
             cursor, children, child_cursors = _sync(run, home, session_id, cursor, children, child_cursors)
-            turn = _evidence.turn_of(run)
-            orphans = [c for c in turn.children if not _evidence.child_is_terminal(turn.child_events[c])]
+            turn = evidence.turn_of(run)
+            orphans = [c for c in turn.children if not evidence.child_is_terminal(turn.child_events[c])]
             # Both conditions, not just the children. The process exiting does not mean the
             # last message has been flushed, and on a resumed session the message that is
             # already there is the previous turn's answer -- which is why an unobserved turn
             # is waited for rather than read as this one.
-            if turn.observed and _events.has_terminal_answer(turn.events) and not orphans:
+            if turn.observed and evidence.has_terminal_answer(turn.events) and not orphans:
                 break
         if time.time() >= deadline:
             break
@@ -135,17 +158,17 @@ def supervise(
 
 
 def _sync(run, home, session_id, cursor, children, child_cursors):
-    src = _store.session_dir(home, session_id)
+    src = sessions.session_dir(home, session_id)
     if src:
-        cursor = _store.copy_new_lines(src / "messages.jsonl", run.session_transcript, cursor)
-    events, _ = _events.read_events(run.session_transcript)
-    for cid in _events.child_session_ids(events):
+        cursor = sessions.copy_new_lines(src / "messages.jsonl", run.session_transcript, cursor)
+    events, _ = transcript.read_events(run.session_transcript)
+    for cid in evidence.child_session_ids(events):
         if cid not in children:
             children.append(cid)
     for cid in children:
-        cd = _store.session_dir(home, cid)
+        cd = sessions.session_dir(home, cid)
         if cd:
-            child_cursors[cid] = _store.copy_new_lines(
+            child_cursors[cid] = sessions.copy_new_lines(
                 cd / "messages.jsonl", run.child_transcript(cid), child_cursors.get(cid, 0)
             )
     run.update_meta(
@@ -159,15 +182,15 @@ def _sync(run, home, session_id, cursor, children, child_cursors):
 
 def _activity(run, home, session_id, children) -> float:
     """Newest write anywhere this run touches: its own files, and Aside's session directories."""
-    aside = _store.last_activity(home, session_id, children) if session_id else 0.0
+    aside = sessions.last_activity(home, session_id, children) if session_id else 0.0
     return max(aside, run.last_write())
 
 
-def _stop_requested(run: _registry.Run) -> bool:
+def _stop_requested(run: registry.Run) -> bool:
     return bool(run.meta().get("stop_requested"))
 
 
-def _abandon(run: _registry.Run, reason: str, proc) -> dict:
+def _abandon(run: registry.Run, reason: str, proc) -> dict:
     try:
         proc.terminate()
     except OSError:
@@ -188,7 +211,7 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
     # This turn only. A resumed session's earlier turns are context, not results, and
     # counting them again would attribute the previous answer, its sources and its tokens
     # to this run -- and strictly this turn's children, for the same reason.
-    turn = _evidence.turn_of(run) if session_id else _evidence.Turn(observed=False)
+    turn = evidence.turn_of(run) if session_id else evidence.Turn(observed=False)
     children: list[str] = turn.children
 
     if turn.observed:
@@ -228,7 +251,7 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
             if session_id else
             "the session transcript was never found; answer and sources come from stdout only"
         )
-    _registry.atomic_write_json(run.path / "result.json", result)
+    registry.atomic_write_json(run.path / "result.json", result)
     return run.update_meta(
         state=state,
         exit_code=exit_code,
@@ -262,8 +285,8 @@ def _from_stdout(stdout: str):
         u = u.rstrip('.,")')
         if u not in urls:
             urls.append(u)
-    sources = [_events.Source(url=u, opened=False) for u in urls]
-    return answer, sources, _events.total_usage([]), False
+    sources = [evidence.Source(url=u, opened=False) for u in urls]
+    return answer, sources, evidence.total_usage([]), False
 
 
 def _read_text(p: Path) -> str:
@@ -278,13 +301,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--run-path", required=True, help="The run directory to supervise.")
     args = p.parse_args(argv)
     path = Path(args.run_path)
-    run = _registry.Run(run_id=path.name, path=path)
+    run = registry.Run(run_id=path.name, path=path)
     try:
         meta = supervise(run)
     except Exception as e:  # noqa: BLE001 - a detached process must record why it died
         run.update_meta(state="failed", reason=f"{type(e).__name__}: {e}", finished_at=time.time())
         raise
-    return 0 if meta.get("state") in _contract.TERMINAL_STATES - _contract.FAILED_STATES else 1
+    return 0 if meta.get("state") in contract.TERMINAL_STATES - contract.FAILED_STATES else 1
 
 
 if __name__ == "__main__":

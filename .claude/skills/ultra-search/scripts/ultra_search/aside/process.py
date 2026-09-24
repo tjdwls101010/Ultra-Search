@@ -1,20 +1,18 @@
-"""Starting `aside exec`, and starting the supervisor that watches it.
+"""The aside binary: finding it, starting `aside exec`, and where its daemon answers.
 
-Both spawns are detached on purpose, for the same reason: the process that starts the
-work is a Bash tool call that will be cut off at a timeout the work does not respect.
-A supervisor that died with its caller would leave the run going with nobody recording
-it -- and the run does keep going, because killing the CLI was measured leaving the
-daemon-side work running and still spending credits.
+`aside exec` is spawned detached, for the reason the supervisor is: the process that starts
+the work is a Bash tool call that will be cut off at a timeout the work does not respect,
+and killing the CLI was measured leaving the daemon-side work running and still spending
+credits.
 """
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-from _contract import AsideUnavailable
+from ultra_search.contract import AsideUnavailable
 
 DEFAULT_BIN = "aside"
 #: The versions this skill's behaviour was measured against. `doctor` compares both,
@@ -23,6 +21,12 @@ DEFAULT_BIN = "aside"
 #: entirely while still writing full transcripts to disk.
 VERIFIED_VERSION = "1.26.810.1915"
 VERIFIED_DAEMON_VERSION = "1.26.829.1514"
+DAEMON_URL = "http://127.0.0.1:21420/"
+
+
+def daemon_url() -> str:
+    """The daemon's health endpoint; ULTRA_SEARCH_DAEMON_URL points doctor at another one."""
+    return os.environ.get("ULTRA_SEARCH_DAEMON_URL") or DAEMON_URL
 
 
 def aside_bin() -> str:
@@ -73,30 +77,6 @@ def spawn_exec(argv: list[str], stdout_path: str | os.PathLike[str]) -> subproce
         start_new_session=True,
         close_fds=True,
     )
-
-
-def spawn_supervisor(run_path: str | os.PathLike[str]) -> int:
-    """Start the detached supervisor for a run and return its pid.
-
-    setsid, and output to a file rather than a pipe: an inherited pipe would keep the
-    supervisor's lifetime tied to a reader that is about to go away, which is the exact
-    coupling this is here to break.
-    """
-    run = Path(run_path)
-    log = run / "supervisor.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    handle = log.open("ab")
-    script = Path(__file__).resolve().parent / "_supervisor.py"
-    proc = subprocess.Popen(
-        [sys.executable, str(script), "--run-path", str(run)],
-        stdout=handle,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-        cwd=str(run),
-    )
-    return proc.pid
 
 
 def version() -> str:

@@ -19,8 +19,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from _contract import EXIT_OK  # noqa: E402 - after the path it is found on
-from _render import LEVELS  # noqa: E402
+from ultra_search.contract import EXIT_OK  # noqa: E402 - after the path it is found on
+from ultra_search.runs.render import LEVELS  # noqa: E402
 
 EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
 SPEED_CHOICES = ("default", "fast")
@@ -71,7 +71,7 @@ def _add_exec_opts(p: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="ultra_search.py",
+        prog="cli.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
         epilog="Exit codes: 0 command handled (inspect run/item states) | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 no result data.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -359,16 +359,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.script_path = str(pathlib.Path(__file__).absolute())
 
-    from _contract import RunFailed, UltraSearchError
+    from ultra_search.contract import RunFailed, UltraSearchError
 
-    if args.command in ("search", "resume"):
-        import _run_cmds as impl
-    elif args.command in ("status", "log", "result", "show", "stop", "sessions"):
-        import _watch_cmds as impl
+    if args.command in ("search", "resume", "status", "log", "result", "show", "stop", "sessions"):
+        from ultra_search.runs import commands as impl
     elif args.command in ("fetch", "map", "crawl"):
-        import _page as impl
+        from ultra_search.pages import commands as impl
     else:
-        import _doctor as impl
+        from ultra_search import doctor as impl
 
     try:
         return impl.dispatch(args)

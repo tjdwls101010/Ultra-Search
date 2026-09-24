@@ -543,7 +543,7 @@ def fetch_without_node(tmp_path: Path, routes_file: Path, runs_dir: Path, url: s
     (bin_dir / "python3").symlink_to(sys.executable)
     env = dict(os.environ, PATH=str(bin_dir), FAKE_ASIDE_REPL_ROUTES=str(routes_file))
     p = subprocess.run(
-        [sys.executable, str(SCRIPTS / "ultra_search.py"), "fetch", url, "--via", "fetch", "--runs-dir", str(runs_dir)],
+        [sys.executable, str(SCRIPTS / "cli.py"), "fetch", url, "--via", "fetch", "--runs-dir", str(runs_dir)],
         capture_output=True, text=True, env=env, timeout=60,
     )
     return json.loads(p.stdout.splitlines()[-1])

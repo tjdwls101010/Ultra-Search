@@ -80,12 +80,12 @@ def fake_aside(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def run_cli(*argv: str) -> tuple[int, dict, str]:
     """argv in; the exit code, the last JSON line on stdout, and all of stdout out."""
-    import ultra_search
+    import cli
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         try:
-            code = ultra_search.main(list(argv))
+            code = cli.main(list(argv))
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 2
     text = buf.getvalue()

@@ -18,7 +18,7 @@ import pytest
 
 pytestmark = pytest.mark.live
 
-SCRIPT = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "ultra-search" / "scripts" / "ultra_search.py"
+SCRIPT = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "ultra-search" / "scripts" / "cli.py"
 
 
 def cli(*args: str, timeout: float = 300) -> tuple[int, dict]:

@@ -18,29 +18,28 @@ from pathlib import Path
 
 import pytest
 
-import _registry
-import _store
-import _supervisor
+from ultra_search.aside import sessions
+from ultra_search.runs import registry, supervisor
 from conftest import SCRIPTS, aside_session, answer, calling, tool, user
 
 SESSIONS = Path(__file__).parent / "fixtures" / "sessions"
 
 
-def start(runs_dir: Path, prompt: str = "질문") -> _registry.Run:
+def start(runs_dir: Path, prompt: str = "질문") -> registry.Run:
     """A run reserved the way `search` reserves one, before its supervisor starts."""
-    run = _registry.create_run(runs_dir, label="t", prompt=prompt)
-    run.update_meta(marker=_registry.marker_for(run.run_id))
+    run = registry.create_run(runs_dir, label="t", prompt=prompt)
+    run.update_meta(marker=registry.marker_for(run.run_id))
     return run
 
 
-def supervise(run: _registry.Run, **kw) -> dict:
+def supervise(run: registry.Run, **kw) -> dict:
     kw.setdefault("poll", 0.05)
     kw.setdefault("discovery_deadline", 5.0)
     kw.setdefault("settle", 0.5)
-    return _supervisor.supervise(run, **kw)
+    return supervisor.supervise(run, **kw)
 
 
-def result_of(run: _registry.Run) -> dict:
+def result_of(run: registry.Run) -> dict:
     return json.loads((run.path / "result.json").read_text(encoding="utf-8"))
 
 
@@ -135,19 +134,19 @@ def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(
 
 
 def test_metadata_round_trips_and_updates_merge(runs_dir: Path) -> None:
-    run = _registry.create_run(runs_dir, label="x")
+    run = registry.create_run(runs_dir, label="x")
     run.write_meta({"state": "running", "marker": "us-abc", "prompt": "질문"})
 
     written = run.update_meta(state="completed", answer_count=3)
 
     assert written == {"state": "completed", "marker": "us-abc", "prompt": "질문", "answer_count": 3}
-    assert _registry.load_meta(run.path) == written
+    assert registry.load_meta(run.path) == written
 
 
 def test_a_meta_write_is_all_or_nothing(runs_dir: Path) -> None:
     """`status` may read meta.json at any moment. A value that cannot be serialised fails
     before the file is touched, so a reader sees the old file or the new one."""
-    run = _registry.create_run(runs_dir, label="x")
+    run = registry.create_run(runs_dir, label="x")
     run.write_meta({"state": "running"})
     before = run.meta_path.read_bytes()
 
@@ -161,7 +160,7 @@ def test_a_meta_write_is_all_or_nothing(runs_dir: Path) -> None:
 def test_concurrent_meta_updates_do_not_lose_each_others_keys(runs_dir: Path) -> None:
     """meta.json is written by the starting CLI, the detached supervisor and `stop`, each
     doing read-modify-write. Without serialisation the loser's keys vanish."""
-    run = _registry.create_run(runs_dir, label="race")
+    run = registry.create_run(runs_dir, label="race")
     keys = [f"k{i}" for i in range(24)]
 
     threads = [threading.Thread(target=run.update_meta, kwargs={k: k}) for k in keys]
@@ -176,13 +175,13 @@ def test_concurrent_meta_updates_do_not_lose_each_others_keys(runs_dir: Path) ->
 def test_updates_from_many_processes_all_survive(runs_dir: Path) -> None:
     """Processes, not threads: the lock is a file, and a threads-only test would pass on an
     in-process lock that does nothing across the process boundary this actually has."""
-    run = _registry.create_run(runs_dir, label="procs")
+    run = registry.create_run(runs_dir, label="procs")
     script = textwrap.dedent(
         f"""
         import sys
         sys.path.insert(0, {str(SCRIPTS)!r})
-        import _registry
-        run = _registry.Run(run_id={run.run_id!r}, path=__import__("pathlib").Path({str(run.path)!r}))
+        from ultra_search.runs import registry
+        run = registry.Run(run_id={run.run_id!r}, path=__import__("pathlib").Path({str(run.path)!r}))
         run.update_meta(**{{sys.argv[1]: sys.argv[1]}})
         """
     )
@@ -196,8 +195,8 @@ def test_updates_from_many_processes_all_survive(runs_dir: Path) -> None:
 def test_runs_reserved_in_the_same_second_get_different_ids(runs_dir: Path) -> None:
     """A group starts every member at once. Reserving the directory with O_EXCL is what makes
     the loser pick a new id instead of writing its metadata over the winner's."""
-    got: list[_registry.Run] = []
-    threads = [threading.Thread(target=lambda: got.append(_registry.create_run(runs_dir, label="same"))) for _ in range(8)]
+    got: list[registry.Run] = []
+    threads = [threading.Thread(target=lambda: got.append(registry.create_run(runs_dir, label="same"))) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
@@ -222,10 +221,10 @@ def test_a_copy_takes_only_whole_lines_and_picks_up_a_line_once_it_is_complete(t
     whole = json.dumps(user("q")) + "\n"
     src.write_text(whole + '{"role":"assistant","content":[{"type":"text","text":"잘린')
 
-    first = _store.copy_new_lines(src, dst, since=0)
+    first = sessions.copy_new_lines(src, dst, since=0)
     with src.open("a") as f:
         f.write(' 줄"}],"stopReason":"stop"}\n')
-    second = _store.copy_new_lines(src, dst, since=first)
+    second = sessions.copy_new_lines(src, dst, since=first)
 
     assert first == len(whole.encode())
     assert dst.read_bytes() == src.read_bytes()
@@ -235,8 +234,8 @@ def test_a_copy_takes_only_whole_lines_and_picks_up_a_line_once_it_is_complete(t
 def test_a_copy_resumes_from_its_cursor_without_duplicating(source: Path, tmp_path: Path) -> None:
     dst = tmp_path / "copy.jsonl"
 
-    first = _store.copy_new_lines(source, dst, since=0)
-    second = _store.copy_new_lines(source, dst, since=first)
+    first = sessions.copy_new_lines(source, dst, since=0)
+    second = sessions.copy_new_lines(source, dst, since=first)
 
     assert second == first
     assert dst.read_bytes() == source.read_bytes()
@@ -246,13 +245,13 @@ def test_a_shrinking_or_vanishing_source_never_shortens_the_copy(source: Path, t
     """Aside cleans up sessions on its own schedule. The copy is then the only remaining
     record, so it is append-only, always."""
     dst = tmp_path / "copy.jsonl"
-    cursor = _store.copy_new_lines(source, dst, since=0)
+    cursor = sessions.copy_new_lines(source, dst, since=0)
     kept = dst.read_bytes()
 
     source.write_text(json.dumps(user("짧아짐")) + "\n")
-    assert _store.copy_new_lines(source, dst, since=cursor) == cursor
+    assert sessions.copy_new_lines(source, dst, since=cursor) == cursor
     source.unlink()
-    assert _store.copy_new_lines(source, dst, since=cursor) == cursor
+    assert sessions.copy_new_lines(source, dst, since=cursor) == cursor
 
     assert dst.read_bytes() == kept
 
@@ -261,22 +260,22 @@ def test_a_lost_copy_is_rebuilt_rather_than_resumed_past(source: Path, tmp_path:
     """The cursor describes the destination, not the source. Continuing from the old cursor
     onto an emptied copy would silently lose everything before it."""
     dst = tmp_path / "copy.jsonl"
-    cursor = _store.copy_new_lines(source, dst, since=0)
+    cursor = sessions.copy_new_lines(source, dst, since=0)
     original = dst.read_bytes()
 
     dst.write_bytes(b"")
 
-    assert _store.copy_new_lines(source, dst, since=cursor) == cursor
+    assert sessions.copy_new_lines(source, dst, since=cursor) == cursor
     assert dst.read_bytes() == original
 
 
 def test_a_source_recreated_shorter_is_read_from_the_start_into_a_new_copy(source: Path, tmp_path: Path) -> None:
     dst = tmp_path / "copy.jsonl"
-    cursor = _store.copy_new_lines(source, dst, since=0)
+    cursor = sessions.copy_new_lines(source, dst, since=0)
 
     dst.unlink()
     source.write_text(json.dumps(user("새 세션"), ensure_ascii=False) + "\n")
-    _store.copy_new_lines(source, dst, since=cursor)
+    sessions.copy_new_lines(source, dst, since=cursor)
 
     assert "새 세션" in dst.read_text(encoding="utf-8")
 
@@ -286,10 +285,10 @@ def test_a_copy_that_got_ahead_of_the_cursor_is_not_duplicated(source: Path, tmp
     between the two leaves the destination ahead of what meta remembers -- and re-copying
     from the remembered position would count records twice in usage, sources and children."""
     dst = tmp_path / "copy.jsonl"
-    full = _store.copy_new_lines(source, dst, since=0)
+    full = sessions.copy_new_lines(source, dst, since=0)
     complete = dst.read_bytes()
 
-    after = _store.copy_new_lines(source, dst, since=full // 2)
+    after = sessions.copy_new_lines(source, dst, since=full // 2)
 
     assert dst.read_bytes() == complete
     assert after == full
@@ -301,7 +300,7 @@ def test_stop_never_overwrites_a_run_that_finished_while_it_waited(runs_dir: Pat
     that says the work was cut off."""
     from conftest import run_cli
 
-    run = _registry.create_run(runs_dir, label="race")
+    run = registry.create_run(runs_dir, label="race")
     run.update_meta(state="running")
 
     def supervisor_finishes_first() -> None:
@@ -336,7 +335,7 @@ def test_only_a_finished_turn_supplies_the_answer(
     assert result_of(run)["answer"] == ""
 
 
-def resumed(runs_dir: Path, aside_home: Path) -> _registry.Run:
+def resumed(runs_dir: Path, aside_home: Path) -> registry.Run:
     """A run continuing the recorded search session, whose last turn already has an answer."""
     run = start(runs_dir, "후속 질문")
     run.update_meta(resume_session_id="SimpleSearch00001", resumed_from="SimpleSearch00001")

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-import ultra_search
+import cli
 from conftest import (
     FIXTURES,
     SCRIPTS,
@@ -105,7 +105,7 @@ def start_isolated(base: Path, records, *, children: dict | None = None, prompt:
         FAKE_ASIDE_REPLAY=str(replay),
     )
     p = subprocess.run(
-        [sys.executable, str(SCRIPTS / "ultra_search.py"), "search", prompt, "--label", label,
+        [sys.executable, str(SCRIPTS / "cli.py"), "search", prompt, "--label", label,
          "--wait", wait, "--runs-dir", str(runs)],
         capture_output=True, text=True, env=env, timeout=120,
     )
@@ -315,8 +315,8 @@ def test_next_commands_preserve_the_installed_path_and_run_store(
     tmp_path: Path, aside_home: Path, fake_aside: Path, monkeypatch, runs_arg
 ) -> None:
     installed = tmp_path / r'installed "quote" $(touch injected) `touch leaked` \\ path'
-    installed.symlink_to(Path(ultra_search.__file__).parent, target_is_directory=True)
-    script = installed / "ultra_search.py"
+    installed.symlink_to(Path(cli.__file__).parent, target_is_directory=True)
+    script = installed / "cli.py"
     started_in = tmp_path / "start"
     collected_in = tmp_path / "elsewhere"
     started_in.mkdir()

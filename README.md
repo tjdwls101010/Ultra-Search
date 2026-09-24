@@ -19,8 +19,8 @@
 ```bash
 git clone <this repo> ~/Coding/Ultra-Search
 ln -s ~/Coding/Ultra-Search/.claude/skills/ultra-search ~/.claude/skills/ultra-search
-python3 ~/.claude/skills/ultra-search/scripts/ultra_search.py setup    # Node 변환 의존성
-python3 ~/.claude/skills/ultra-search/scripts/ultra_search.py doctor   # 환경 점검
+python3 ~/.claude/skills/ultra-search/scripts/cli.py setup    # Node 변환 의존성
+python3 ~/.claude/skills/ultra-search/scripts/cli.py doctor   # 환경 점검
 ```
 
 전제: Aside 앱이 실행 중이고 계정이 로그인되어 있을 것, `aside` CLI가 PATH에 있을 것, Node 20 이상. Python은 표준 라이브러리만 쓰므로 별도 설치가 없다.
@@ -30,7 +30,7 @@ python3 ~/.claude/skills/ultra-search/scripts/ultra_search.py doctor   # 환경 
 ## 써보기
 
 ```bash
-US='python3 ~/.claude/skills/ultra-search/scripts/ultra_search.py'
+US='python3 ~/.claude/skills/ultra-search/scripts/cli.py'
 
 $US search "현재 Python 3의 최신 안정 버전은? 공식 출처를 들어 한 줄로"
 $US fetch https://arxiv.org/pdf/1706.03762 --out ./papers

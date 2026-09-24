@@ -307,6 +307,7 @@ def test_result_help_names_every_end_state_and_what_opened_means() -> None:
     for state in ("completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"):
         assert state in text
     assert "opened" in text and "not a check" in text
+    assert "outlive Aside's session" in text
 
 
 def test_fetch_help_names_every_item_status_and_what_conversion_loses() -> None:

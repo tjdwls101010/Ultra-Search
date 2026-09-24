@@ -23,7 +23,7 @@ python3 ~/.claude/skills/ultra-search/scripts/cli.py setup    # Node 변환 의�
 python3 ~/.claude/skills/ultra-search/scripts/cli.py doctor   # 환경 점검
 ```
 
-전제: Aside 앱이 실행 중이고 계정이 로그인되어 있을 것, `aside` CLI가 PATH에 있을 것, Node 20 이상. Python은 표준 라이브러리만 쓰므로 별도 설치가 없다.
+전제: Aside 앱이 실행 중이고 계정이 로그인되어 있을 것, `aside` CLI가 PATH에 있을 것, Node 20.19 이상(변환 패키지 lockfile의 요구치이며 `doctor`가 확인한다). Python은 표준 라이브러리만 쓰므로 별도 설치가 없다.
 
 `doctor`가 초록이면 준비된 것이다. 무엇이 왜 막혔는지는 `doctor`가 한 줄로 말한다.
 
@@ -39,6 +39,7 @@ $US fetch https://arxiv.org/pdf/1706.03762 --out ./papers
 $US crawl https://docs.aside.com --out ./docs
 $US --help          # 커맨드 전체
 $US fetch --help    # 플래그·기본값·거부 규칙
+$US --version       # 설치된 버전
 ```
 
 사용법의 진실은 `--help`에 있다. 이 README에 플래그 표를 두지 않는 것은 두 벌이 되는 순간 한 벌이 틀리기 때문이다.
@@ -53,10 +54,10 @@ $US fetch --help    # 플래그·기본값·거부 규칙
 ## 개발
 
 ```bash
-python3 -m pytest tests/          # 170개, aside 없이 통과
+python3 -m pytest tests/          # 294개, aside 없이 통과
 python3 -m pytest tests/ -m live  # 실제 Aside 필요
 ```
 
 테스트는 `tests/fake_aside/aside`(가짜 바이너리)와 `tests/fixtures/`(실제 세션·페이지·PDF에서 녹화)를 쓴다. 임계값은 지어낸 값이 아니라 실측에서 나왔다 — 셸 판정 80단어는 x.com 0단어, 연합뉴스 219단어, 위키백과 4355단어 사이에서 잡은 것이다.
 
-구조와 설계 근거는 [.claude/harness-spec.md](.claude/harness-spec.md)에, 만든 과정은 [.claude/plans/](.claude/plans/)에 있다.
+진입점은 `scripts/cli.py` 하나이고, 나머지는 `scripts/ultra_search/` 패키지다: `aside/`(Aside와 말하는 방법), `runs/`(조사 명령과 그 상태), `pages/`(fetch·map·crawl). 설계 근거는 각 모듈의 docstring에, 만든 과정은 [.claude/plans/](.claude/plans/)에 있다.

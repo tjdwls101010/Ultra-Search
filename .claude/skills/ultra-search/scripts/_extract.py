@@ -110,6 +110,12 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
 
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
 
+    if ("markdown" in ct or ct.startswith("text/")) and "html" not in ct and "xml" not in ct and not count_words(text):
+        # Nothing to read is not a page that was read. Called a shell, it is also worth the
+        # real tab a JavaScript shell gets.
+        return Document(url=url, status="shell", kind="text", http_status=status,
+                        error="the response body is empty")
+
     if "markdown" in ct:
         # Served as markdown already. An HTML article extractor finds no article in it and
         # returns nothing -- measured 0 words on docs.aside.com's .md URLs.
@@ -227,6 +233,8 @@ def extract_document(path: str | Path) -> Document:
     code, out, err = _run_anydoc(p)
     if code == 0:
         text = out or ""
+        if not count_words(text):
+            return Document(kind="document", status="unsupported", error="the document converted to no text")
         return Document(markdown=text, title=_first_heading(text), kind="document",
                         words=count_words(text), status="ok")
     if code == 3:

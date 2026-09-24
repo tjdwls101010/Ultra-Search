@@ -7,10 +7,22 @@ anyone reads documentation.
 """
 from __future__ import annotations
 
+import re
+
 EXIT_ARGS = 2
 EXIT_ASIDE = 3
 EXIT_RUN_FAILED = 4
 EXIT_EMPTY = 5
+
+
+#: Run, session and child ids each become one path segment. Starting with a letter or digit
+#: and staying in this set rules out "." and ".." and any separator, so an id read from the
+#: command line or from a transcript cannot name a path outside the directory it is joined to.
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
+
+
+def is_safe_id(value: object) -> bool:
+    return isinstance(value, str) and bool(_SAFE_ID.fullmatch(value))
 
 
 class UltraSearchError(Exception):

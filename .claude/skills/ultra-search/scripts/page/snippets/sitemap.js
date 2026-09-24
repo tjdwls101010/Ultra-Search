@@ -71,9 +71,16 @@ function robotsSitemaps(body) {
 
 const start = Date.now();
 const seen = new Set();
+// Stopping at the budget leaves a partial list, and the closing record says so: without it
+// a sitemap cut short reads exactly like a complete one.
+let hitBudget = false;
+function overBudget() {
+  if (Date.now() - start > budgetMs) hitBudget = true;
+  return hitBudget;
+}
 
 for (const root of roots) {
-  if (Date.now() - start > budgetMs) break;
+  if (overBudget()) break;
   const res = await get(root);
   if (!res.ok) {
     say({ kind: 'sitemap_miss', url: root, status: res.status });
@@ -81,7 +88,7 @@ for (const root of roots) {
   }
   if (/^\s*(user-agent|sitemap|disallow|allow)\s*:/im.test(res.body) && !/<loc/i.test(res.body)) {
     for (const child of robotsSitemaps(res.body)) {
-      if (Date.now() - start > budgetMs) break;
+      if (overBudget()) break;
       const sub = await get(child);
       if (!sub.ok) continue;
       const nested = /<sitemapindex/i.test(sub.body);
@@ -104,7 +111,7 @@ for (const root of roots) {
   const isIndex = /<sitemapindex/i.test(res.body);
   if (isIndex) {
     for (const child of locs(res.body)) {
-      if (Date.now() - start > budgetMs) break;
+      if (overBudget()) break;
       const sub = await get(child);
       if (!sub.ok) continue;
       for (const u of locs(sub.body)) {
@@ -124,4 +131,4 @@ for (const root of roots) {
   }
 }
 
-say({ kind: 'sitemap_done', count: seen.size, elapsed_ms: Date.now() - start });
+say({ kind: 'sitemap_done', count: seen.size, elapsed_ms: Date.now() - start, hit_budget: hitBudget });

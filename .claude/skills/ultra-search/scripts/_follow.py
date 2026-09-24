@@ -19,8 +19,10 @@ import time
 from pathlib import Path
 
 import _events
+import _evidence
 import _registry
 import _render
+from _errors import ArgumentError
 
 TERMINAL_STATES = frozenset({"completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"})
 POLL = 1.0
@@ -31,27 +33,38 @@ def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]
 
     A single run's cursor is a plain integer so the common case stays readable; a group's
     is the JSON object printed for it, because one number cannot describe several streams
-    advancing independently.
+    advancing independently. Anything else is refused: read as "from the start", it would
+    replay the whole run to a caller who believes it is new.
     """
     empty = {r.run_id: {} for r in runs}
     if since in (None, "", 0, "0"):
         return empty
     text = str(since)
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         return {runs[0].run_id: {"": int(text)}} if runs else empty
+    bad = ArgumentError(
+        f"--since {text!r} is not a cursor this command printed",
+        fix="Pass the `cursor` value from the previous `log` response, or omit --since to read from the start.",
+    )
     try:
         loaded = json.loads(text)
     except ValueError:
-        return empty
+        raise bad from None
     if not isinstance(loaded, dict):
-        return empty
+        raise bad
     out = dict(empty)
     for run_id, streams in loaded.items():
-        if isinstance(streams, dict):
-            out[run_id] = {k: int(v) for k, v in streams.items()}
-        elif isinstance(streams, int):
+        if _offset(streams):
             out[run_id] = {"": streams}
+        elif isinstance(streams, dict) and all(_offset(v) for v in streams.values()):
+            out[run_id] = dict(streams)
+        else:
+            raise bad
     return out
+
+
+def _offset(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:
@@ -73,23 +86,21 @@ def _streams(run: _registry.Run) -> list[tuple[str, Path]]:
 def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
     lines: list[str] = []
     streams = _streams(run)
-    start_line = 0
+    starts: dict[str, int] = {}
     meta = run.meta()
     if meta.get("resume_session_id"):
         # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
-        history, _ = _events.read_events(run.session_transcript)
-        marker = meta.get("marker") or _registry.marker_for(run.run_id)
-        start = _events.turn_start_index(history, marker)
-        if not history or history[start].kind != "user" or marker not in history[start].text:
+        turn = _evidence.turn_of(run)
+        if not turn.observed:
             return lines
-        start_line = history[start].index
-        children = set(_events.child_session_ids(history[start:]))
-        streams = [(key, path) for key, path in streams if not key or key in children]
+        starts = {"": turn.start_line}
+        for cid, cev in turn.child_events.items():
+            starts[cid] = cev[0].index if cev else 0
+        streams = [(key, path) for key, path in streams if key in starts]
     for key, path in streams:
         events, cursor = _events.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
-        if not key:
-            events = [event for event in events if event.index >= start_line]
+        events = [event for event in events if event.index >= starts.get(key, 0)]
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"
@@ -100,6 +111,12 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
             for line in rendered.splitlines():
                 lines.append(f"{prefix} {line}" if prefix and line else prefix or line)
     return lines
+
+
+def _live_children(run: _registry.Run) -> int:
+    """Children of this run's turn that have not finished -- the ones keeping a quiet parent busy."""
+    turn = _evidence.turn_of(run)
+    return sum(1 for cid in turn.children if not _evidence.child_is_terminal(turn.child_events[cid]))
 
 
 def follow(
@@ -149,7 +166,7 @@ def follow(
 
         if heartbeat and now - last_beat >= heartbeat:
             last_beat = now
-            live = sum(len(r.meta().get("children") or []) for r in runs if states[r.run_id] not in TERMINAL_STATES)
+            live = sum(_live_children(r) for r in runs if states[r.run_id] not in TERMINAL_STATES)
             waiting = [r.run_id for r in runs if states[r.run_id] not in TERMINAL_STATES]
             emit(f"heartbeat elapsed={round(now - started, 1)}s running={len(waiting)} children={live}")
 

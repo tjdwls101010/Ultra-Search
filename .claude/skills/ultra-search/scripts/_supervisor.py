@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _events
+import _evidence
 import _exec
 import _registry
 import _store
@@ -121,24 +122,19 @@ def supervise(
                 run.update_meta(session_id=session_id)
         if session_id:
             cursor, children, child_cursors = _sync(run, home, session_id, cursor, children, child_cursors)
-            mine = _this_turn(run, marker)
-            orphans = [c for c in _events.child_session_ids(mine) if not _child_is_terminal(run, c)]
+            turn = _evidence.turn_of(run)
+            orphans = [c for c in turn.children if not _evidence.child_is_terminal(turn.child_events[c])]
             # Both conditions, not just the children. The process exiting does not mean the
             # last message has been flushed, and on a resumed session the message that is
-            # already there is the previous turn's answer.
-            if _events.has_terminal_answer(mine) and not orphans:
+            # already there is the previous turn's answer -- which is why an unobserved turn
+            # is waited for rather than read as this one.
+            if turn.observed and _events.has_terminal_answer(turn.events) and not orphans:
                 break
         if time.time() >= deadline:
             break
         time.sleep(min(poll, 0.2))
 
-    return _finish(run, session_id, marker, exit_code, orphans, children)
-
-
-def _this_turn(run: _registry.Run, marker: str) -> list:
-    """The events belonging to this run's turn, discarding any that preceded it."""
-    events, _ = _events.read_events(run.session_transcript)
-    return events[_events.turn_start_index(events, marker) :]
+    return _finish(run, session_id, exit_code, orphans)
 
 
 def _sync(run, home, session_id, cursor, children, child_cursors):
@@ -179,29 +175,6 @@ def _activity(run, home, session_id, children) -> float:
     return newest
 
 
-def _child_is_terminal(run: _registry.Run, child_id: str) -> bool:
-    """A child is done when its last assistant turn stopped for a reason other than a tool
-    call. Mid-tool means it is still working.
-
-    The stop reason alone decides it. Requiring text as well would call a child that
-    honestly found nothing -- and said so by stopping with an empty turn -- an orphan, and
-    an orphan is reported as an unresolved loose end rather than as an answer.
-    """
-    events, _ = _events.read_events(run.child_transcript(child_id))
-    if not events:
-        return False
-    last = events[-1]
-    # The LAST event, not the last assistant one. A user turn after a finished answer means
-    # a new turn has begun; looking only at assistants would report that child as done and
-    # stop copying it mid-investigation.
-    if last.kind != "assistant":
-        return False
-    if last.stop_reason:
-        return last.stop_reason != "toolUse"
-    # No stop reason recorded at all: fall back to whether it produced anything.
-    return bool(last.text.strip())
-
-
 def _stop_requested(run: _registry.Run) -> bool:
     return bool(run.meta().get("stop_requested"))
 
@@ -222,30 +195,18 @@ def _abandon(run: _registry.Run, reason: str, proc) -> dict:
     )
 
 
-def _finish(run, session_id, marker, exit_code, orphans, children) -> dict:
+def _finish(run, session_id, exit_code, orphans) -> dict:
     stdout = _read_text(run.stdout_path)
+    # This turn only. A resumed session's earlier turns are context, not results, and
+    # counting them again would attribute the previous answer, its sources and its tokens
+    # to this run -- and strictly this turn's children, for the same reason.
+    turn = _evidence.turn_of(run) if session_id else _evidence.Turn(observed=False)
+    children: list[str] = turn.children
 
-    if session_id:
-        # This turn only. A resumed session's earlier turns are context, not results, and
-        # counting them again would attribute the previous answer, its sources and its
-        # tokens to this run.
-        events = _this_turn(run, marker)
-        # Strictly this turn's children, with no fallback to the accumulated list: falling
-        # back is what would re-attach the previous turn's subagent answers to this one.
-        children = _events.child_session_ids(events)
-        sources = _events.collect_sources(events)
-        answer = _events.final_answer(events, sources)
-        usage = _events.total_usage(events)
-        for cid in children:
-            cev, _ = _events.read_events(run.child_transcript(cid))
-            for s in _events.collect_sources(cev):
-                if all(s.url != existing.url for existing in sources):
-                    sources.append(s)
-            ctext = _events.final_answer(cev)
-            if ctext:
-                answer = f"{answer}\n\n--- child {cid} ---\n{ctext}" if answer else ctext
-            for k, v in _events.total_usage(cev).items():
-                usage[k] = round(usage.get(k, 0) + v, 6) if k == "cost" else usage.get(k, 0) + v
+    if turn.observed:
+        sources = turn.sources()
+        answer = turn.answer(sources)
+        usage = turn.usage()
         structured = True
     else:
         answer, sources, usage, structured = _from_stdout(stdout)
@@ -264,7 +225,7 @@ def _finish(run, session_id, marker, exit_code, orphans, children) -> dict:
         "state": state,
         "answer": answer,
         "sources": [
-            {"url": s.url, "title": s.title, "id": s.id, "opened": s.opened, "published": s.published}
+            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published}
             for s in sources
         ],
         "usage": usage,
@@ -274,7 +235,11 @@ def _finish(run, session_id, marker, exit_code, orphans, children) -> dict:
         "exit_code": exit_code,
     }
     if not structured:
-        result["note"] = "the session transcript was never found; answer and sources come from stdout only"
+        result["note"] = (
+            "this run's turn never appeared in the session transcript; answer and sources come from stdout only"
+            if session_id else
+            "the session transcript was never found; answer and sources come from stdout only"
+        )
     _write_json(run.path / "result.json", result)
     return run.update_meta(
         state=state,

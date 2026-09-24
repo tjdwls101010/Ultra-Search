@@ -293,3 +293,121 @@ def test_a_copy_that_got_ahead_of_the_cursor_is_not_duplicated(source: Path, tmp
 
     assert dst.read_bytes() == complete
     assert after == full
+
+
+def test_stop_never_overwrites_a_run_that_finished_while_it_waited(runs_dir: Path) -> None:
+    """`stop` asks the supervisor to let go and waits for it. A run that completes in that
+    window has a result; recording it as abandoned would hide that result behind a state
+    that says the work was cut off."""
+    from conftest import run_cli
+
+    run = _registry.create_run(runs_dir, label="race")
+    run.update_meta(state="running")
+
+    def supervisor_finishes_first() -> None:
+        while not run.meta().get("stop_requested"):
+            pass
+        run.update_meta(state="completed", finished_at=1.0)
+
+    t = threading.Thread(target=supervisor_finishes_first)
+    t.start()
+    code, payload, _ = run_cli("stop", "--run", run.run_id, "--runs-dir", str(runs_dir))
+    t.join()
+
+    assert code == 0
+    assert run.meta()["state"] == "completed"
+    assert payload["stopped_watching"] == []
+
+
+@pytest.mark.parametrize("ending", ["stopped_empty", "cut_off_mid_tool"])
+def test_only_a_finished_turn_supplies_the_answer(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, ending: str
+) -> None:
+    """Text in a turn that stopped to call a tool is the worker narrating what it is about to
+    do. Reporting it as the answer turns "let me check" into a finding."""
+    records = [calling(("webfetch", {"url": "https://x.test"}), text="잠시 확인하겠습니다"), tool("webfetch", "page")]
+    if ending == "stopped_empty":
+        records.append({"role": "assistant", "content": [], "stopReason": "stop"})
+    replay(records)
+    run = start(runs_dir)
+
+    supervise(run, settle=0.3)
+
+    assert result_of(run)["answer"] == ""
+
+
+def resumed(runs_dir: Path, aside_home: Path) -> _registry.Run:
+    """A run continuing the recorded search session, whose last turn already has an answer."""
+    run = start(runs_dir, "후속 질문")
+    run.update_meta(resume_session_id="SimpleSearch00001", resumed_from="SimpleSearch00001")
+    return run
+
+
+def test_a_turn_that_has_not_appeared_yet_is_waited_for_not_replaced_by_the_last_one(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """Until this run's prompt appears, everything in a resumed transcript belongs to earlier
+    turns -- including an answer. The process can exit before the turn lands."""
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_LATE", "1")
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "1.0")
+    run = resumed(runs_dir, aside_home)
+
+    meta = supervise(run, settle=4.0)
+
+    assert meta["state"] == "completed"
+    assert result_of(run)["answer"] == "이어서 답합니다."
+
+
+def test_a_turn_that_never_appears_is_not_reported_from_the_turn_before(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_LATE", "1")
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "30")
+    run = resumed(runs_dir, aside_home)
+
+    meta = supervise(run, settle=0.3)
+
+    result = result_of(run)
+    assert "3.14.7" not in result["answer"], "the previous turn's answer is not this run's"
+    assert result["sources"] == [] or all("python.org" not in s["url"] for s in result["sources"])
+    assert meta["state"] == "completed_unstructured"
+    assert result["answer"] == "이어서 답합니다.", "stdout is the only record of this turn"
+    assert "never appeared" in result["note"]
+
+
+def test_a_reused_childs_earlier_answer_is_not_its_answer_now(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A child given a second task keeps its transcript. Until the new task finishes, the
+    answer in it is to the old one."""
+    aside_session(aside_home, "ReusedChild00001", user("이전 과제"), answer("이전 답"),
+                  user("추가 조사"), calling(("webfetch", {"url": "https://x.test"})))
+    replay([tool("subagent", "spawned", taskId="ReusedChild00001"), answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["orphan_children"] == ["ReusedChild00001"]
+    assert "이전 답" not in result_of(run)["answer"]
+
+
+
+def test_resuming_to_collect_an_earlier_childs_late_result_counts_it(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """An earlier run ended with a child still working. Resuming to wait for it collects its
+    result: the child finished, and what it found is this run's answer."""
+    aside_session(aside_home, "ParentWithKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="LateKid000000001"), answer("partial"))
+    aside_session(aside_home, "LateKid000000001", {**user("task"), "timestamp": 1_000},
+                  {**tool("webfetch", "page", sources=[{"id": "l1", "url": "https://late.test/"}]), "timestamp": 2_000},
+                  {**answer("late child answer"), "timestamp": 3_000})
+    replay([tool("subagent_wait", "done", results=[{"taskId": "LateKid000000001"}]), answer("collected")])
+    run = start(runs_dir, "wait for it")
+    run.update_meta(resume_session_id="ParentWithKid001")
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed"
+    assert "late child answer" in result_of(run)["answer"]
+    assert [s["url"] for s in result_of(run)["sources"]] == ["https://late.test/"]

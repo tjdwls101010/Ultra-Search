@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _errors import is_safe_id
+
 #: Tools whose result means the agent actually read a page, rather than merely being
 #: shown it in a result list. The distinction is what `opened` reports.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
@@ -42,6 +44,15 @@ class Source:
     excerpt: str = ""
     published: str = ""
     opened: bool = False
+    #: Every id a citation may use for this URL. Two tools, or a parent and its child, can
+    #: list one page under different ids, and a citation to either has to resolve.
+    ids: list[str] = field(default_factory=list)
+
+    def absorb(self, other: "Source") -> None:
+        self.opened = self.opened or other.opened
+        for i in other.ids:
+            if i not in self.ids:
+                self.ids.append(i)
 
 
 @dataclass
@@ -198,29 +209,34 @@ def _as_text(content: object) -> str:
 
 
 def final_answer(events: list[Event], sources: list[Source] | None = None) -> str:
-    """The last assistant text, with citation tags resolved to their URLs.
+    """The text of the last finished assistant turn, with citation tags resolved to URLs.
 
-    A run that ends mid-tool has no final text; the caller gets "" and decides whether
-    that is an honest zero or an interrupted run -- this module will not guess.
+    Only a turn that stopped for a reason other than calling a tool is an answer; text beside
+    a tool call is the worker narrating what it is about to do. A run that ends mid-tool, or
+    whose last finished turn said nothing, has no answer: the caller gets "" and decides
+    whether that is an honest zero or an interrupted run -- this module will not guess.
     """
+    # Only the latest turn: a child given a second task keeps its transcript, and until the
+    # new task finishes the answer in it is to the old one.
+    last_prompt = max((i for i, e in enumerate(events) if e.kind == "user"), default=0)
     text = ""
-    for e in events:
-        if e.kind == "assistant" and e.text.strip():
+    for e in events[last_prompt:]:
+        if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
             text = e.text
-    if not text:
+    if not text.strip():
         return ""
     return resolve_citations(text, sources if sources is not None else collect_sources(events))
 
 
 def resolve_citations(text: str, sources: list[Source]) -> str:
-    by_id = {s.id: s for s in sources if s.id}
+    by_id = {i: s for s in sources for i in s.ids}
 
     def sub(m: re.Match[str]) -> str:
         refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
         label = m.group(2).strip()
         urls = []
         for ref in refs:
-            hit = by_id.get(ref) or next((s for s in sources if s.id and ref.startswith(s.id)), None)
+            hit = by_id.get(ref) or next((s for i, s in by_id.items() if ref.startswith(i)), None)
             if hit and hit.url and hit.url not in urls:
                 urls.append(hit.url)
         if not urls:
@@ -249,25 +265,47 @@ def collect_sources(events: list[Event]) -> list[Source]:
             url = str(raw.get("url") or "").strip()
             if not url:
                 continue
-            existing = seen.get(url)
-            if existing:
-                existing.opened = existing.opened or opened
-                continue
+            sid = str(raw.get("id") or "")
             s = Source(
                 url=url,
                 title=str(raw.get("title") or ""),
-                id=str(raw.get("id") or ""),
+                id=sid,
                 excerpt=str(raw.get("excerpt") or ""),
                 published=str(raw.get("publishDate") or raw.get("published") or ""),
                 opened=opened,
+                ids=[sid] if sid else [],
             )
+            existing = seen.get(url)
+            if existing:
+                existing.absorb(s)
+                continue
             seen[url] = s
             out.append(s)
     return out
 
 
-def turn_start_index(events: list[Event], marker: str) -> int:
-    """Index of the user message that began this run's turn.
+def merge_sources(lists: list[list[Source]]) -> list[Source]:
+    """Several streams' sources as one list, one entry per URL, first seen first.
+
+    A URL one stream only listed and another opened was read, and keeps every id either
+    stream cited it by.
+    """
+    out: list[Source] = []
+    seen: dict[str, Source] = {}
+    for sources in lists:
+        for s in sources:
+            if s.url in seen:
+                seen[s.url].absorb(s)
+                continue
+            merged = Source(url=s.url, title=s.title, id=s.id, excerpt=s.excerpt, published=s.published,
+                            opened=s.opened, ids=list(s.ids))
+            seen[s.url] = merged
+            out.append(merged)
+    return out
+
+
+def turn_start_index(events: list[Event], marker: str) -> int | None:
+    """Index of the user message that began this run's turn, or None if it is not there yet.
 
     A resumed run appends to a transcript that already holds earlier turns, so "the last
     assistant message" is the previous answer until the new one lands. The marker planted
@@ -276,13 +314,14 @@ def turn_start_index(events: list[Event], marker: str) -> int:
     the new result.
 
     A fresh run's marker is in the first record, so the boundary is 0 and the whole
-    transcript is this turn -- the same code path, not a special case.
+    transcript is this turn -- the same code path, not a special case. No marker means the
+    turn has not landed, which is not the same as the whole transcript being this turn.
     """
     for i in range(len(events) - 1, -1, -1):
         e = events[i]
         if e.kind == "user" and marker and marker in e.text:
             return i
-    return 0
+    return None
 
 
 def has_terminal_answer(events: list[Event]) -> bool:
@@ -300,7 +339,8 @@ def child_session_ids(events: list[Event]) -> list[str]:
     """Child sessions spawned by this run, in spawn order.
 
     Read from the parent's own transcript rather than the database, because an ephemeral
-    CLI session and its children may never appear there at all.
+    CLI session and its children may never appear there at all. An id that could not be a
+    session id is skipped: it becomes a file name in the run directory.
     """
     out: list[str] = []
     for e in events:
@@ -309,12 +349,12 @@ def child_session_ids(events: list[Event]) -> list[str]:
         det = e.details or {}
         for key in ("taskId", "task_id", "sessionId", "session_id"):
             val = det.get(key)
-            if isinstance(val, str) and val and val not in out:
+            if is_safe_id(val) and val not in out:
                 out.append(val)
         for r in det.get("results") or []:
             if isinstance(r, dict):
                 val = r.get("taskId") or r.get("task_id")
-                if isinstance(val, str) and val and val not in out:
+                if is_safe_id(val) and val not in out:
                     out.append(val)
     return out
 

@@ -39,15 +39,16 @@ def _resume(args, runs_root: Path) -> int:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
-    taken as a session id and verified against the sessions on disk -- that is what makes
-    a conversation started in the Aside app continuable from here.
+    taken as a session id -- that is what makes a conversation started in the Aside app
+    continuable from here. Either way the session itself is checked last: a run this tool
+    abandoned stopped being watched, not working.
     """
     target = args.target
     resumed_from = target
     try:
         run = _registry.resolve_run(runs_root, target)
     except ArgumentError:
-        session_id = _external_session(target)
+        session_id = _resumable_session(target)
     else:
         meta = run.meta()
         state = meta.get("state") or "unknown"
@@ -64,6 +65,7 @@ def _resume(args, runs_root: Path) -> int:
                 fix="Its session was never correlated; start a fresh `search` instead.",
                 state=state,
             )
+        _resumable_session(session_id)
 
     new_run = _start_run(
         runs_root, args.prompt, args, group=None,
@@ -72,12 +74,12 @@ def _resume(args, runs_root: Path) -> int:
     return _await_and_report([new_run], args, runs_root, None)
 
 
-def _external_session(session_id: str) -> str:
-    """Verify a session id that did not come from this tool's own registry."""
+def _resumable_session(session_id: str) -> str:
+    """Verify a session exists on disk and has no turn in flight."""
     import _store
 
     home = _store.aside_home()
-    if _store.session_dir(home, session_id) is None:
+    if not _errors.is_safe_id(session_id) or _store.session_dir(home, session_id) is None:
         raise ArgumentError(
             f"no run and no Aside session called {session_id!r}",
             fix="List what exists with `sessions`. Aside deletes sessions within about a day.",

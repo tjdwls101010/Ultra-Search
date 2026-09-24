@@ -1234,3 +1234,224 @@ def test_sessions_can_be_searched_by_prompt(cli) -> None:
     _, payload, _ = cli("sessions", "--search", "Agent Teams")
 
     assert [s["session_id"] for s in payload["sessions"]] == ["SubagentParent01"]
+
+
+# --- ids that name paths -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["status", "log", "result", "show", "stop"])
+def test_a_run_id_that_names_a_path_outside_the_registry_is_refused(cli, tmp_path: Path, command: str) -> None:
+    """A run id reaches the filesystem as a directory name. One that walks out of the
+    registry must not be read, let alone written to by `stop`."""
+    finished_run_id(cli)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "meta.json").write_text(json.dumps({"state": "running"}))
+    (outside / "session").mkdir()
+    (outside / "session" / "messages.jsonl").write_text(json.dumps(tool("webfetch", "private")) + "\n")
+    extra = ["--item", "0"] if command == "show" else []
+
+    code, err, _ = cli(command, "--run", "../../outside", *extra)
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "private" not in json.dumps(err)
+    assert json.loads((outside / "meta.json").read_text()) == {"state": "running"}
+
+
+def test_resume_does_not_continue_a_session_named_by_a_path(cli, tmp_path: Path, fake_aside: Path) -> None:
+    finished_run_id(cli)
+    started = len(exec_calls(fake_aside))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "meta.json").write_text(json.dumps({"state": "completed", "session_id": "SimpleSearch00001"}))
+
+    code, err, _ = cli("resume", "../../outside", "후속")
+
+    assert code == 2
+    assert len(exec_calls(fake_aside)) == started
+
+
+def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
+    """Child ids are read out of the transcript, another product's data, and become file
+    names in the run directory."""
+    replay([tool("subagent", "spawned", taskId="../escaped"), answer("부모 답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    assert run["state"] == "completed"
+    _, result, _ = cli("result", "--run", run["run_id"])
+    assert result["children"] == []
+
+
+def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, monkeypatch, fake_aside: Path) -> None:
+    """`stop` ends the watching, not the daemon's turn. Resuming the run it abandoned would
+    attach to that live turn, which waits for it and cannot steer it."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+    assert poll(lambda: first_run(cli("status", "--run", run_id)[1]).get("session_id"), timeout=10)
+    cli("stop", "--run", run_id)
+    started = len(exec_calls(fake_aside))
+
+    code, err, _ = cli("resume", run_id, "후속")
+
+    assert code == 2
+    assert "in flight" in err["message"]
+    assert len(exec_calls(fake_aside)) == started
+
+
+# --- inputs the JSON contract has to survive ---------------------------------------------
+
+
+@pytest.mark.parametrize("cursor", ["garbage", "[1]", '{"RUN": {"": "abc"}}', '{"RUN": {"": -5}}', "-3", "²"])
+def test_a_cursor_that_is_not_one_is_refused_rather_than_replayed(cli, cursor: str) -> None:
+    """A cursor this command did not print would otherwise restart the log from the top --
+    or crash -- and either way the caller reads the whole run again believing it is new."""
+    run_id = finished_run_id(cli)
+
+    code, err, text = cli("log", "--run", run_id, "--since", cursor.replace("RUN", run_id))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "prompt:" not in text
+
+
+def test_an_unwritable_registry_is_reported_in_json(aside_home: Path, fake_aside: Path, tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        code, err, _ = run_cli("search", "질문", "--runs-dir", str(locked / "runs"))
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 4
+    assert err["error"] == "run_failed"
+    assert err["fix"]
+
+
+# --- one run, one scope ------------------------------------------------------------------
+
+
+def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> None:
+    """`result`, `status` and `show` describe the same run. For a resumed run that is one
+    turn of a longer transcript; a view that read the whole transcript would count the
+    earlier turns' tokens and hand back their tool results as this run's."""
+    first = finished_run_id(cli)
+    new = {"id": "n1", "url": "https://new.test/page", "title": "New"}
+    replay([tool("webfetch", "새 페이지", sources=[new]), answer("new")])
+
+    _, payload, _ = cli("resume", first, "후속", "--wait", "30")
+    run_id = first_run(payload)["run_id"]
+    _, result, _ = cli("result", "--run", run_id)
+    _, status, _ = cli("status", "--run", run_id)
+    code, item, _ = cli("show", "--run", run_id, "--item", "0")
+    _, source, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert first_run(status)["usage"] == result["usage"]
+    assert code == 0 and item["content"] == "새 페이지"
+    assert source["source"]["url"] == new["url"]
+
+
+def test_a_resumed_run_does_not_count_the_earlier_turns_children(cli, monkeypatch) -> None:
+    """Checked while the run is going as well as after: the supervisor copies every child the
+    transcript mentions, and the earlier turn's are not this run's."""
+    monkeypatch.setenv("FAKE_ASIDE_PROMPT_DELAY", "6")
+    _, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--background")
+    run_id = first_run(payload)["run_id"]
+    time.sleep(3)
+
+    _, running, _ = cli("status", "--run", run_id)
+    cli("log", "--run", run_id, "--follow", "--follow-timeout", "60")
+    _, finished, _ = cli("status", "--run", run_id)
+
+    for status in (running, finished):
+        assert first_run(status)["children"] == 0
+        assert first_run(status)["child_ids"] == []
+    assert first_run(running)["state"] == "running"
+
+
+def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path) -> None:
+    """The parent listed a URL; its child opened it, under an id of its own. The merged list
+    keeps both facts: the page was read, and either id cites it."""
+    listed = {"id": "p1", "url": "https://docs.test/page", "title": "Page"}
+    read = {"id": "c1", "url": "https://docs.test/page", "title": "Page"}
+    only_child = {"id": "c2", "url": "https://docs.test/other", "title": "Other"}
+    aside_session(aside_home, "ReaderChild00001", user("읽어"),
+                  tool("webfetch", "페이지 본문", sources=[read]), tool("webfetch", "다른 본문", sources=[only_child]),
+                  answer('읽었습니다 <citation refs="c1">page</citation>'))
+    replay([tool("websearch", "검색 결과", sources=[listed]),
+            tool("subagent", "spawned", taskId="ReaderChild00001"),
+            answer('정리 <citation refs="c1">page</citation> <citation refs="c2">other</citation>')])
+
+    _, payload, _ = search(cli, "질문")
+    run = first_run(payload)
+    code, by_child_id, _ = cli("show", "--run", run["run_id"], "--source", "c2")
+
+    merged = {s["url"]: s for s in run["sources"]}
+    assert merged[listed["url"]]["opened"] is True
+    assert set(merged[listed["url"]]["ids"]) == {"p1", "c1"}
+    assert run["answer"].startswith(f"정리 page ({listed['url']}) other ({only_child['url']})")
+    assert code == 0 and by_child_id["content"] == "다른 본문"
+
+
+def test_heartbeat_counts_only_the_children_still_working(cli, replay, aside_home: Path) -> None:
+    """The count is there to say the silence is busy. A finished child is not what makes it so."""
+    aside_session(aside_home, "DoneChild0000001", user("끝난 자식"), answer("끝"))
+    aside_session(aside_home, "LiveChild0000002", user("일하는 자식"), calling(("webfetch", {"url": "https://x.test"})))
+    replay([tool("subagent", "spawned", taskId="DoneChild0000001"),
+            tool("subagent", "spawned", taskId="LiveChild0000002"), {"__sleep__": 30}])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+
+    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5", "--heartbeat", "0.5")
+
+    beats = [line for line in lines_of(text) if line.startswith("heartbeat ")]
+    assert beats and beats[-1].endswith("running=1 children=1")
+    cli("stop", "--run", run_id)
+
+
+def test_an_empty_read_does_not_hide_what_a_search_already_showed(cli, replay) -> None:
+    src = {"id": "s1", "url": "https://e.test/a", "title": "A"}
+    replay([tool("websearch", "검색 본문", sources=[src]), tool("webfetch", "", sources=[src]), answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert shown["content"] == "검색 본문"
+
+
+def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, aside_home: Path) -> None:
+    """A resumed parent can hand an earlier child a new task. The child's transcript then holds
+    the earlier run's work too, whose tokens and pages were that run's."""
+    now = int(time.time() * 1000)
+    old_src = {"id": "o1", "url": "https://old.test/page", "title": "Old"}
+    new_src = {"id": "n1", "url": "https://new.test/page", "title": "New"}
+    usage = lambda n: {"input": n, "output": 0, "totalTokens": n, "cost": {"total": 0}}
+    aside_session(aside_home, "ParentWithKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="ReusedKid0000001"), answer("old-answer"))
+    aside_session(
+        aside_home, "ReusedKid0000001",
+        {**user("old task"), "timestamp": now - 60_000},
+        {**tool("webfetch", "old page", sources=[old_src]), "timestamp": now - 59_000},
+        {**answer("old child answer"), "usage": usage(100), "timestamp": now - 58_000},
+        {**user("new task"), "timestamp": now + 60_000},
+        {**tool("webfetch", "new page", sources=[new_src]), "timestamp": now + 61_000},
+        {**answer("new child answer"), "usage": usage(10), "timestamp": now + 62_000},
+    )
+    replay([tool("subagent", "resumed", taskId="ReusedKid0000001"), answer("new-answer")])
+
+    _, payload, _ = cli("resume", "ParentWithKid001", "new-prompt", "--wait", "30")
+    run_id = first_run(payload)["run_id"]
+    _, result, _ = cli("result", "--run", run_id)
+    _, status, _ = cli("status", "--run", run_id)
+
+    _, _, logged = cli("log", "--run", run_id)
+
+    assert [s["url"] for s in result["sources"]] == [new_src["url"]]
+    assert result["usage"]["input"] == first_run(status)["usage"]["input"] == 10
+    assert "old child answer" not in result["answer"]
+    assert "new child answer" in logged and "old child answer" not in logged

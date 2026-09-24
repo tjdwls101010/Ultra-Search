@@ -80,11 +80,11 @@ def _destinations(urls: list[str], out: str | None, runs_root: Path) -> tuple[Pa
 
 
 def exit_code_for(items: list[dict]) -> int:
+    """0 when anything was saved. The status still says what each page turned out to be:
+    `--format html` writes a client-rendered document that has no article in it."""
     if not items:
         return _errors.EXIT_EMPTY
-    if all(i["status"] == "ok" for i in items):
-        return 0
-    if any(i["status"] == "ok" for i in items):
+    if any(i["status"] == "ok" or i.get("path") for i in items):
         return 0
     return _errors.EXIT_RUN_FAILED
 
@@ -104,6 +104,7 @@ def fetch_urls(
     max_chars: int = 20000,
     concurrency: int = DEFAULT_CONCURRENCY,
     retries: int = DEFAULT_RETRIES,
+    numbered: bool = False,
     fetch_provider=None,
     tab_provider=None,
 ) -> dict:
@@ -137,14 +138,17 @@ def fetch_urls(
 
     items = []
     used_names: set[str] = set()
-    for url in urls:
+    for i, url in enumerate(urls):
+        # Numbered names read in crawl order in a directory listing, which is usually the
+        # order a site means its pages to be read. The final name is chosen here, once.
+        stem = f"{i:03d}-{_extract.slug_for(url)}" if numbered else _extract.slug_for(url)
         record = raw.get(url)
         doc = _to_document(url, record) if record else _extract.Document(
             url=url, status="error", error="no response"
         )
         if via == "tab" or (via == "auto" and doc.status in ("shell", "challenge")):
             doc = _escalate(url, doc, tab_provider)
-        items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record))
+        items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record, stem))
     return {"ok": True, "command": "fetch", "items": items}
 
 
@@ -213,7 +217,7 @@ def _escalate(url: str, doc: _extract.Document, tab_provider) -> _extract.Docume
     return promoted
 
 
-def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record) -> dict:
+def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record, stem) -> dict:
     item = {
         "url": url,
         "final_url": doc.final_url or url,
@@ -248,7 +252,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     elif doc.status != "ok" or not (doc.markdown or "").strip():
         return item
 
-    path = out_file or _unique_path(dest, _extract.slug_for(url), used_names, fmt)
+    path = out_file or _unique_path(dest, stem, used_names, fmt)
     text = doc.raw if fmt == "html" else _extract.render_markdown(doc, frontmatter=frontmatter)
     body_for_print = text
     path.parent.mkdir(parents=True, exist_ok=True)

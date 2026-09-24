@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from _errors import ArgumentError
+from _errors import ArgumentError, is_safe_id
 
 RUNS_SUBDIR = "runs"
 PAGES_SUBDIR = "pages"
@@ -60,6 +60,8 @@ class Run:
         return self.path / "session" / "messages.jsonl"
 
     def child_transcript(self, child_id: str) -> Path:
+        if not is_safe_id(child_id):
+            raise ValueError(f"not a session id: {child_id!r}")
         return self.path / "session" / "children" / f"{child_id}.jsonl"
 
     def child_transcripts(self) -> list[Path]:
@@ -212,6 +214,11 @@ def all_runs(runs_root: str | os.PathLike[str]) -> list[Run]:
 
 
 def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
+    if not is_safe_id(run_id):
+        raise ArgumentError(
+            f"{run_id!r} is not a run id",
+            fix="Run ids look like 260925-021530-label; `status` with no target shows the latest.",
+        )
     path = Path(runs_root) / RUNS_SUBDIR / run_id
     if not path.is_dir():
         known = [r.run_id for r in all_runs(runs_root)][-5:]

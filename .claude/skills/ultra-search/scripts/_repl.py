@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -132,7 +133,8 @@ def sitemap(roots: list[str], *, per_url_ms: int = DEFAULT_PER_URL_MS,
     try:
         return run_snippet("sitemap.js", {"roots": roots, "perUrlTimeoutMs": per_url_ms, "budgetMs": budget_ms})
     except ReplTimeout as e:
-        return e.lines
+        # What it printed is kept; that the list stops short is said, as the budget would.
+        return e.lines + [{"kind": "sitemap_done", "hit_budget": True}]
 
 
 def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PER_URL_MS,
@@ -147,14 +149,45 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
     try:
         records = run_snippet("links.js", args)
     except ReplTimeout as e:
-        records = e.lines
+        records = e.lines + [{"kind": "links_done", "hit_budget": True}]
     return resolve_links(records, same_origin_as)
 
 
-def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
-    from urllib.parse import urljoin, urldefrag, urlparse
+_REFERENCE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;?)")
 
-    origin = urlparse(same_origin_as).netloc
+
+def _decode_attribute(value: str) -> str:
+    """Character references in an attribute value, decoded the way a browser does.
+
+    Numeric references always decode, and so does a known name closed by its semicolon. A
+    name without one decodes as its longest known prefix -- unless "=" or an ASCII letter or
+    digit follows that prefix, when it is literal text: `?a=1&copy=2` keeps its `&copy`,
+    `&notebook` its `&not`.
+    """
+    import html
+    from html.entities import html5
+
+    def sub(m: re.Match[str]) -> str:
+        ref = m.group(0)
+        if ref.startswith("&#") or (ref.endswith(";") and ref[1:] in html5):
+            return html.unescape(ref)
+        name = next((ref[1:k] for k in range(len(ref), 1, -1) if ref[1:k] in html5), None)
+        if name is None:
+            return ref
+        after = (ref[len(name) + 1:] or value[m.end():m.end() + 1])[:1]
+        if after == "=" or (after.isascii() and after.isalnum()):
+            return ref
+        return html5[name] + ref[len(name) + 1:]
+
+    return _REFERENCE.sub(sub, value)
+
+
+def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
+    from urllib.parse import urljoin, urldefrag
+
+    from _crawl import origin as origin_of
+
+    origin = origin_of(same_origin_as)
     out: list[dict] = []
     seen: set[str] = set()
     for rec in records:
@@ -163,11 +196,20 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
                 out.append(rec)
             continue
         base = rec.get("final_url") or rec.get("url") or same_origin_as
+        # A page with no usable links was still read; saying so is what separates it from
+        # a page that could not be fetched at all.
+        out.append({"kind": "page_read", "url": rec.get("url")})
         for href in rec.get("hrefs") or []:
+            # An href is an HTML attribute: `&amp;` in it is one `&` of the URL.
+            href = _decode_attribute(href)
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
-            absolute, _ = urldefrag(urljoin(base, href))
-            if urlparse(absolute).netloc != origin or absolute in seen:
+            try:
+                absolute, _ = urldefrag(urljoin(base, href))
+            except ValueError:
+                # One malformed href (an unclosed IPv6 bracket) is one link lost, not the page.
+                continue
+            if origin_of(absolute) != origin or absolute in seen:
                 continue
             seen.add(absolute)
             out.append({"kind": "url", "url": absolute, "from": rec.get("url")})

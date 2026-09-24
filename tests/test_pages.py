@@ -733,3 +733,215 @@ def test_max_pages_caps_what_a_crawl_fetches(cli, routes, fake_aside: Path) -> N
 
     assert payload["requested"] == 2
     assert sum(len(c["urls"]) for c in repl_calls(fake_aside, "fetch_batch")) == 2
+
+
+@pytest.mark.parametrize("manifest", [[], {"pages": ["https://site.test/a"]}, {"urls": "https://site.test/a"},
+                                      {"root": 123, "urls": ["https://site.test/a"]}])
+def test_a_manifest_of_the_wrong_shape_is_refused(cli, routes, tmp_path: Path, manifest) -> None:
+    routes({})
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    code, err, _ = cli("crawl", "--from", str(path))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "map" in err["fix"]
+
+
+def test_an_unwritable_destination_is_reported_in_json(cli, routes, tmp_path: Path) -> None:
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        code, err, _ = cli("fetch", "https://example.org/a", "--out", str(locked / "sub"))
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 4
+    assert err["ok"] is False and err["error"] == "run_failed"
+    assert str(locked / "sub") in err["message"]
+    assert err["fix"]
+
+
+def test_same_site_means_same_scheme_host_and_port_over_http(cli, routes) -> None:
+    """A crawl acts as the user in their own browser. A link that shares only the host name
+    -- another scheme, another port -- is a different site, and ftp: is not a web page."""
+    routes({
+        "sitemap": {"https://site.test/sitemap.xml": ["ftp://site.test/listed", "https://site.test/listed"]},
+        "links": {"https://site.test/": ["ftp://site.test/file", "http://site.test/insecure",
+                                         "https://site.test:8443/other-port", "https://site.test:0/port-zero", "/same"]},
+    })
+
+    code, from_sitemap, _ = cli("map", "https://site.test/")
+    _, from_links, _ = cli("map", "https://site.test/", "--no-sitemap", "--depth", "1")
+
+    assert from_sitemap["urls"] == ["https://site.test/listed"]
+    assert from_links["urls"] == ["https://site.test/", "https://site.test/same"]
+
+
+@pytest.mark.parametrize("left_behind", ["manifest", "other"])
+def test_a_crawl_never_writes_into_a_folder_that_already_has_files(cli, routes, tmp_path: Path, left_behind: str) -> None:
+    """Numbered names repeat from one crawl to the next, so writing into a used folder
+    replaces pages from the earlier crawl -- or a file that was never a crawl's -- in place."""
+    routes({"links": SITE, "fetch_batch": {u: page(ARTICLE) for u in SITE}})
+    out = tmp_path / "site"
+    if left_behind == "manifest":
+        cli("crawl", "https://site.test/", "--depth", "1", "--out", str(out))
+    else:
+        out.mkdir()
+        (out / "000-notes.md").write_text("mine")
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+
+    code, err, _ = cli("crawl", "https://site.test/", "--depth", "1", "--out", str(out))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "--out" in err["fix"]
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+
+
+def test_crawls_without_out_each_get_their_own_folder(cli, routes, runs_dir: Path) -> None:
+    routes({"links": SITE, "fetch_batch": {u: page(ARTICLE) for u in SITE}})
+
+    _, first, _ = cli("crawl", "https://site.test/", "--depth", "1")
+    kept = {p: p.read_bytes() for p in Path(first["out_dir"]).iterdir()}
+    _, second, _ = cli("crawl", "https://site.test/", "--depth", "0")
+
+    assert Path(first["out_dir"]).parent == Path(second["out_dir"]).parent == runs_dir / "crawls" / "site.test"
+    assert first["out_dir"] != second["out_dir"]
+    assert {p: p.read_bytes() for p in Path(first["out_dir"]).iterdir()} == kept
+    assert sorted(p.name[:4] for p in Path(second["out_dir"]).glob("*.md")) == ["000-"]
+
+
+def test_map_reports_what_it_could_not_read(cli, routes) -> None:
+    """A map that silently lost half a site reads as a small site. What was missed, and why
+    discovery stopped, is part of the answer."""
+    routes({"links": {"https://site.test/": ["/a", "/b"], "https://site.test/a": ["/a/1"]}})
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "2")
+
+    assert code == 0
+    coverage = payload["coverage"]
+    assert coverage["sitemap"] is False
+    assert coverage["pages_read"] == 2
+    assert [m["url"] for m in coverage["pages_missed"]] == ["https://site.test/b"]
+    assert coverage["budget_exhausted"] is False
+    assert coverage["max_urls_reached"] is False
+
+
+def test_map_that_read_nothing_exits_empty(cli, routes) -> None:
+    """The root alone, unread, is not a map of anything -- even though it is one URL."""
+    routes({"links": {}})
+
+    code, payload, _ = cli("map", "https://site.test/")
+
+    assert code == 5
+    assert payload["coverage"]["pages_read"] == 0
+    assert [m["url"] for m in payload["coverage"]["pages_missed"]] == ["https://site.test/"]
+
+
+def test_map_says_when_a_budget_or_the_cap_cut_discovery_short(cli, routes) -> None:
+    routes({"links": {**SITE, "__hit_budget__": True}})
+
+    _, cut, _ = cli("map", "https://site.test/", "--depth", "1")
+    _, capped, _ = cli("map", "https://site.test/", "--depth", "3", "--max-urls", "3")
+
+    assert cut["coverage"]["budget_exhausted"] is True
+    assert capped["coverage"]["max_urls_reached"] is True
+
+
+def test_map_from_a_sitemap_says_so(cli, routes) -> None:
+    routes({"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"]}})
+
+    code, payload, _ = cli("map", "https://site.test/")
+
+    assert code == 0
+    assert payload["coverage"]["sitemap"] is True
+
+
+def test_a_file_that_was_written_counts_as_success(cli, routes) -> None:
+    """`--format html` saves the document even when no article was extracted from it. The
+    item keeps saying what the page is, but a command that wrote what was asked for has not
+    failed."""
+    routes({"fetch_batch": {"https://x.com/a": page(SHELL)}})
+
+    code, payload, _ = cli("fetch", "https://x.com/a", "--format", "html", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "shell"
+    assert item_of(payload)["path"] is not None
+    assert code == 0
+
+
+@pytest.mark.parametrize("ct", ["text/markdown", "text/plain"])
+def test_an_empty_body_is_not_a_page_that_was_read(cli, routes, ct: str) -> None:
+    routes({"fetch_batch": {"https://example.org/empty": page("  \n", ct=ct)}})
+
+    code, payload, _ = cli("fetch", "https://example.org/empty", "--via", "fetch")
+
+    assert item_of(payload)["status"] != "ok"
+    assert "empty" in item_of(payload)["error"]
+    assert item_of(payload)["path"] is None
+    assert code == 4
+
+
+def test_a_miss_after_the_cap_is_reached_is_still_reported(cli, routes) -> None:
+    routes({"links": {"https://site.test/": ["/a", "/b"], "https://site.test/a": ["/c"]}})
+
+    _, payload, _ = cli("map", "https://site.test/", "--depth", "2", "--max-urls", "4")
+
+    assert payload["coverage"]["max_urls_reached"] is True
+    assert [m["url"] for m in payload["coverage"]["pages_missed"]] == ["https://site.test/b"]
+
+
+@pytest.mark.parametrize("snippet", ["links", "sitemap"])
+def test_a_discovery_snippet_cut_off_by_the_repl_limit_is_reported(cli, routes, snippet: str) -> None:
+    """The daemon kills a snippet at 120 seconds and says nothing more. What it printed
+    before that is kept; that the list is incomplete has to be said too."""
+    table = {
+        "links": {"links": {"https://site.test/": ["/a"], "__timeout__": True}},
+        "sitemap": {"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"], "__timeout__": True}},
+    }[snippet]
+    routes(table)
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    assert code == 0
+    assert payload["urls"]
+    assert payload["coverage"]["budget_exhausted"] is True
+
+
+def test_one_malformed_link_does_not_lose_the_rest_of_the_page(cli, routes) -> None:
+    routes({"links": {"https://site.test/": ["http://[broken", "/ok"]}})
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    assert code == 0
+    assert payload["urls"] == ["https://site.test/", "https://site.test/ok"]
+
+
+def test_a_document_that_converts_to_nothing_is_not_a_page_that_was_read(cli, routes) -> None:
+    routes({"fetch_batch": {"https://example.org/data.csv": document("empty.csv", ct="text/csv")}})
+
+    code, payload, _ = cli("fetch", "https://example.org/data.csv")
+
+    assert item_of(payload)["status"] != "ok"
+    assert item_of(payload)["path"] is None
+    assert code == 4
+
+
+def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -> None:
+    """An href is HTML: `&amp;` in it is one `&` in the URL. Requesting it verbatim asks the
+    site for a parameter called `amp;lang`."""
+    routes({"links": {"https://site.test/": ["/article?id=1&amp;lang=ko", "/q?id=1&copy=2&notebook=3",
+                                             "/n?id=1&#38lang=en", "/c/&copy", "/q?x=1&notebook;=2", "/d/&copy한글"]}})
+
+    _, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    # Decoded as a browser decodes an attribute: numeric and closed references always, a bare
+    # name only when neither "=" nor a letter or digit follows it.
+    assert payload["urls"] == ["https://site.test/", "https://site.test/article?id=1&lang=ko",
+                               "https://site.test/q?id=1&copy=2&notebook=3",
+                               "https://site.test/n?id=1&lang=en", "https://site.test/c/©",
+                               "https://site.test/q?x=1&notebook;=2", "https://site.test/d/©한글"]

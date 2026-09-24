@@ -8,6 +8,7 @@ walking the site twice.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -31,7 +32,7 @@ def _providers(args):
 
 
 def _map(args, runs_root: Path) -> int:
-    urls = _crawl.discover(
+    urls, coverage = _crawl.discover(
         args.url,
         depth=args.depth,
         max_urls=args.max_urls,
@@ -46,24 +47,33 @@ def _map(args, runs_root: Path) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         manifest["manifest_path"] = str(out)
-    print(json.dumps({"ok": True, "command": "map", **manifest}, ensure_ascii=False))
-    return 0 if urls else _errors.EXIT_EMPTY
+    print(json.dumps({"ok": True, "command": "map", **manifest, "coverage": coverage}, ensure_ascii=False))
+    # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
+    # root itself is listed.
+    saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
+    return 0 if urls and saw_site else _errors.EXIT_EMPTY
 
 
 def _crawl_cmd(args, runs_root: Path) -> int:
+    if args.out:
+        _refuse_used_folder(Path(args.out).expanduser())
     if args.from_manifest:
         source = Path(args.from_manifest).expanduser()
         try:
             manifest = json.loads(source.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             raise ArgumentError(f"could not read manifest {source}: {e}", fix="Produce one with `map --out`.") from e
-        root = manifest.get("root") or ""
         urls = _crawl.urls_from_manifest(manifest)
+        if urls is None:
+            raise ArgumentError(f"{source} is not a manifest written by `map` or `crawl`",
+                                fix="Produce one with `map --out`.")
+        root = manifest.get("root") or ""
+        coverage = None
         if not urls:
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:
         root = args.url
-        urls = _crawl.discover(
+        urls, coverage = _crawl.discover(
             root,
             depth=args.depth,
             max_urls=args.max_urls,
@@ -74,8 +84,11 @@ def _crawl_cmd(args, runs_root: Path) -> int:
         )
 
     urls = urls[: args.max_pages]
-    out_dir = Path(args.out).expanduser() if args.out else _default_out(runs_root, root)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out:
+        out_dir = Path(args.out).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = _default_out(runs_root, root)
 
     envelope = _page.fetch_urls(
         urls,
@@ -83,9 +96,9 @@ def _crawl_cmd(args, runs_root: Path) -> int:
         via=args.via,
         frontmatter=not args.no_frontmatter,
         concurrency=args.concurrency,
+        numbered=True,
     )
     items = envelope["items"]
-    _number_files(items, out_dir)
     manifest = _crawl.build_manifest(root, items)
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -100,32 +113,34 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             "requested": len(urls),
             "saved": sum(1 for i in items if i["status"] == "ok"),
             "items": [{k: v for k, v in i.items() if k != "content"} for i in items],
+            **({"coverage": coverage} if coverage is not None else {}),
         },
         ensure_ascii=False,
     ))
     return _page.exit_code_for(items)
 
 
+def _refuse_used_folder(out: Path) -> None:
+    """A crawl's numbered names repeat from one crawl to the next, so a folder that already
+    holds files -- an earlier crawl's, or anyone's -- would have them replaced in place."""
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise ArgumentError(
+            f"--out {out} already holds files",
+            fix="Pass an empty or new folder with --out; a crawl never writes over earlier pages.",
+        )
+
+
 def _default_out(runs_root: Path, root: str) -> Path:
+    """A new folder per crawl under crawls/<host>/, reserved before anything is written."""
     host = urlparse(root).netloc or "site"
-    return Path(runs_root) / "crawls" / host
-
-
-def _number_files(items: list[dict], out_dir: Path) -> None:
-    """Prefix saved files with their crawl order.
-
-    A directory listing then reads in the order the site presents its pages, which is
-    usually the order they are meant to be read in.
-    """
-    for i, item in enumerate(items):
-        if not item.get("path"):
-            continue
-        current = Path(item["path"])
-        if current.parent != out_dir:
-            continue
-        target = out_dir / f"{i:03d}-{current.name}"
+    base = Path(runs_root) / "crawls" / host
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%y%m%d-%H%M%S")
+    for n in range(1, 100):
+        out = base / (stamp if n == 1 else f"{stamp}-{n}")
         try:
-            current.rename(target)
-            item["path"] = str(target)
-        except OSError:
-            pass
+            out.mkdir()
+            return out
+        except FileExistsError:
+            continue
+    raise ArgumentError(f"could not reserve a crawl folder under {base}", fix="Pass one with --out.")

@@ -22,7 +22,10 @@ snippet named on the snippet's `// snippet: <name>` line and then by URL:
     fetch_batch, tab_one  URL -> a record, or {"sequence": [record, ...]} answered in
                           call order (the last one repeats). `url` is filled in.
     sitemap               candidate URL -> the page URLs that sitemap lists
-    links                 page URL -> the raw hrefs on that page
+    links                 page URL -> the raw hrefs on that page; "__hit_budget__": true
+                          ends the call the way a snippet cut off by its budget does
+    sitemap, links        "__timeout__": true prints what was found and then dies the way
+                          the daemon's 120s snippet kill does, with no closing record
 
 A URL with no route answers as the real browser would: fetch_batch gets an HTTP 404
 page, tab_one a navigation error, sitemap a miss, links a miss.
@@ -154,10 +157,15 @@ def do_exec(prompt: str, session: str | None = None) -> int:
             print(f"no such session {session}", file=sys.stderr)
             return 1
         time.sleep(float(os.environ.get("FAKE_ASIDE_PROMPT_DELAY", "0")))
-        append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
-                   "timestamp": int(time.time() * 1000)})
-        if replay(d, prompt):
-            return 0
+        opening = {"role": "user", "content": [{"type": "text", "text": prompt}],
+                   "timestamp": int(time.time() * 1000)}
+        # FAKE_ASIDE_RESUME_LATE=1 lands the whole turn, prompt included, after this process
+        # has exited: the transcript then shows only earlier turns for a while.
+        late = os.environ.get("FAKE_ASIDE_RESUME_LATE") == "1"
+        if not late:
+            append(d, opening)
+            if replay(d, prompt):
+                return 0
         answer = "이어서 답합니다."
         # The reply can land after this process exits -- which is exactly when a supervisor
         # that stopped waiting would report the previous turn's answer instead.
@@ -165,6 +173,8 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         if delay:
             if os.fork() == 0:
                 time.sleep(delay)
+                if late:
+                    append(d, opening)
                 append(d, assistant(texts=[answer]))
                 os._exit(0)
         else:
@@ -271,12 +281,20 @@ def do_repl(code: str) -> int:
         # round trip, with what that program really prints; anything else is refused rather
         # than answered with output the real sandbox would never produce.
         if code.strip() == DOCTOR_PROBE:
+            # FAKE_ASIDE_REPL_PROBE=fail is a sandbox that answers but refuses to run it.
+            if os.environ.get("FAKE_ASIDE_REPL_PROBE") == "fail":
+                print(json.dumps({"ok": False, "error": "sandbox refused the snippet"}))
+                return 1
             print(json.dumps({"ok": True}))
             return 0
         print("the fake aside cannot evaluate arbitrary JavaScript", file=sys.stderr)
         return 2
     routes = load_routes().get(snippet) or {}
     for rec in SNIPPETS[snippet](args, routes):
+        if routes.get("__timeout__") and rec.get("kind") in ("sitemap_done", "links_done"):
+            print("fetch failed: other side closed", file=sys.stderr)
+            print("Aside daemon is not reachable", file=sys.stderr)
+            return 1
         print(json.dumps(rec, ensure_ascii=False))
         sys.stdout.flush()
     return 0
@@ -361,13 +379,14 @@ def sitemap(args: dict, routes: dict):
 
 def links(args: dict, routes: dict):
     pages = args.get("pages") or []
+    cut = bool(routes.get("__hit_budget__"))
     for page in pages:
         hrefs = routes.get(page)
         if hrefs is None:
             yield {"kind": "link_miss", "url": page, "status": 404}
             continue
         yield {"kind": "hrefs", "url": page, "final_url": page, "hrefs": list(hrefs)}
-    yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": False}
+    yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": cut}
 
 
 SNIPPETS = {"fetch_batch": fetch_batch, "tab_one": tab_one, "sitemap": sitemap, "links": links}

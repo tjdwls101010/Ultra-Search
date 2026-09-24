@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -152,6 +153,12 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
     return resolve_links(records, same_origin_as)
 
 
+#: A character reference closed by its semicolon. Inside an attribute a reference without
+#: one is literal text when "=" or a letter follows -- `?a=1&copy=2` keeps its `&copy` --
+#: so only closed references are decoded.
+_CLOSED_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+
+
 def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
     import html
     from urllib.parse import urljoin, urldefrag
@@ -172,7 +179,7 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
         out.append({"kind": "page_read", "url": rec.get("url")})
         for href in rec.get("hrefs") or []:
             # An href is an HTML attribute: `&amp;` in it is one `&` of the URL.
-            href = html.unescape(href)
+            href = _CLOSED_REFERENCE.sub(lambda m: html.unescape(m.group(0)), href)
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
             try:

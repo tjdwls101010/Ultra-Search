@@ -389,3 +389,25 @@ def test_a_reused_childs_earlier_answer_is_not_its_answer_now(
 
     assert meta["orphan_children"] == ["ReusedChild00001"]
     assert "이전 답" not in result_of(run)["answer"]
+
+
+def test_a_reused_child_whose_new_task_has_not_landed_is_still_working(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A resumed parent handed an earlier child a new task, but the child's transcript still
+    ends in its earlier answer. That answer is not this run's, and the child is not done."""
+    aside_session(aside_home, "ParentWithKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="ReusedKid0000001"), answer("old-answer"))
+    aside_session(aside_home, "ReusedKid0000001", {**user("old task"), "timestamp": 1_000},
+                  {**tool("webfetch", "old page", sources=[{"id": "o1", "url": "https://old.test/"}]), "timestamp": 2_000},
+                  {**answer("old child answer"), "timestamp": 3_000})
+    replay([tool("subagent", "resumed", taskId="ReusedKid0000001"), answer("new-answer")])
+    run = start(runs_dir, "new-prompt")
+    run.update_meta(resume_session_id="ParentWithKid001")
+
+    meta = supervise(run, settle=0.3)
+
+    result = result_of(run)
+    assert meta["orphan_children"] == ["ReusedKid0000001"]
+    assert "old child answer" not in result["answer"]
+    assert result["sources"] == []

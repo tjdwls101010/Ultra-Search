@@ -86,27 +86,31 @@ def turn_of(run: _registry.Run) -> Turn:
         return Turn(observed=False)
     mine = events[start:]
     children = _events.child_session_ids(mine)
+    earlier = set(_events.child_session_ids(events[:start]))
     return Turn(
         observed=True,
         start_line=mine[0].index,
         events=mine,
         children=children,
-        child_events={cid: _from(_events.read_events(run.child_transcript(cid))[0], mine[0].timestamp)
-                      for cid in children},
+        child_events={
+            cid: _from(_events.read_events(run.child_transcript(cid))[0], mine[0].timestamp, reused=cid in earlier)
+            for cid in children
+        },
     )
 
 
-def _from(events: list[_events.Event], since: int) -> list[_events.Event]:
+def _from(events: list[_events.Event], since: int, *, reused: bool) -> list[_events.Event]:
     """A child's part in this turn: from the first prompt it received after the turn began.
 
-    A resumed parent can hand an earlier child a new task, and the child's transcript then
-    holds the earlier run's work too. Without timestamps to go by, all of it is this turn's.
+    A resumed parent can hand a child from an earlier turn a new task; the child's transcript
+    then holds that earlier run's work too, and until the new prompt lands none of it is this
+    run's. A child first spawned in this turn has nothing earlier to exclude.
     """
     if since:
         for i, e in enumerate(events):
             if e.kind == "user" and e.timestamp >= since:
                 return events[i:]
-    return events
+    return [] if reused else events
 
 
 def child_is_terminal(events: list[_events.Event]) -> bool:

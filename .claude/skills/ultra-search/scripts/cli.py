@@ -14,12 +14,15 @@ from __future__ import annotations
 import argparse
 from functools import partial
 import json
+import math
 import pathlib
 import sys
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from ultra_search.contract import EXIT_OK  # noqa: E402 - after the path it is found on
+from ultra_search import __version__  # noqa: E402 - after the path it is found on
+from ultra_search.contract import EXIT_ARGS, EXIT_OK  # noqa: E402
 from ultra_search.runs.render import LEVELS  # noqa: E402
 
 EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
@@ -34,12 +37,58 @@ NEXT_HELP = (
 )
 
 
+class JsonArgumentParser(argparse.ArgumentParser):
+    """A parser whose refusals are JSON on stdout like every other answer, not usage on stderr."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        print(json.dumps({"ok": False, "error": "bad_arguments", "message": message, "fix": f"{self.prog} --help"},
+                         ensure_ascii=False))
+        raise SystemExit(EXIT_ARGS)
+
+
+def _count(minimum: int):
+    """A whole number of at least `minimum`."""
+
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"{value} is below the minimum of {minimum}")
+        return value
+
+    return parse
+
+
+def _seconds(*, positive: bool = False):
+    """A finite number of seconds: zero or more, or more than zero."""
+
+    def parse(text: str) -> float:
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number of seconds") from None
+        if not math.isfinite(value) or value < 0 or (positive and value == 0):
+            raise argparse.ArgumentTypeError(f"{text} is not a {'positive' if positive else 'non-negative'} finite number of seconds")
+        return value
+
+    return parse
+
+
+def _web_url(text: str) -> str:
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an http(s) URL")
+    return text
+
+
 def _add_runs_dir(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--runs-dir",
         metavar="DIR",
         help="Registry root holding run directories and saved pages "
-        "(default: .ultra-search/ under the current project).",
+        "(default: .ultra-search/ under the current working directory).",
     )
 
 
@@ -61,7 +110,7 @@ def _add_exec_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--speed", choices=SPEED_CHOICES, help="Aside speed setting. Default: the account's setting.")
     p.add_argument(
         "--timeout",
-        type=float,
+        type=_seconds(positive=True),
         metavar="SEC",
         help="Stop WATCHING at this point and mark the run `abandoned`. The daemon-side run keeps going "
         "and keeps spending credits -- this does not cancel anything. Default: no deadline.",
@@ -70,16 +119,16 @@ def _add_exec_opts(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = JsonArgumentParser(
         prog="cli.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
         epilog="Exit codes: 0 command handled (inspect run/item states) | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 no result data.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    p.add_argument("--version", action="version", version="ultra-search 1.0")
+    p.add_argument("--version", action="version", version=f"ultra-search {__version__}")
     sub = p.add_subparsers(
         dest="command", metavar="COMMAND", required=True,
-        parser_class=partial(argparse.ArgumentParser, formatter_class=argparse.RawTextHelpFormatter),
+        parser_class=partial(JsonArgumentParser, formatter_class=argparse.RawTextHelpFormatter),
     )
 
     # --- search -------------------------------------------------------------
@@ -95,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("prompt", nargs="+", metavar="PROMPT", help="Research objective. Repeat for parallel runs.")
     s.add_argument(
         "--wait",
-        type=float,
+        type=_seconds(),
         default=100.0,
         metavar="SEC",
         help="Seconds to stay attached before handing back a handle. Never kills the run. "
@@ -126,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         "session started in the Aside app or by a bare `aside exec`, which this did not create.",
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
-    r.add_argument("--wait", type=float, default=100.0, metavar="SEC", help="As for `search`.")
+    r.add_argument("--wait", type=_seconds(), default=100.0, metavar="SEC", help="As for `search`.")
     r.add_argument("--background", action="store_true", help="As for `search`.")
     _add_exec_opts(r)
 
@@ -141,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target(st)
     st.add_argument(
         "--stall-after",
-        type=float,
+        type=_seconds(),
         default=300.0,
         metavar="SEC",
         help="Idle seconds after which possibly_stalled is flagged. This only labels -- nothing is killed "
@@ -179,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument("--follow", action="store_true", help="Keep printing until all targets are terminal or the watching deadline expires.")
     lg.add_argument(
         "--follow-timeout",
-        type=float,
+        type=_seconds(),
         default=570.0,
         metavar="SEC",
         help="Give up following after this long and print `run.still-running`. Default 570, under the Bash "
@@ -187,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lg.add_argument(
         "--heartbeat",
-        type=float,
+        type=_seconds(positive=True),
         metavar="SEC",
         help="With --follow, emit a liveness line every SEC including the number of live children, so a long "
         "silence is distinguishable from a dead follower.",
@@ -220,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--source", metavar="N|ID", help="Source index from `result`, or its source id.")
     g.add_argument(
         "--item",
-        type=int,
+        type=_count(0),
         metavar="N",
         help="Index into this run's tool RESULTS, in order, counting from 0 -- not into all "
         "events. `log --level steps` lists them.",
@@ -245,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(PDF, docx, pptx, xlsx, epub...) are converted too. Full text always goes to a file; use --print "
         "to also get it inline.",
     )
-    f.add_argument("url", nargs="+", metavar="URL", help="Page or document URL.")
+    f.add_argument("url", nargs="+", type=_web_url, metavar="URL", help="Page or document URL.")
     f.add_argument(
         "--out",
         metavar="PATH",
@@ -268,9 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
         "JavaScript shell; fetch and tab force one path. Default auto.",
     )
     f.add_argument("--print", dest="print_content", action="store_true", help="Include the content inline in the JSON.")
-    f.add_argument("--max-chars", type=int, default=20000, metavar="N", help="Inline content cap for --print. Default 20000.")
+    f.add_argument("--max-chars", type=_count(1), default=20000, metavar="N", help="Inline content cap for --print. Default 20000.")
     f.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
-    f.add_argument("--concurrency", type=int, default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
+    f.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
     _add_runs_dir(f)
 
     # --- map ----------------------------------------------------------------
@@ -281,9 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
         "walked once.",
     )
-    m.add_argument("url", metavar="URL", help="Site or section root.")
-    m.add_argument("--max-urls", type=int, default=200, metavar="N", help="Stop after this many URLs. Default 200.")
-    m.add_argument("--depth", type=int, default=2, metavar="N", help="Link-following depth from the root. Default 2.")
+    m.add_argument("url", type=_web_url, metavar="URL", help="Site or section root.")
+    m.add_argument("--max-urls", type=_count(1), default=200, metavar="N", help="Stop after this many URLs. Default 200.")
+    m.add_argument("--depth", type=_count(0), default=2, metavar="N", help="Link-following depth from the root. Default 2.")
     m.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
     m.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
     m.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
@@ -303,15 +352,15 @@ def build_parser() -> argparse.ArgumentParser:
         "status, depth and via for each page.",
     )
     src = c.add_mutually_exclusive_group(required=True)
-    src.add_argument("url", nargs="?", metavar="URL", help="Site root to crawl.")
+    src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Site root to crawl.")
     src.add_argument("--from", dest="from_manifest", metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
-    c.add_argument("--max-pages", type=int, default=25, metavar="N", help="Stop after this many pages. Default 25.")
-    c.add_argument("--max-urls", type=int, default=200, metavar="N", help="Discovery cap before --max-pages applies. Default 200.")
-    c.add_argument("--depth", type=int, default=2, metavar="N", help="Link-following depth. Default 2.")
+    c.add_argument("--max-pages", type=_count(1), default=25, metavar="N", help="Stop after this many pages. Default 25.")
+    c.add_argument("--max-urls", type=_count(1), default=200, metavar="N", help="Discovery cap before --max-pages applies. Default 200.")
+    c.add_argument("--depth", type=_count(0), default=2, metavar="N", help="Link-following depth. Default 2.")
     c.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
     c.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
     c.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
-    c.add_argument("--concurrency", type=int, default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
+    c.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
     c.add_argument("--via", choices=VIA_CHOICES, default="auto", help="As for `fetch`. Default auto.")
     c.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
     c.add_argument("--out", metavar="DIR", help="Output directory. Default: .ultra-search/crawls/<host>/.")
@@ -326,7 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
         "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside deletes these "
         "within about a day, so a session listed here may not be listed tomorrow.",
     )
-    se.add_argument("--limit", type=int, default=20, metavar="N", help="How many to list. Default 20.")
+    se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default 20.")
     se.add_argument(
         "--mine",
         action="store_true",

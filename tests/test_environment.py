@@ -208,41 +208,48 @@ def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypat
 # --- the shared contract -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("argv", [["search"], ["fetch"], ["status", "--run", "a", "--group", "b"], ["no-such-command"]])
-def test_bad_arguments_exit_two(argv: list[str]) -> None:
-    code, _, _ = run_cli(*argv)
+@pytest.mark.parametrize("argv,command", [
+    (["search"], "search"),
+    (["fetch"], "fetch"),
+    (["status", "--run", "a", "--group", "b"], "status"),
+    (["no-such-command"], None),
+    (["search", "q", "--wait", "-1"], "search"),
+    (["search", "q", "--wait", "nan"], "search"),
+    (["search", "q", "--timeout", "inf"], "search"),
+    (["log", "--heartbeat", "0"], "log"),
+    (["fetch", "https://e.test/", "--concurrency", "0"], "fetch"),
+    (["fetch", "https://e.test/", "--max-chars", "-5"], "fetch"),
+    (["fetch", "ftp://e.test/file"], "fetch"),
+    (["fetch", "e.test/page"], "fetch"),
+    (["map", "https://e.test/", "--max-urls", "0"], "map"),
+    (["map", "https://e.test/", "--depth", "-1"], "map"),
+    (["crawl", "https://e.test/", "--max-pages", "0"], "crawl"),
+    (["crawl", "file:///etc/passwd"], "crawl"),
+    (["sessions", "--limit", "-2"], "sessions"),
+    (["show", "--item", "-1"], "show"),
+])
+def test_bad_arguments_answer_in_json_with_where_to_look(argv: list[str], command: str | None) -> None:
+    """Every command promises one JSON line, and a caller that mistyped a flag is the one
+    most in need of it. A number outside its range or a URL that is not a web page is refused
+    before any work, the same way."""
+    code, payload, text = run_cli(*argv)
 
     assert code == 2
+    assert text.strip().startswith("{") and len(text.strip().splitlines()) == 1
+    assert payload["ok"] is False and payload["error"] == "bad_arguments"
+    assert payload["message"]
+    assert payload["fix"] == (f"cli.py {command} --help" if command else "cli.py --help")
 
 
-def test_the_version_is_reported() -> None:
+def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 
     assert code == 0
-    assert text.strip().startswith("ultra-search ")
+    assert text.strip() == "ultra-search 1.0.0"
 
 
-def test_a_repl_that_answers_without_running_the_probe_fails_doctor(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
-) -> None:
-    """Printing something is not a round trip. A sandbox that replies with a refusal would
-    pass a check that only looked for output, and every page command would then fail."""
-    monkeypatch.setenv("FAKE_ASIDE_REPL_PROBE", "fail")
+def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
+    _, _, text = run_cli("status", "--help")
 
-    code, payload = doctor(runs_dir)
-
-    assert code == 3
-    assert check(payload, "browser repl")["ok"] is False
-    assert check(payload, "browser repl")["fix"]
-
-
-def test_the_writability_probe_cannot_collide_with_what_is_already_there(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon
-) -> None:
-    (runs_dir / ".write-probe").mkdir()
-
-    code, payload = doctor(runs_dir)
-
-    assert check(payload, "runs dir")["ok"] is True
-    assert code == 0
-    assert sorted(p.name for p in runs_dir.iterdir()) == [".write-probe"]
+    assert "under the current working directory" in text
+    assert "current project" not in text

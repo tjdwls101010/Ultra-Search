@@ -767,12 +767,15 @@ def test_steps_level_is_the_view_that_was_compact_before(recorded) -> None:
     stream's prefix. The one departure kept in the golden is a subagent's finishing record,
     which used to fall through as raw JSON and now renders as text like every other known
     record. The recording's run id is the only thing that differs."""
-    _, run_id = recorded
     _, _, text = log_of(recorded, "--level", "steps")
 
-    body = "\n".join(line for line in text.splitlines() if not line.startswith("# cursor="))
-    golden = (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n")
-    assert body == golden.replace("260829-235523-subagents", run_id)
+    body = [line for line in text.splitlines() if not line.startswith("# cursor=")]
+    golden = (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n").splitlines()
+    # The prompt block is the prompt the run was given, decorated by this version; everything
+    # after it is the recording.
+    prompt_end = next(i for i, line in enumerate(body) if line.startswith("call "))
+    assert body[0] == golden[0]
+    assert body[prompt_end:] == golden[golden.index(next(line for line in golden if line.startswith("call "))):]
 
 
 # --- what a recorded transcript turns into -----------------------------------------------
@@ -1480,3 +1483,37 @@ def test_result_is_always_a_list_of_runs(cli) -> None:
     for payload in (one, latest):
         assert [r["run_id"] for r in payload["runs"]] == [run_id]
         assert "answer" not in payload
+
+
+
+def test_steps_numbers_tool_results_the_way_show_counts_them(cli, replay, aside_home: Path) -> None:
+    """`show --item N` fetches the N-th tool result of the run's own turn. The log is where
+    the caller finds N, so the numbers have to agree -- across reads from a cursor too."""
+    aside_session(aside_home, "NumberedChild001", user("자식"), tool("webfetch", "child page"), answer("자식 답"))
+    replay([tool("websearch", "found"), tool("subagent", "spawned", taskId="NumberedChild001"),
+            {"__sleep__": 4}, tool("webfetch", "read"), answer("답")])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+    first = poll(lambda: (lambda r: r if "#1 subagent" in r[2] else None)(cli("log", "--run", run_id, "--level", "steps")), timeout=10)
+
+    _, _, rest = cli("log", "--run", run_id, "--level", "steps", "--since", str(first[1]["cursor"]),
+                     "--follow", "--follow-timeout", "30")
+    numbered = [line for line in lines_of(first[2] + rest) if line[:1] == "#" and line[1:2].isdigit()]
+    shown = [cli("show", "--run", run_id, "--item", str(n))[1]["tool"] for n in range(3)]
+
+    assert [line.split(" ", 2)[:2] for line in numbered] == [["#0", "websearch"], ["#1", "subagent"], ["#2", "webfetch"]]
+    assert shown == ["websearch", "subagent", "webfetch"]
+    assert any(line.startswith("[child NumberedChild001] webfetch out=") for line in lines_of(first[2] + rest))
+
+
+def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None:
+    """The browsing agent acts as the user, in their logged-in browser. What research may not
+    do is said in the prompt it receives, every time, rather than hoped for."""
+    run_id = finished_run_id(cli)
+    cli("resume", run_id, "후속", "--wait", "30")
+
+    scope = "Read-only research: do not post, purchase, sign up, or change account settings."
+    prompts = [argv[-1] for argv in exec_calls(fake_aside)]
+    assert len(prompts) == 2 and all(scope in p for p in prompts)
+    for command in ("search", "resume"):
+        assert "Read-only research" in cli(command, "--help")[2]

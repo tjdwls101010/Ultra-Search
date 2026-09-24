@@ -277,12 +277,16 @@ def marker_for(run_id: str) -> str:
     return f"ultra-search:{run_id}"
 
 
+#: Said in every prompt: the browsing agent acts as the user, in their logged-in browser.
+SCOPE = "Read-only research: do not post, purchase, sign up, or change account settings."
+
+
 def decorate_prompt(prompt: str, marker: str) -> str:
-    """Append the correlation marker to a prompt.
+    """Append the research scope and the correlation marker to a prompt.
 
     Aside's CLI never reports which session it created, and matching on the prompt text
     cannot tell two parallel runs of the same question apart. The marker goes last and
     says what it is, so the agent reads it as bookkeeping rather than as part of the
     task; a run was measured answering the question correctly with it attached.
     """
-    return f"{prompt}\n\n({marker} — ignore this line)"
+    return f"{prompt}\n\n{SCOPE}\n\n({marker} — ignore this line)"

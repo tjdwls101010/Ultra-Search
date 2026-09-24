@@ -173,7 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
         "as one group. Synchronous by default: if the work finishes within --wait you get the answer, "
         "sources and usage inline; if it does not, the run is left alive and you get a handle plus a "
-        "`next` action for watching it. Finished entries include their state; a partial snapshot is not a complete investigation.",
+        "`next` action for watching it. Finished entries include their state; a partial snapshot is not a complete investigation. "
+        "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
     s.add_argument("prompt", nargs="+", metavar="PROMPT", help="Research objective. Repeat for parallel runs.")
@@ -188,7 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
         "already worked out. Takes a run id from `search` or any session id from `sessions`, so a "
         "conversation started in the Aside app can be picked up here. Creates a new run id recording its "
         "lineage. Refused while the session is still working: attaching to a live one waits for the current "
-        "turn and cannot steer it. The returned run's log and result describe only this new turn.",
+        "turn and cannot steer it. The returned run's log and result describe only this new turn. "
+        "The follow-up is sent with one more line, as in `search`: \"Read-only research: do not post, purchase, "
+        "sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
     r.add_argument(
@@ -244,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="What each event becomes. progress: one line per turn -- what the run reached for (tool, count, "
         "the host or objective) and what it said; a result appears only when it errored, an answer as its "
         "first line. steps: every call with the first 200 characters of its arguments and every result's "
-        "size, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
+        "size, numbered #N for `show --item N`, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
         "characters of each result. raw: the stored records unchanged. Default progress.",
     )
     lg.add_argument("--follow", action="store_true", help="Keep printing until all targets are terminal or the watching deadline expires.")
@@ -302,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_count(0),
         metavar="N",
         help="Index into this run's tool RESULTS, in order, counting from 0 -- not into all "
-        "events. `log --level steps` lists them.",
+        "events. `log --level steps` prints each one's N as #N.",
     )
     _add_runs_dir(sh)
 

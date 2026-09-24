@@ -96,16 +96,28 @@ def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool) 
         events, cursor = transcript.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
         events = [event for event in events if event.index >= starts.get(key, 0)]
+        ordinals = _ordinals(path, starts.get(key, 0)) if not key and level in ("steps", "full") and events else {}
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"
         for e in events:
-            rendered = render.render(e, level=level)
+            rendered = render.render(e, level=level, ordinal=ordinals.get(e.index))
             # Every line, not just the first: a child's second call or the body of its
             # answer would otherwise read as the parent's.
             for line in rendered.splitlines():
                 lines.append(f"{prefix} {line}" if prefix and line else prefix or line)
     return lines
+
+
+def _ordinals(path, start_line: int) -> dict[int, int]:
+    """Line index -> N for this turn's own tool results, the numbering `show --item N` uses.
+
+    Counted over the whole turn, not the chunk being printed, so a read from a cursor
+    carries on where the last one stopped.
+    """
+    events, _ = transcript.read_events(path)
+    results = [e for e in events if e.kind == "tool_result" and e.index >= start_line]
+    return {e.index: n for n, e in enumerate(results)}
 
 
 def _live_children(run: registry.Run) -> int:

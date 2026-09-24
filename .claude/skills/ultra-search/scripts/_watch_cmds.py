@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import _errors
-import _events
+import _evidence
 import _follow
 import _registry
 import _store
@@ -87,7 +87,10 @@ def _status(args, runs_root: Path) -> int:
 
 def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
     meta = run.meta()
-    children = list(meta.get("children") or [])
+    # This run's turn and its children: a resumed run's transcript also holds earlier turns,
+    # whose children and tokens belong to the runs that asked for them.
+    turn = _evidence.turn_of(run)
+    children = turn.children
     last = float(meta.get("last_activity_at") or 0)
     # The supervisor records activity as it syncs, but a status call between two syncs
     # would read a stale number -- so the files themselves get the last word.
@@ -108,7 +111,7 @@ def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
         "last_activity_at": last or None,
         "idle_seconds": idle,
         "possibly_stalled": bool(live and idle is not None and idle > stall_after),
-        "usage": _usage(run),
+        "usage": turn.usage(),
     }
     if meta.get("group"):
         entry["group"] = meta["group"]
@@ -124,16 +127,6 @@ def _status_entry(run: _registry.Run, now: float, stall_after: float) -> dict:
             "Check `log`, and cancel in the Aside app if it really is stuck."
         )
     return entry
-
-
-def _usage(run: _registry.Run) -> dict:
-    events, _ = _events.read_events(run.session_transcript)
-    total = _events.total_usage(events)
-    for p in run.child_transcripts():
-        cev, _ = _events.read_events(p)
-        for k, v in _events.total_usage(cev).items():
-            total[k] = round(total.get(k, 0) + v, 6) if k == "cost" else total.get(k, 0) + v
-    return total
 
 
 def run_summary(run: _registry.Run) -> dict:
@@ -241,10 +234,10 @@ def _result_entry(run: _registry.Run, sources_only: bool) -> dict:
 
 def _show(args, runs_root: Path) -> int:
     run = _registry.resolve_run(runs_root, args.run) if args.run else _registry.latest_run(runs_root)
-    events, _ = _events.read_events(run.session_transcript)
+    turn = _evidence.turn_of(run)
 
     if args.item is not None:
-        results = [e for e in events if e.kind == "tool_result"]
+        results = turn.tool_results()
         if not 0 <= args.item < len(results):
             raise ArgumentError(
                 f"run {run.run_id} has {len(results)} tool result(s); no item {args.item}",
@@ -256,14 +249,14 @@ def _show(args, runs_root: Path) -> int:
         print(json.dumps(payload, ensure_ascii=False))
         return 0
 
-    sources = _events.collect_sources(events)
+    sources = turn.sources()
     hit = None
     if str(args.source).isdigit():
         i = int(args.source)
         if 0 <= i < len(sources):
             hit = sources[i]
     else:
-        hit = next((s for s in sources if s.id == args.source or s.url == args.source), None)
+        hit = next((s for s in sources if args.source in s.ids or s.url == args.source), None)
     if hit is None:
         raise ArgumentError(
             f"run {run.run_id} has no source {args.source!r}",
@@ -272,26 +265,9 @@ def _show(args, runs_root: Path) -> int:
         )
     # The text Aside already fetched, not a fresh request: re-fetching would cost a round
     # trip and could return something different from what the answer was based on.
-    #
-    # A URL usually appears twice -- once as a search result's snippet, once as the page a
-    # later webfetch actually read. `show` exists to give the second one, so the tools that
-    # open a page win regardless of which came first in the transcript.
-    body = ""
-    fallback = ""
-    for e in events:
-        if e.kind != "tool_result":
-            continue
-        if not any(isinstance(s, dict) and s.get("url") == hit.url
-                   for s in (e.details or {}).get("sources") or []):
-            continue
-        if _events.is_opening_tool(e.tool_name):
-            body = e.content
-            break
-        fallback = fallback or e.content
-    body = body or fallback
     payload = {"ok": True, "command": "show", "run_id": run.run_id,
-               "source": {"url": hit.url, "title": hit.title, "id": hit.id, "opened": hit.opened},
-               "content": body}
+               "source": {"url": hit.url, "title": hit.title, "id": hit.id, "ids": hit.ids, "opened": hit.opened},
+               "content": turn.source_text(hit.url)}
     print(json.dumps(payload, ensure_ascii=False))
     return 0
 

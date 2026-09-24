@@ -205,7 +205,7 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
 
     if turn.observed:
         sources = turn.sources()
-        answer = turn.answer()
+        answer = turn.answer(sources)
         usage = turn.usage()
         structured = True
     else:
@@ -225,7 +225,7 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
         "state": state,
         "answer": answer,
         "sources": [
-            {"url": s.url, "title": s.title, "id": s.id, "opened": s.opened, "published": s.published}
+            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published}
             for s in sources
         ],
         "usage": usage,

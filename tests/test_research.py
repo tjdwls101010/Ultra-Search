@@ -1331,3 +1331,68 @@ def test_an_unwritable_registry_is_reported_in_json(aside_home: Path, fake_aside
     assert code == 4
     assert err["error"] == "run_failed"
     assert err["fix"]
+
+
+# --- one run, one scope ------------------------------------------------------------------
+
+
+def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> None:
+    """`result`, `status` and `show` describe the same run. For a resumed run that is one
+    turn of a longer transcript; a view that read the whole transcript would count the
+    earlier turns' tokens and hand back their tool results as this run's."""
+    first = finished_run_id(cli)
+    new = {"id": "n1", "url": "https://new.test/page", "title": "New"}
+    replay([tool("webfetch", "새 페이지", sources=[new]), answer("new")])
+
+    _, payload, _ = cli("resume", first, "후속", "--wait", "30")
+    run_id = first_run(payload)["run_id"]
+    _, result, _ = cli("result", "--run", run_id)
+    _, status, _ = cli("status", "--run", run_id)
+    code, item, _ = cli("show", "--run", run_id, "--item", "0")
+    _, source, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert first_run(status)["usage"] == result["usage"]
+    assert code == 0 and item["content"] == "새 페이지"
+    assert source["source"]["url"] == new["url"]
+
+
+def test_a_resumed_run_does_not_count_the_earlier_turns_children(cli, monkeypatch) -> None:
+    """Checked while the run is going as well as after: the supervisor copies every child the
+    transcript mentions, and the earlier turn's are not this run's."""
+    monkeypatch.setenv("FAKE_ASIDE_PROMPT_DELAY", "6")
+    _, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--background")
+    run_id = first_run(payload)["run_id"]
+    time.sleep(3)
+
+    _, running, _ = cli("status", "--run", run_id)
+    cli("log", "--run", run_id, "--follow", "--follow-timeout", "60")
+    _, finished, _ = cli("status", "--run", run_id)
+
+    for status in (running, finished):
+        assert first_run(status)["children"] == 0
+        assert first_run(status)["child_ids"] == []
+    assert first_run(running)["state"] == "running"
+
+
+def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path) -> None:
+    """The parent listed a URL; its child opened it, under an id of its own. The merged list
+    keeps both facts: the page was read, and either id cites it."""
+    listed = {"id": "p1", "url": "https://docs.test/page", "title": "Page"}
+    read = {"id": "c1", "url": "https://docs.test/page", "title": "Page"}
+    only_child = {"id": "c2", "url": "https://docs.test/other", "title": "Other"}
+    aside_session(aside_home, "ReaderChild00001", user("읽어"),
+                  tool("webfetch", "페이지 본문", sources=[read]), tool("webfetch", "다른 본문", sources=[only_child]),
+                  answer('읽었습니다 <citation refs="c1">page</citation>'))
+    replay([tool("websearch", "검색 결과", sources=[listed]),
+            tool("subagent", "spawned", taskId="ReaderChild00001"),
+            answer('정리 <citation refs="c1">page</citation> <citation refs="c2">other</citation>')])
+
+    _, payload, _ = search(cli, "질문")
+    run = first_run(payload)
+    code, by_child_id, _ = cli("show", "--run", run["run_id"], "--source", "c2")
+
+    merged = {s["url"]: s for s in run["sources"]}
+    assert merged[listed["url"]]["opened"] is True
+    assert set(merged[listed["url"]]["ids"]) == {"p1", "c1"}
+    assert run["answer"].startswith(f"정리 page ({listed['url']}) other ({only_child['url']})")
+    assert code == 0 and by_child_id["content"] == "다른 본문"

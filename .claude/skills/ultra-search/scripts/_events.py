@@ -44,6 +44,15 @@ class Source:
     excerpt: str = ""
     published: str = ""
     opened: bool = False
+    #: Every id a citation may use for this URL. Two tools, or a parent and its child, can
+    #: list one page under different ids, and a citation to either has to resolve.
+    ids: list[str] = field(default_factory=list)
+
+    def absorb(self, other: "Source") -> None:
+        self.opened = self.opened or other.opened
+        for i in other.ids:
+            if i not in self.ids:
+                self.ids.append(i)
 
 
 @dataclass
@@ -217,14 +226,14 @@ def final_answer(events: list[Event], sources: list[Source] | None = None) -> st
 
 
 def resolve_citations(text: str, sources: list[Source]) -> str:
-    by_id = {s.id: s for s in sources if s.id}
+    by_id = {i: s for s in sources for i in s.ids}
 
     def sub(m: re.Match[str]) -> str:
         refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
         label = m.group(2).strip()
         urls = []
         for ref in refs:
-            hit = by_id.get(ref) or next((s for s in sources if s.id and ref.startswith(s.id)), None)
+            hit = by_id.get(ref) or next((s for i, s in by_id.items() if ref.startswith(i)), None)
             if hit and hit.url and hit.url not in urls:
                 urls.append(hit.url)
         if not urls:
@@ -253,30 +262,42 @@ def collect_sources(events: list[Event]) -> list[Source]:
             url = str(raw.get("url") or "").strip()
             if not url:
                 continue
-            existing = seen.get(url)
-            if existing:
-                existing.opened = existing.opened or opened
-                continue
+            sid = str(raw.get("id") or "")
             s = Source(
                 url=url,
                 title=str(raw.get("title") or ""),
-                id=str(raw.get("id") or ""),
+                id=sid,
                 excerpt=str(raw.get("excerpt") or ""),
                 published=str(raw.get("publishDate") or raw.get("published") or ""),
                 opened=opened,
+                ids=[sid] if sid else [],
             )
+            existing = seen.get(url)
+            if existing:
+                existing.absorb(s)
+                continue
             seen[url] = s
             out.append(s)
     return out
 
 
 def merge_sources(lists: list[list[Source]]) -> list[Source]:
-    """Several streams' sources as one list, one entry per URL, first seen first."""
+    """Several streams' sources as one list, one entry per URL, first seen first.
+
+    A URL one stream only listed and another opened was read, and keeps every id either
+    stream cited it by.
+    """
     out: list[Source] = []
+    seen: dict[str, Source] = {}
     for sources in lists:
         for s in sources:
-            if all(s.url != existing.url for existing in out):
-                out.append(s)
+            if s.url in seen:
+                seen[s.url].absorb(s)
+                continue
+            merged = Source(url=s.url, title=s.title, id=s.id, excerpt=s.excerpt, published=s.published,
+                            opened=s.opened, ids=list(s.ids))
+            seen[s.url] = merged
+            out.append(merged)
     return out
 
 

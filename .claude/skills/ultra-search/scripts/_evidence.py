@@ -32,11 +32,16 @@ class Turn:
             + [_events.collect_sources(self.child_events[cid]) for cid in self.children]
         )
 
-    def answer(self) -> str:
-        """The turn's answer, each child's appended under its id."""
-        answer = _events.final_answer(self.events)
+    def answer(self, sources: list[_events.Source] | None = None) -> str:
+        """The turn's answer, each child's appended under its id.
+
+        Citations resolve against every source of the turn: a parent routinely cites what
+        its child read, by the child's id.
+        """
+        sources = self.sources() if sources is None else sources
+        answer = _events.final_answer(self.events, sources)
         for cid in self.children:
-            ctext = _events.final_answer(self.child_events[cid])
+            ctext = _events.final_answer(self.child_events[cid], sources)
             if ctext:
                 answer = f"{answer}\n\n--- child {cid} ---\n{ctext}" if answer else ctext
         return answer

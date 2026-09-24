@@ -812,3 +812,49 @@ def test_crawls_without_out_each_get_their_own_folder(cli, routes, runs_dir: Pat
     assert first["out_dir"] != second["out_dir"]
     assert {p: p.read_bytes() for p in Path(first["out_dir"]).iterdir()} == kept
     assert sorted(p.name[:4] for p in Path(second["out_dir"]).glob("*.md")) == ["000-"]
+
+
+def test_map_reports_what_it_could_not_read(cli, routes) -> None:
+    """A map that silently lost half a site reads as a small site. What was missed, and why
+    discovery stopped, is part of the answer."""
+    routes({"links": {"https://site.test/": ["/a", "/b"], "https://site.test/a": ["/a/1"]}})
+
+    code, payload, _ = cli("map", "https://site.test/", "--depth", "2")
+
+    assert code == 0
+    coverage = payload["coverage"]
+    assert coverage["sitemap"] is False
+    assert coverage["pages_read"] == 2
+    assert [m["url"] for m in coverage["pages_missed"]] == ["https://site.test/b"]
+    assert coverage["budget_exhausted"] is False
+    assert coverage["max_urls_reached"] is False
+
+
+def test_map_that_read_nothing_exits_empty(cli, routes) -> None:
+    """The root alone, unread, is not a map of anything -- even though it is one URL."""
+    routes({"links": {}})
+
+    code, payload, _ = cli("map", "https://site.test/")
+
+    assert code == 5
+    assert payload["coverage"]["pages_read"] == 0
+    assert [m["url"] for m in payload["coverage"]["pages_missed"]] == ["https://site.test/"]
+
+
+def test_map_says_when_a_budget_or_the_cap_cut_discovery_short(cli, routes) -> None:
+    routes({"links": {**SITE, "__hit_budget__": True}})
+
+    _, cut, _ = cli("map", "https://site.test/", "--depth", "1")
+    _, capped, _ = cli("map", "https://site.test/", "--depth", "3", "--max-urls", "3")
+
+    assert cut["coverage"]["budget_exhausted"] is True
+    assert capped["coverage"]["max_urls_reached"] is True
+
+
+def test_map_from_a_sitemap_says_so(cli, routes) -> None:
+    routes({"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"]}})
+
+    code, payload, _ = cli("map", "https://site.test/")
+
+    assert code == 0
+    assert payload["coverage"]["sitemap"] is True

@@ -32,7 +32,7 @@ def _providers(args):
 
 
 def _map(args, runs_root: Path) -> int:
-    urls = _crawl.discover(
+    urls, coverage = _crawl.discover(
         args.url,
         depth=args.depth,
         max_urls=args.max_urls,
@@ -47,8 +47,11 @@ def _map(args, runs_root: Path) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         manifest["manifest_path"] = str(out)
-    print(json.dumps({"ok": True, "command": "map", **manifest}, ensure_ascii=False))
-    return 0 if urls else _errors.EXIT_EMPTY
+    print(json.dumps({"ok": True, "command": "map", **manifest, "coverage": coverage}, ensure_ascii=False))
+    # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
+    # root itself is listed.
+    saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
+    return 0 if urls and saw_site else _errors.EXIT_EMPTY
 
 
 def _crawl_cmd(args, runs_root: Path) -> int:
@@ -65,11 +68,12 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             raise ArgumentError(f"{source} is not a manifest written by `map` or `crawl`",
                                 fix="Produce one with `map --out`.")
         root = manifest.get("root") or ""
+        coverage = None
         if not urls:
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:
         root = args.url
-        urls = _crawl.discover(
+        urls, coverage = _crawl.discover(
             root,
             depth=args.depth,
             max_urls=args.max_urls,
@@ -109,6 +113,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             "requested": len(urls),
             "saved": sum(1 for i in items if i["status"] == "ok"),
             "items": [{k: v for k, v in i.items() if k != "content"} for i in items],
+            **({"coverage": coverage} if coverage is not None else {}),
         },
         ensure_ascii=False,
     ))

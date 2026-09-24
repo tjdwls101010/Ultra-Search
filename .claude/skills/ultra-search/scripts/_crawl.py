@@ -65,9 +65,20 @@ def discover(
     use_sitemap: bool = True,
     sitemap_provider=None,
     links_provider=None,
-) -> list[str]:
+) -> tuple[list[str], dict]:
+    """The URLs to visit, and how much of the site was actually seen to choose them.
+
+    The coverage is half the answer: a map that could not read half the site's pages looks
+    exactly like a small site unless it says so.
+    """
     root = normalise(root)
     site = origin(root)
+    coverage = {"sitemap": False, "pages_read": 0, "pages_missed": [],
+                "budget_exhausted": False, "max_urls_reached": False}
+
+    def done(urls: list[str]) -> tuple[list[str], dict]:
+        coverage["max_urls_reached"] = len(urls) > max_urls or coverage["max_urls_reached"]
+        return urls[:max_urls], coverage
 
     if use_sitemap and sitemap_provider:
         found = [
@@ -77,11 +88,11 @@ def discover(
         ]
         same_site = [u for u in found if origin(u) == site]
         if same_site:
-            kept = [u for u in _dedupe(same_site) if matches(u, include, exclude)]
-            return kept[:max_urls]
+            coverage["sitemap"] = True
+            return done([u for u in _dedupe(same_site) if matches(u, include, exclude)])
 
     if not links_provider:
-        return [root] if matches(root, include, exclude) else []
+        return done([root] if matches(root, include, exclude) else [])
 
     # Breadth-first, and the frontier is walked whether or not a page passes the filters:
     # a glob selects what to keep, and docs sites routinely reach every article through an
@@ -99,7 +110,15 @@ def discover(
         found = links_provider(frontier, same_origin_as=root)
         frontier = []
         for record in found:
-            if record.get("kind") != "url" or not record.get("url"):
+            kind = record.get("kind")
+            if kind == "page_read":
+                coverage["pages_read"] += 1
+            elif kind == "link_miss":
+                coverage["pages_missed"].append(
+                    {k: record[k] for k in ("url", "status", "error") if record.get(k) is not None})
+            elif kind == "links_done" and record.get("hit_budget"):
+                coverage["budget_exhausted"] = True
+            if kind != "url" or not record.get("url"):
                 continue
             u = normalise(record["url"])
             if u in seen or origin(u) != site:
@@ -109,8 +128,9 @@ def discover(
             if matches(u, include, exclude):
                 kept.append(u)
                 if len(kept) >= max_urls:
+                    coverage["max_urls_reached"] = True
                     break
-    return kept[:max_urls]
+    return done(kept)
 
 
 def _dedupe(seq: list[str]) -> list[str]:

@@ -165,6 +165,9 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
                 out.append(rec)
             continue
         base = rec.get("final_url") or rec.get("url") or same_origin_as
+        # A page with no usable links was still read; saying so is what separates it from
+        # a page that could not be fetched at all.
+        out.append({"kind": "page_read", "url": rec.get("url")})
         for href in rec.get("hrefs") or []:
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue

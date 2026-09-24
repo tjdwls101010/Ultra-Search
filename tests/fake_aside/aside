@@ -22,7 +22,8 @@ snippet named on the snippet's `// snippet: <name>` line and then by URL:
     fetch_batch, tab_one  URL -> a record, or {"sequence": [record, ...]} answered in
                           call order (the last one repeats). `url` is filled in.
     sitemap               candidate URL -> the page URLs that sitemap lists
-    links                 page URL -> the raw hrefs on that page
+    links                 page URL -> the raw hrefs on that page; "__hit_budget__": true
+                          ends the call the way a snippet cut off by its budget does
 
 A URL with no route answers as the real browser would: fetch_batch gets an HTTP 404
 page, tab_one a navigation error, sitemap a miss, links a miss.
@@ -365,13 +366,14 @@ def sitemap(args: dict, routes: dict):
 
 def links(args: dict, routes: dict):
     pages = args.get("pages") or []
+    cut = bool(routes.get("__hit_budget__"))
     for page in pages:
         hrefs = routes.get(page)
         if hrefs is None:
             yield {"kind": "link_miss", "url": page, "status": 404}
             continue
         yield {"kind": "hrefs", "url": page, "final_url": page, "hrefs": list(hrefs)}
-    yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": False}
+    yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": cut}
 
 
 SNIPPETS = {"fetch_batch": fetch_batch, "tab_one": tab_one, "sitemap": sitemap, "links": links}

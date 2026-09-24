@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-PAGE_DIR = Path(__file__).resolve().parent / "page"
-TO_MARKDOWN = PAGE_DIR / "to_markdown.mjs"
-ANYDOC = PAGE_DIR / "node_modules" / ".bin" / "anydoc"
+#: The Node side of conversion, with the packages `setup` installs beside it.
+CONVERTER = Path(__file__).resolve().parent / "converter"
+TO_MARKDOWN = CONVERTER / "to_markdown.mjs"
+ANYDOC = CONVERTER / "node_modules" / ".bin" / "anydoc"
 
 #: Below this many words a page is treated as a shell worth re-fetching in a real tab.
 #: Calibrated on real captures: x.com 0 and threads 9 fall under, while docs.aside.com

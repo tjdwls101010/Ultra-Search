@@ -1,21 +1,19 @@
-"""The session transcript, as events a caller can act on.
+"""What one run found: its own turn of the session, that turn's children, and their sum.
 
-Aside writes one JSON object per line to a session's ``messages.jsonl`` while the run is
-still going, so this module reads by byte cursor and stops at the last newline: a line
-being written is half a line, and parsing it would either crash or invent a record.
-
-Nothing here drops a record it does not recognise. This file is a private surface of
-another product -- when it changes, an unfamiliar shape arriving as ``raw`` degrades a
-report, while a dropped one silently shortens it and nobody finds out.
+A resumed run appends to a transcript that already holds every earlier turn, so "the
+transcript" and "this run" are different things. Every command that reports what a run
+found -- the result the supervisor writes, `status`, `show`, `log` -- reads it through this
+one view, so they cannot disagree about which turn and which children are the run's.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from _contract import is_safe_id
+from ultra_search.aside import transcript
+from ultra_search.contract import is_safe_id
+from ultra_search.runs import registry
+
 
 #: Tools whose result means the agent actually read a page, rather than merely being
 #: shown it in a result list. The distinction is what `opened` reports.
@@ -27,13 +25,6 @@ def is_opening_tool(name: str) -> bool:
 
 
 _CITATION_RE = re.compile(r'<citation\s+refs="([^"]*)"\s*>(.*?)</citation>', re.DOTALL)
-
-
-@dataclass
-class ToolCall:
-    name: str
-    arguments: dict
-    raw: dict = field(repr=False, default_factory=dict)
 
 
 @dataclass
@@ -55,160 +46,7 @@ class Source:
                 self.ids.append(i)
 
 
-@dataclass
-class Event:
-    kind: str
-    index: int
-    raw: dict = field(repr=False, default_factory=dict)
-    text: str = ""
-    thinking: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    tool_name: str = ""
-    content: str = ""
-    details: dict = field(default_factory=dict)
-    is_error: bool = False
-    usage: dict = field(default_factory=dict)
-    stop_reason: str = ""
-    timestamp: int = 0
-    unknown_blocks: list[dict] = field(default_factory=list)
-
-
-def read_events(path: str | Path, since: int = 0) -> tuple[list[Event], int]:
-    """Events appended after byte ``since``, and the cursor to resume from.
-
-    The cursor only ever advances past a trailing newline, so a caller polling a live
-    session never sees a torn record and never re-reads a whole one.
-    """
-    p = Path(path)
-    try:
-        size = p.stat().st_size
-    except OSError:
-        return [], since
-    if size <= since:
-        # A shrunk file means the source was rotated or cleaned up underneath us. Report
-        # no progress rather than re-reading from a position that now means something else.
-        return [], min(since, size)
-    with p.open("rb") as f:
-        f.seek(since)
-        chunk = f.read(size - since)
-    end = chunk.rfind(b"\n")
-    if end == -1:
-        return [], since
-    complete = chunk[: end + 1]
-    events = parse_lines(complete.decode("utf-8", "replace"), start_index=_count_lines_before(p, since))
-    return events, since + len(complete)
-
-
-def _count_lines_before(path: Path, offset: int) -> int:
-    if offset <= 0:
-        return 0
-    with path.open("rb") as f:
-        return f.read(offset).count(b"\n")
-
-
-def parse_lines(text: str, start_index: int = 0) -> list[Event]:
-    out: list[Event] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip():
-            continue
-        out.append(parse_record(line, start_index + i))
-    return out
-
-
-def parse_record(line: str, index: int = 0) -> Event:
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return Event(kind="raw", index=index, raw={"unparsed": line}, content=line)
-    if not isinstance(obj, dict):
-        return Event(kind="raw", index=index, raw={"unparsed": line}, content=line)
-
-    role = obj.get("role")
-    ts = int(obj.get("timestamp") or 0)
-    if role == "user":
-        return Event(kind="user", index=index, raw=obj, text=_flatten_text(obj.get("content")), timestamp=ts)
-    if role == "assistant":
-        return _assistant(obj, index, ts)
-    if role == "toolResult":
-        return Event(
-            kind="tool_result",
-            index=index,
-            raw=obj,
-            tool_name=str(obj.get("toolName") or ""),
-            content=_as_text(obj.get("content")),
-            details=obj.get("details") or {},
-            is_error=bool(obj.get("isError")),
-            timestamp=ts,
-        )
-    if role == "system-message":
-        # Aside reports a subagent finishing this way. It is the one record a supervisor
-        # most wants to see, so it gets a kind of its own rather than the raw fallback.
-        return Event(kind="system", index=index, raw=obj, text=_as_text(obj.get("content")), timestamp=ts)
-    return Event(kind="raw", index=index, raw=obj, content=json.dumps(obj, ensure_ascii=False), timestamp=ts)
-
-
-def _assistant(obj: dict, index: int, ts: int) -> Event:
-    texts: list[str] = []
-    thinking: list[str] = []
-    calls: list[ToolCall] = []
-    unknown: list[dict] = []
-    blocks = obj.get("content")
-    if isinstance(blocks, str):
-        texts.append(blocks)
-        blocks = []
-    for block in blocks or []:
-        if not isinstance(block, dict):
-            unknown.append({"value": block})
-            continue
-        kind = block.get("type")
-        if kind == "text":
-            texts.append(str(block.get("text") or ""))
-        elif kind == "thinking":
-            thinking.append(str(block.get("text") or block.get("thinking") or ""))
-        elif kind == "toolCall":
-            calls.append(ToolCall(name=str(block.get("name") or ""), arguments=block.get("arguments") or {}, raw=block))
-        else:
-            # An unfamiliar block type keeps its siblings: the text next to it is still
-            # the answer, and losing the whole turn over one new block would hide it.
-            unknown.append(block)
-    return Event(
-        kind="assistant",
-        index=index,
-        raw=obj,
-        text="\n".join(t for t in texts if t),
-        thinking="\n".join(t for t in thinking if t),
-        tool_calls=calls,
-        usage=obj.get("usage") or {},
-        stop_reason=str(obj.get("stopReason") or ""),
-        timestamp=ts,
-        unknown_blocks=unknown,
-    )
-
-
-def _flatten_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    parts = []
-    for block in content or []:
-        if isinstance(block, dict) and block.get("type") == "text":
-            parts.append(str(block.get("text") or ""))
-        elif isinstance(block, str):
-            parts.append(block)
-    return "\n".join(parts)
-
-
-def _as_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    return json.dumps(content, ensure_ascii=False)
-
-
-# --- derived views ---------------------------------------------------------------
-
-
-def final_answer(events: list[Event], sources: list[Source] | None = None) -> str:
+def final_answer(events: list[transcript.Event], sources: list[Source] | None = None) -> str:
     """The text of the last finished assistant turn, with citation tags resolved to URLs.
 
     Only a turn that stopped for a reason other than calling a tool is an answer; text beside
@@ -246,7 +84,7 @@ def resolve_citations(text: str, sources: list[Source]) -> str:
     return _CITATION_RE.sub(sub, text)
 
 
-def collect_sources(events: list[Event]) -> list[Source]:
+def collect_sources(events: list[transcript.Event]) -> list[Source]:
     """Every URL the run touched, in order, deduplicated by URL.
 
     ``opened`` separates a URL the agent was shown in a result list from one it actually
@@ -304,7 +142,7 @@ def merge_sources(lists: list[list[Source]]) -> list[Source]:
     return out
 
 
-def turn_start_index(events: list[Event], marker: str) -> int | None:
+def turn_start_index(events: list[transcript.Event], marker: str) -> int | None:
     """Index of the user message that began this run's turn, or None if it is not there yet.
 
     A resumed run appends to a transcript that already holds earlier turns, so "the last
@@ -324,7 +162,7 @@ def turn_start_index(events: list[Event], marker: str) -> int | None:
     return None
 
 
-def has_terminal_answer(events: list[Event]) -> bool:
+def has_terminal_answer(events: list[transcript.Event]) -> bool:
     """Whether an assistant turn has finished here, as opposed to stopping to call a tool.
 
     An empty answer still counts: a run that honestly found nothing has finished.
@@ -335,7 +173,7 @@ def has_terminal_answer(events: list[Event]) -> bool:
     return False
 
 
-def child_session_ids(events: list[Event]) -> list[str]:
+def child_session_ids(events: list[transcript.Event]) -> list[str]:
     """Child sessions spawned by this run, in spawn order.
 
     Read from the parent's own transcript rather than the database, because an ephemeral
@@ -359,7 +197,7 @@ def child_session_ids(events: list[Event]) -> list[str]:
     return out
 
 
-def total_usage(events: list[Event]) -> dict:
+def total_usage(events: list[transcript.Event]) -> dict:
     keys = ("input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens")
     acc = dict.fromkeys(keys, 0)
     cost = 0.0
@@ -388,3 +226,121 @@ def total_usage(events: list[Event]) -> dict:
         "cost": round(cost, 6),
     }
 
+
+# --- one run's view --------------------------------------------------------------
+
+
+@dataclass
+class Turn:
+    #: Whether this run's prompt has appeared in its transcript. Until it has, everything
+    #: there belongs to earlier turns, and none of it is this run's evidence.
+    observed: bool
+    #: Line index of this run's prompt in the transcript.
+    start_line: int = 0
+    events: list[transcript.Event] = field(default_factory=list)
+    #: Children spawned in this turn, in spawn order.
+    children: list[str] = field(default_factory=list)
+    child_events: dict[str, list[transcript.Event]] = field(default_factory=dict)
+
+    def sources(self) -> list[Source]:
+        """Every URL the turn and its children touched, one entry per URL."""
+        return merge_sources(
+            [collect_sources(self.events)]
+            + [collect_sources(self.child_events[cid]) for cid in self.children]
+        )
+
+    def answer(self, sources: list[Source] | None = None) -> str:
+        """The turn's answer, each child's appended under its id.
+
+        Citations resolve against every source of the turn: a parent routinely cites what
+        its child read, by the child's id.
+        """
+        sources = self.sources() if sources is None else sources
+        answer = final_answer(self.events, sources)
+        for cid in self.children:
+            ctext = final_answer(self.child_events[cid], sources)
+            if ctext:
+                answer = f"{answer}\n\n--- child {cid} ---\n{ctext}" if answer else ctext
+        return answer
+
+    def usage(self) -> dict:
+        total = total_usage(self.events)
+        for cid in self.children:
+            for k, v in total_usage(self.child_events[cid]).items():
+                total[k] = round(total.get(k, 0) + v, 6) if k == "cost" else total.get(k, 0) + v
+        return total
+
+    def tool_results(self) -> list[transcript.Event]:
+        """This turn's own tool results, in order -- what `show --item N` counts."""
+        return [e for e in self.events if e.kind == "tool_result"]
+
+    def source_text(self, url: str) -> str:
+        """What the turn already read of a URL: the page a tool opened, else a listing's excerpt.
+
+        A URL usually appears twice -- once as a search result, once as the page a later
+        fetch actually read -- and the read page is the one worth returning, whichever
+        stream and whichever order it came in.
+        """
+        fallback = ""
+        for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
+            for e in events:
+                if e.kind != "tool_result":
+                    continue
+                if not any(isinstance(s, dict) and s.get("url") == url for s in (e.details or {}).get("sources") or []):
+                    continue
+                if is_opening_tool(e.tool_name) and e.content:
+                    return e.content
+                fallback = fallback or e.content
+        return fallback
+
+
+def turn_of(run: registry.Run) -> Turn:
+    meta = run.meta()
+    marker = meta.get("marker") or registry.marker_for(run.run_id)
+    events, _ = transcript.read_events(run.session_transcript)
+    start = turn_start_index(events, marker)
+    if start is None:
+        return Turn(observed=False)
+    mine = events[start:]
+    children = child_session_ids(mine)
+    return Turn(
+        observed=True,
+        start_line=mine[0].index,
+        events=mine,
+        children=children,
+        child_events={cid: _from(transcript.read_events(run.child_transcript(cid))[0], mine[0].timestamp)
+                      for cid in children},
+    )
+
+
+def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
+    """A child's part in this turn: from the first prompt it received after the turn began.
+
+    A resumed parent can hand an earlier child a new task, and the child's transcript then
+    holds the earlier run's work too. With no prompt that recent, the whole transcript is
+    this turn's -- which is right for a turn that only collects a child's late result.
+    """
+    # 성진: 재사용 자식의 새 프롬프트가 아직 안 보인 짧은 창에서는 이전 과제가 이 런 몫으로 보인다; 자식이 받은 과제를 부모 전사에서 식별할 수 있게 되면 그걸로 가른다.
+    if since:
+        for i, e in enumerate(events):
+            if e.kind == "user" and e.timestamp >= since:
+                return events[i:]
+    return events
+
+
+def child_is_terminal(events: list[transcript.Event]) -> bool:
+    """A child is done when its last turn stopped for a reason other than a tool call.
+
+    The LAST event, not the last assistant one: a user turn after a finished answer means a
+    new turn has begun. And the stop reason alone decides it -- requiring text as well would
+    call a child that honestly found nothing, and said so by stopping, an orphan.
+    """
+    if not events:
+        return False
+    last = events[-1]
+    if last.kind != "assistant":
+        return False
+    if last.stop_reason:
+        return last.stop_reason != "toolUse"
+    # No stop reason recorded at all: fall back to whether it produced anything.
+    return bool(last.text.strip())

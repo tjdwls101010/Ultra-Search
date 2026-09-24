@@ -17,20 +17,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import _contract
-import _exec
-import _registry
-import _repl
-import _store
-from _contract import AsideUnavailable
-
-PAGE_DIR = Path(__file__).resolve().parent / "page"
-DAEMON_URL = "http://127.0.0.1:21420/"
-
-
-def daemon_url() -> str:
-    """The daemon's health endpoint; ULTRA_SEARCH_DAEMON_URL points doctor at another one."""
-    return os.environ.get("ULTRA_SEARCH_DAEMON_URL") or DAEMON_URL
+from ultra_search import contract
+from ultra_search.aside import process, repl, sessions
+from ultra_search.contract import AsideUnavailable
+from ultra_search.pages.classify import CONVERTER
+from ultra_search.runs import registry
 
 
 def dispatch(args) -> int:
@@ -50,7 +41,7 @@ def _doctor(args) -> int:
 
     binary = None
     try:
-        binary = _exec.aside_bin()
+        binary = process.aside_bin()
         checks.append(_check("aside binary", True, binary))
     except AsideUnavailable as e:
         ok = False
@@ -58,8 +49,8 @@ def _doctor(args) -> int:
 
     if binary:
         try:
-            version = _exec.version()
-            same = version.startswith(_exec.VERIFIED_VERSION)
+            version = process.version()
+            same = version.startswith(process.VERIFIED_VERSION)
             checks.append(
                 _check(
                     "aside version",
@@ -67,7 +58,7 @@ def _doctor(args) -> int:
                     version,
                     None
                     if same
-                    else f"this skill's behaviour was measured against {_exec.VERIFIED_VERSION}; "
+                    else f"this skill's behaviour was measured against {process.VERIFIED_VERSION}; "
                     "if runs behave oddly, that difference is the first thing to suspect",
                 )
             )
@@ -79,9 +70,9 @@ def _doctor(args) -> int:
     daemon_fix = None
     if not daemon["ok"]:
         daemon_fix = "Open the Aside app."
-    elif daemon.get("version") and not str(daemon["version"]).startswith(_exec.VERIFIED_DAEMON_VERSION):
+    elif daemon.get("version") and not str(daemon["version"]).startswith(process.VERIFIED_DAEMON_VERSION):
         daemon_fix = (
-            f"measured against daemon {_exec.VERIFIED_DAEMON_VERSION}; the daemon decides what a run "
+            f"measured against daemon {process.VERIFIED_DAEMON_VERSION}; the daemon decides what a run "
             "records, so a difference here is the first thing to suspect if results look thin"
         )
     checks.append(_check("aside daemon", daemon["ok"], daemon["detail"], daemon_fix))
@@ -95,7 +86,7 @@ def _doctor(args) -> int:
             checks.append(_check("browser repl", probed, detail,
                                  None if probed else "Open the Aside app, then retry."))
             ok = ok and probed
-        except (AsideUnavailable, _repl.ReplTimeout) as e:
+        except (AsideUnavailable, repl.ReplTimeout) as e:
             ok = False
             checks.append(_check("browser repl", False, str(e), "Open the Aside app, then retry."))
 
@@ -109,7 +100,7 @@ def _doctor(args) -> int:
     checks.append(_check("node", bool(node), node or "not on PATH", None if node else "Install Node 20 or newer."))
     ok = ok and bool(node)
 
-    modules = PAGE_DIR / "node_modules"
+    modules = CONVERTER / "node_modules"
     have_modules = (modules / "defuddle").exists() and (modules / ".bin" / "anydoc").exists()
     checks.append(_check("page conversion", have_modules,
                          str(modules) if have_modules else "not installed",
@@ -118,12 +109,12 @@ def _doctor(args) -> int:
     # that reads as a network problem unless doctor says otherwise.
     ok = ok and have_modules
 
-    sessions = _store.sessions_root()
-    checks.append(_check("aside sessions", sessions.is_dir(), str(sessions),
-                         None if sessions.is_dir() else "Aside has not been run for this account yet."))
-    ok = ok and sessions.is_dir()
+    home = sessions.sessions_root()
+    checks.append(_check("aside sessions", home.is_dir(), str(home),
+                         None if home.is_dir() else "Aside has not been run for this account yet."))
+    ok = ok and home.is_dir()
 
-    runs_root = _registry.resolve_runs_dir(getattr(args, "runs_dir", None))
+    runs_root = registry.resolve_runs_dir(getattr(args, "runs_dir", None))
     # Tried, not assumed. An unwritable runs directory lets doctor pass and then fails the
     # first `search` at the moment it reserves a run -- which reads as the search breaking.
     writable, detail = _writable(runs_root)
@@ -142,7 +133,7 @@ def _doctor(args) -> int:
         ],
     }
     print(json.dumps(payload, ensure_ascii=False))
-    return 0 if ok else _contract.EXIT_ASIDE
+    return 0 if ok else contract.EXIT_ASIDE
 
 
 def _check(name: str, ok: bool, detail: str, fix: str | None = None) -> dict:
@@ -159,10 +150,10 @@ def _repl_probe() -> tuple[bool, str]:
     """
     code = 'console.log(JSON.stringify({ok:true}));'
     try:
-        proc = subprocess.run([_exec.aside_bin(), "repl", code], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run([process.aside_bin(), "repl", code], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         raise AsideUnavailable(f"repl round trip failed: {e}") from e
-    if proc.returncode == 0 and {"ok": True} in _repl._parse_ndjson(proc.stdout):
+    if proc.returncode == 0 and {"ok": True} in repl.parse_ndjson(proc.stdout):
         return True, "round trip ok"
     said = (proc.stdout or proc.stderr or "").strip()[:200] or "no output"
     return False, f"exit {proc.returncode}: {said}"
@@ -187,7 +178,7 @@ def _account_status() -> dict:
     """Whether an account is signed in. A signed-out browser fetches public pages fine and
     silently loses every logged-in one, which is the capability this tool exists for."""
     try:
-        proc = subprocess.run([_exec.aside_bin(), "account", "list"], capture_output=True, text=True, timeout=30)
+        proc = subprocess.run([process.aside_bin(), "account", "list"], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as e:
         return {"ok": False, "detail": f"could not run `aside account list`: {e}"}
     out = (proc.stdout or proc.stderr or "").strip()
@@ -213,7 +204,7 @@ def _daemon_status() -> dict:
     import urllib.error
     import urllib.request
 
-    url = daemon_url()
+    url = process.daemon_url()
     try:
         with urllib.request.urlopen(url, timeout=5) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
@@ -234,18 +225,18 @@ def _daemon_status() -> dict:
 def _setup() -> int:
     if not shutil.which("npm"):
         raise AsideUnavailable("npm is not on PATH", fix="Install Node 20 or newer, which ships npm.")
-    proc = subprocess.run(["npm", "install"], cwd=str(PAGE_DIR), capture_output=True, text=True, timeout=900)
+    proc = subprocess.run(["npm", "install"], cwd=str(CONVERTER), capture_output=True, text=True, timeout=900)
     ok = proc.returncode == 0
     print(json.dumps(
         {
             "ok": ok,
             "command": "setup",
-            "dir": str(PAGE_DIR),
+            "dir": str(CONVERTER),
             "detail": (proc.stdout or "").strip()[-1500:] if ok else (proc.stderr or "").strip()[-1500:],
         },
         ensure_ascii=False,
     ))
-    return 0 if ok else _contract.EXIT_ASIDE
+    return 0 if ok else contract.EXIT_ASIDE
 
 
 # --- repl-api -----------------------------------------------------------------------------
@@ -263,7 +254,7 @@ def _repl_api() -> int:
     notify = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
     try:
         proc = subprocess.run(
-            [_exec.aside_bin(), "mcp"],
+            [process.aside_bin(), "mcp"],
             input=f"{init}\n{notify}\n{request}\n",
             capture_output=True,
             text=True,

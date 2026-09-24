@@ -17,11 +17,9 @@ import json
 import time
 from pathlib import Path
 
-import _events
-import _evidence
-import _registry
-import _render
-from _contract import TERMINAL_STATES, ArgumentError
+from ultra_search.aside import transcript
+from ultra_search.contract import TERMINAL_STATES, ArgumentError
+from ultra_search.runs import evidence, registry, render
 POLL = 1.0
 
 
@@ -72,7 +70,7 @@ def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:
     return json.dumps(cursors, ensure_ascii=False, separators=(",", ":"))
 
 
-def _streams(run: _registry.Run) -> list[tuple[str, Path]]:
+def _streams(run: registry.Run) -> list[tuple[str, Path]]:
     """The parent transcript plus every child's, each with its own cursor key."""
     out = [("", run.session_transcript)]
     for p in run.child_transcripts():
@@ -80,14 +78,14 @@ def _streams(run: _registry.Run) -> list[tuple[str, Path]]:
     return out
 
 
-def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
+def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
     lines: list[str] = []
     streams = _streams(run)
     starts: dict[str, int] = {}
     meta = run.meta()
     if meta.get("resume_session_id"):
         # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
-        turn = _evidence.turn_of(run)
+        turn = evidence.turn_of(run)
         if not turn.observed:
             return lines
         starts = {"": turn.start_line}
@@ -95,14 +93,14 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
             starts[cid] = cev[0].index if cev else 0
         streams = [(key, path) for key, path in streams if key in starts]
     for key, path in streams:
-        events, cursor = _events.read_events(path, cursors.get(key, 0))
+        events, cursor = transcript.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
         events = [event for event in events if event.index >= starts.get(key, 0)]
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"
         for e in events:
-            rendered = _render.render(e, level=level)
+            rendered = render.render(e, level=level)
             # Every line, not just the first: a child's second call or the body of its
             # answer would otherwise read as the parent's.
             for line in rendered.splitlines():
@@ -110,10 +108,10 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
     return lines
 
 
-def _live_children(run: _registry.Run) -> int:
+def _live_children(run: registry.Run) -> int:
     """Children of this run's turn that have not finished -- the ones keeping a quiet parent busy."""
-    turn = _evidence.turn_of(run)
-    return sum(1 for cid in turn.children if not _evidence.child_is_terminal(turn.child_events[cid]))
+    turn = evidence.turn_of(run)
+    return sum(1 for cid in turn.children if not evidence.child_is_terminal(turn.child_events[cid]))
 
 
 def follow(

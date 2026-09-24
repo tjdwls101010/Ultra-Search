@@ -21,7 +21,7 @@ import pytest
 from conftest import SCRIPTS, run_cli, tool
 
 FAKE = Path(__file__).resolve().parent / "fake_aside" / "aside"
-SNIPPETS = SCRIPTS / "page" / "snippets"
+SNIPPETS = SCRIPTS / "ultra_search" / "pages" / "snippets"
 
 
 def run_fake(args: list[str], home: Path, calls: Path, scenario: str = "simple", **env: str) -> subprocess.CompletedProcess:
@@ -193,7 +193,7 @@ def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) ->
     prompt = f"Reply with the single word OK.\n\n({marker} — ignore this line)"
     subprocess.run(["aside", "exec", prompt], capture_output=True, text=True, timeout=180)
 
-    p = subprocess.run([sys.executable, str(SCRIPTS / "ultra_search.py"), "sessions", "--mine", "--search", marker,
+    p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "sessions", "--mine", "--search", marker,
                         "--runs-dir", str(tmp_path)], capture_output=True, text=True, timeout=60)
 
     found = json.loads(p.stdout)["sessions"]

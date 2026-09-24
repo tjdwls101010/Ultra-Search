@@ -1,4 +1,4 @@
-"""`fetch`, `map` and `crawl` -- getting pages, and putting them where they can be read.
+"""Getting pages, and putting them where they can be read.
 
 Two shapes carry most of the value here.
 
@@ -13,80 +13,13 @@ where they are; `--print` makes that a decision instead of a default.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import _contract
-import _extract
-import _registry
-import _repl
-from _contract import ArgumentError
+from ultra_search.contract import ArgumentError
+from ultra_search.pages import browser, classify
 
 DEFAULT_CONCURRENCY = 8
 DEFAULT_RETRIES = 1
-
-
-def dispatch(args) -> int:
-    runs_root = _registry.resolve_runs_dir(args.runs_dir)
-    if args.command == "fetch":
-        return _fetch_cmd(args, runs_root)
-    import _crawl_cmds
-
-    return _crawl_cmds.dispatch(args, runs_root)
-
-
-def _fetch_cmd(args, runs_root: Path) -> int:
-    out_file, out_dir = _destinations(args.url, args.out, runs_root)
-    envelope = fetch_urls(
-        args.url,
-        out_dir=out_dir,
-        out_file=out_file,
-        via=args.via,
-        fmt=args.format,
-        frontmatter=not args.no_frontmatter,
-        print_content=args.print_content,
-        max_chars=args.max_chars,
-        concurrency=args.concurrency,
-    )
-    print(json.dumps(envelope, ensure_ascii=False))
-    return exit_code_for(envelope["items"])
-
-
-def _destinations(urls: list[str], out: str | None, runs_root: Path) -> tuple[Path | None, Path]:
-    """Split --out into a file destination or a directory one.
-
-    A path is a file only when it looks like one -- an existing file, or a name with an
-    extension. Anything else is a directory, because `--out ./notes` for one URL means a
-    folder to everyone who types it, and silently producing an extensionless file named
-    `notes` is the kind of surprise nobody checks for.
-    """
-    if not out:
-        return None, _registry.pages_dir(runs_root)
-    p = Path(out).expanduser()
-    looks_like_file = p.is_file() or (bool(p.suffix) and not p.is_dir() and not out.endswith("/"))
-    if looks_like_file:
-        if len(urls) > 1:
-            raise ArgumentError(
-                f"--out {out!r} names a file but {len(urls)} URLs were given",
-                fix="Pass a directory for several URLs, or fetch them one at a time.",
-            )
-        p.parent.mkdir(parents=True, exist_ok=True)
-        return p, p.parent
-    p.mkdir(parents=True, exist_ok=True)
-    return None, p
-
-
-def exit_code_for(items: list[dict]) -> int:
-    """0 when anything was saved. The status still says what each page turned out to be:
-    `--format html` writes a client-rendered document that has no article in it."""
-    if not items:
-        return _contract.EXIT_EMPTY
-    if any(i["status"] == "ok" or i.get("path") for i in items):
-        return 0
-    return _contract.EXIT_RUN_FAILED
-
-
-# --- the work ---------------------------------------------------------------------------
 
 
 def fetch_urls(
@@ -114,7 +47,7 @@ def fetch_urls(
     raw: dict[str, dict] = {}
     if via != "tab":
         for batch in _chunks(urls, max(1, concurrency)):
-            for record in _repl.fetch_batch(batch):
+            for record in browser.fetch_batch(batch):
                 if record.get("kind") == "batch_done" or not record.get("url"):
                     continue
                 raw[record["url"]] = record
@@ -125,7 +58,7 @@ def fetch_urls(
             for u in missing:
                 # Alone, not re-batched: it gets the whole per-URL budget rather than a
                 # share of the one it already used up.
-                for record in _repl.fetch_batch([u]):
+                for record in browser.fetch_batch([u]):
                     if record.get("url"):
                         raw[record["url"]] = record
 
@@ -134,9 +67,9 @@ def fetch_urls(
     for i, url in enumerate(urls):
         # Numbered names read in crawl order in a directory listing, which is usually the
         # order a site means its pages to be read. The final name is chosen here, once.
-        stem = f"{i:03d}-{_extract.slug_for(url)}" if numbered else _extract.slug_for(url)
+        stem = f"{i:03d}-{classify.slug_for(url)}" if numbered else classify.slug_for(url)
         record = raw.get(url)
-        doc = _to_document(url, record) if record else _extract.Document(
+        doc = _to_document(url, record) if record else classify.Document(
             url=url, status="error", error="no response"
         )
         if via == "tab" or (via == "auto" and doc.status in ("shell", "challenge")):
@@ -154,11 +87,11 @@ def _chunks(seq: list, n: int):
         yield seq[i : i + n]
 
 
-def _to_document(url: str, record: dict) -> _extract.Document:
+def _to_document(url: str, record: dict) -> classify.Document:
     if record.get("kind") == "error":
-        return _extract.Document(url=url, status="error", error=str(record.get("error") or "fetch failed"))
+        return classify.Document(url=url, status="error", error=str(record.get("error") or "fetch failed"))
     body = (record.get("text") or "").encode("utf-8") if record.get("kind") == "text" else b""
-    doc = _extract.classify_response(
+    doc = classify.classify_response(
         status=int(record.get("status") or 0),
         content_type=record.get("content_type") or "",
         body=body,
@@ -170,7 +103,7 @@ def _to_document(url: str, record: dict) -> _extract.Document:
     return doc
 
 
-def _escalate(url: str, doc: _extract.Document) -> _extract.Document:
+def _escalate(url: str, doc: classify.Document) -> classify.Document:
     """Re-fetch through a real browser tab.
 
     Worth trying for both a client-rendered shell and a bot challenge: the tab runs the
@@ -178,12 +111,12 @@ def _escalate(url: str, doc: _extract.Document) -> _extract.Document:
     is still thin, the original verdict stands and is reported as escalated-and-still-empty
     rather than as a page.
     """
-    records = [r for r in (_repl.tab_one(url) or []) if r.get("kind") == "text"]
+    records = [r for r in (browser.tab_one(url) or []) if r.get("kind") == "text"]
     if not records:
         doc.status = "shell_escalated" if doc.status == "shell" else "blocked"
         return doc
     record = records[0]
-    promoted = _extract.extract_html(record.get("text") or "", url, via="tab")
+    promoted = classify.extract_html(record.get("text") or "", url, via="tab")
     promoted.final_url = record.get("final_url") or url
     if promoted.status == "ok":
         return promoted
@@ -193,14 +126,14 @@ def _escalate(url: str, doc: _extract.Document) -> _extract.Document:
     # have real rendered text and no article, so that text is the answer for them.
     if promoted.status == "shell":
         visible = (record.get("visible_text") or "").strip()
-        if _extract.count_words(visible) >= _extract.SHELL_WORD_THRESHOLD:
-            return _extract.Document(
+        if classify.count_words(visible) >= classify.SHELL_WORD_THRESHOLD:
+            return classify.Document(
                 markdown=visible,
                 title=promoted.title or doc.title,
                 url=url,
                 final_url=promoted.final_url,
                 via="tab",
-                words=_extract.count_words(visible),
+                words=classify.count_words(visible),
                 kind="rendered_text",
                 status="ok",
             )
@@ -246,7 +179,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
         return item
 
     path = out_file or _unique_path(dest, stem, used_names, fmt)
-    text = doc.raw if fmt == "html" else _extract.render_markdown(doc, frontmatter=frontmatter)
+    text = doc.raw if fmt == "html" else classify.render_markdown(doc, frontmatter=frontmatter)
     body_for_print = text
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "HTML and document conversion for the ultra-search skill. Installed by `ultra_search.py setup`.",
+  "description": "HTML and document conversion for the ultra-search skill. Installed by `cli.py setup`.",
   "dependencies": {
     "@firecrawl/anydoc": "^0.2.4",
     "defuddle": "^0.19.3",

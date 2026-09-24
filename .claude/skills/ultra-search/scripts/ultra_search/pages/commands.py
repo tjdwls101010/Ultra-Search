@@ -1,4 +1,8 @@
-"""`map` and `crawl`.
+"""`fetch`, `map` and `crawl`.
+
+`fetch` saves each page to a file and reports where, never its text unless asked: a fetch of
+ten pages that returned them would put ten pages into the caller's context as a side
+effect of being told where they are.
 
 `map` is the cheap half: it discovers URLs and writes a manifest without fetching any
 content, so a caller can look at what a site has before committing to downloading it.
@@ -12,26 +16,79 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-import _crawl
-import _contract
-import _page
-import _repl
-from _contract import ArgumentError
+from ultra_search import contract
+from ultra_search.contract import ArgumentError
+from ultra_search.pages import acquire, browser, discover
+from ultra_search.runs import registry
 
 
-def dispatch(args, runs_root: Path) -> int:
+def dispatch(args) -> int:
+    runs_root = registry.resolve_runs_dir(args.runs_dir)
+    if args.command == "fetch":
+        return _fetch_cmd(args, runs_root)
     return _map(args, runs_root) if args.command == "map" else _crawl_cmd(args, runs_root)
+
+
+def _fetch_cmd(args, runs_root: Path) -> int:
+    out_file, out_dir = _destinations(args.url, args.out, runs_root)
+    envelope = acquire.fetch_urls(
+        args.url,
+        out_dir=out_dir,
+        out_file=out_file,
+        via=args.via,
+        fmt=args.format,
+        frontmatter=not args.no_frontmatter,
+        print_content=args.print_content,
+        max_chars=args.max_chars,
+        concurrency=args.concurrency,
+    )
+    print(json.dumps(envelope, ensure_ascii=False))
+    return exit_code_for(envelope["items"])
+
+
+def _destinations(urls: list[str], out: str | None, runs_root: Path) -> tuple[Path | None, Path]:
+    """Split --out into a file destination or a directory one.
+
+    A path is a file only when it looks like one -- an existing file, or a name with an
+    extension. Anything else is a directory, because `--out ./notes` for one URL means a
+    folder to everyone who types it, and silently producing an extensionless file named
+    `notes` is the kind of surprise nobody checks for.
+    """
+    if not out:
+        return None, registry.pages_dir(runs_root)
+    p = Path(out).expanduser()
+    looks_like_file = p.is_file() or (bool(p.suffix) and not p.is_dir() and not out.endswith("/"))
+    if looks_like_file:
+        if len(urls) > 1:
+            raise ArgumentError(
+                f"--out {out!r} names a file but {len(urls)} URLs were given",
+                fix="Pass a directory for several URLs, or fetch them one at a time.",
+            )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p, p.parent
+    p.mkdir(parents=True, exist_ok=True)
+    return None, p
+
+
+def exit_code_for(items: list[dict]) -> int:
+    """0 when anything was saved. The status still says what each page turned out to be:
+    `--format html` writes a client-rendered document that has no article in it."""
+    if not items:
+        return contract.EXIT_EMPTY
+    if any(i["status"] == "ok" or i.get("path") for i in items):
+        return 0
+    return contract.EXIT_RUN_FAILED
 
 
 def _providers(args):
     return {
-        "sitemap_provider": None if getattr(args, "no_sitemap", False) else _repl.sitemap,
-        "links_provider": _repl.links,
+        "sitemap_provider": None if getattr(args, "no_sitemap", False) else browser.sitemap,
+        "links_provider": browser.links,
     }
 
 
 def _map(args, runs_root: Path) -> int:
-    urls, coverage = _crawl.discover(
+    urls, coverage = discover.discover(
         args.url,
         depth=args.depth,
         max_urls=args.max_urls,
@@ -40,7 +97,7 @@ def _map(args, runs_root: Path) -> int:
         use_sitemap=not args.no_sitemap,
         **_providers(args),
     )
-    manifest = _crawl.build_manifest(args.url, [], urls=urls)
+    manifest = discover.build_manifest(args.url, [], urls=urls)
     if args.out:
         out = Path(args.out).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -50,7 +107,7 @@ def _map(args, runs_root: Path) -> int:
     # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
     # root itself is listed.
     saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
-    return 0 if urls and saw_site else _contract.EXIT_EMPTY
+    return 0 if urls and saw_site else contract.EXIT_EMPTY
 
 
 def _crawl_cmd(args, runs_root: Path) -> int:
@@ -62,7 +119,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             manifest = json.loads(source.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             raise ArgumentError(f"could not read manifest {source}: {e}", fix="Produce one with `map --out`.") from e
-        urls = _crawl.urls_from_manifest(manifest)
+        urls = discover.urls_from_manifest(manifest)
         if urls is None:
             raise ArgumentError(f"{source} is not a manifest written by `map` or `crawl`",
                                 fix="Produce one with `map --out`.")
@@ -72,7 +129,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:
         root = args.url
-        urls, coverage = _crawl.discover(
+        urls, coverage = discover.discover(
             root,
             depth=args.depth,
             max_urls=args.max_urls,
@@ -89,7 +146,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
     else:
         out_dir = _default_out(runs_root, root)
 
-    envelope = _page.fetch_urls(
+    envelope = acquire.fetch_urls(
         urls,
         out_dir=out_dir,
         via=args.via,
@@ -98,7 +155,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
         numbered=True,
     )
     items = envelope["items"]
-    manifest = _crawl.build_manifest(root, items)
+    manifest = discover.build_manifest(root, items)
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -116,7 +173,7 @@ def _crawl_cmd(args, runs_root: Path) -> int:
         },
         ensure_ascii=False,
     ))
-    return _page.exit_code_for(items)
+    return exit_code_for(items)
 
 
 def _refuse_used_folder(out: Path) -> None:

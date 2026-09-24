@@ -121,7 +121,7 @@ def test_doctor_fails_when_the_conversion_packages_are_missing(
     fresh = tmp_path / "fresh-install"
     shutil.copytree(SCRIPTS, fresh, ignore=shutil.ignore_patterns("node_modules", "__pycache__"))
 
-    p = subprocess.run([sys.executable, str(fresh / "ultra_search.py"), "doctor", "--runs-dir", str(runs_dir)],
+    p = subprocess.run([sys.executable, str(fresh / "cli.py"), "doctor", "--runs-dir", str(runs_dir)],
                        capture_output=True, text=True, timeout=120)
 
     payload = json.loads(p.stdout.splitlines()[-1])
@@ -180,7 +180,7 @@ def test_setup_without_npm_says_what_to_install(tmp_path: Path) -> None:
     bin_dir.mkdir()
     (bin_dir / "python3").symlink_to(sys.executable)
 
-    p = subprocess.run([sys.executable, str(SCRIPTS / "ultra_search.py"), "setup"],
+    p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "setup"],
                        capture_output=True, text=True, env=dict(os.environ, PATH=str(bin_dir)), timeout=60)
 
     payload = json.loads(p.stdout.splitlines()[-1])

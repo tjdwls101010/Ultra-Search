@@ -317,3 +317,20 @@ def test_stop_never_overwrites_a_run_that_finished_while_it_waited(runs_dir: Pat
     assert code == 0
     assert run.meta()["state"] == "completed"
     assert payload["stopped_watching"] == []
+
+
+@pytest.mark.parametrize("ending", ["stopped_empty", "cut_off_mid_tool"])
+def test_only_a_finished_turn_supplies_the_answer(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, ending: str
+) -> None:
+    """Text in a turn that stopped to call a tool is the worker narrating what it is about to
+    do. Reporting it as the answer turns "let me check" into a finding."""
+    records = [calling(("webfetch", {"url": "https://x.test"}), text="잠시 확인하겠습니다"), tool("webfetch", "page")]
+    if ending == "stopped_empty":
+        records.append({"role": "assistant", "content": [], "stopReason": "stop"})
+    replay(records)
+    run = start(runs_dir)
+
+    supervise(run, settle=0.3)
+
+    assert result_of(run)["answer"] == ""

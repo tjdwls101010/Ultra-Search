@@ -200,16 +200,18 @@ def _as_text(content: object) -> str:
 
 
 def final_answer(events: list[Event], sources: list[Source] | None = None) -> str:
-    """The last assistant text, with citation tags resolved to their URLs.
+    """The text of the last finished assistant turn, with citation tags resolved to URLs.
 
-    A run that ends mid-tool has no final text; the caller gets "" and decides whether
-    that is an honest zero or an interrupted run -- this module will not guess.
+    Only a turn that stopped for a reason other than calling a tool is an answer; text beside
+    a tool call is the worker narrating what it is about to do. A run that ends mid-tool, or
+    whose last finished turn said nothing, has no answer: the caller gets "" and decides
+    whether that is an honest zero or an interrupted run -- this module will not guess.
     """
     text = ""
     for e in events:
-        if e.kind == "assistant" and e.text.strip():
+        if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
             text = e.text
-    if not text:
+    if not text.strip():
         return ""
     return resolve_citations(text, sources if sources is not None else collect_sources(events))
 

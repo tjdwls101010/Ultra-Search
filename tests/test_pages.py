@@ -929,3 +929,13 @@ def test_a_document_that_converts_to_nothing_is_not_a_page_that_was_read(cli, ro
     assert item_of(payload)["status"] != "ok"
     assert item_of(payload)["path"] is None
     assert code == 4
+
+
+def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -> None:
+    """An href is HTML: `&amp;` in it is one `&` in the URL. Requesting it verbatim asks the
+    site for a parameter called `amp;lang`."""
+    routes({"links": {"https://site.test/": ["/article?id=1&amp;lang=ko"]}})
+
+    _, payload, _ = cli("map", "https://site.test/", "--depth", "1")
+
+    assert payload["urls"] == ["https://site.test/", "https://site.test/article?id=1&lang=ko"]

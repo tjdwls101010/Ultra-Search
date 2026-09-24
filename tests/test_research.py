@@ -1422,3 +1422,36 @@ def test_an_empty_read_does_not_hide_what_a_search_already_showed(cli, replay) -
     _, shown, _ = cli("show", "--run", run_id, "--source", "0")
 
     assert shown["content"] == "검색 본문"
+
+
+def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, aside_home: Path) -> None:
+    """A resumed parent can hand an earlier child a new task. The child's transcript then holds
+    the earlier run's work too, whose tokens and pages were that run's."""
+    now = int(time.time() * 1000)
+    old_src = {"id": "o1", "url": "https://old.test/page", "title": "Old"}
+    new_src = {"id": "n1", "url": "https://new.test/page", "title": "New"}
+    usage = lambda n: {"input": n, "output": 0, "totalTokens": n, "cost": {"total": 0}}
+    aside_session(aside_home, "ParentWithKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="ReusedKid0000001"), answer("old-answer"))
+    aside_session(
+        aside_home, "ReusedKid0000001",
+        {**user("old task"), "timestamp": now - 60_000},
+        {**tool("webfetch", "old page", sources=[old_src]), "timestamp": now - 59_000},
+        {**answer("old child answer"), "usage": usage(100), "timestamp": now - 58_000},
+        {**user("new task"), "timestamp": now + 60_000},
+        {**tool("webfetch", "new page", sources=[new_src]), "timestamp": now + 61_000},
+        {**answer("new child answer"), "usage": usage(10), "timestamp": now + 62_000},
+    )
+    replay([tool("subagent", "resumed", taskId="ReusedKid0000001"), answer("new-answer")])
+
+    _, payload, _ = cli("resume", "ParentWithKid001", "new-prompt", "--wait", "30")
+    run_id = first_run(payload)["run_id"]
+    _, result, _ = cli("result", "--run", run_id)
+    _, status, _ = cli("status", "--run", run_id)
+
+    _, _, logged = cli("log", "--run", run_id)
+
+    assert [s["url"] for s in result["sources"]] == [new_src["url"]]
+    assert result["usage"]["input"] == first_run(status)["usage"]["input"] == 10
+    assert "old child answer" not in result["answer"]
+    assert "new child answer" in logged and "old child answer" not in logged

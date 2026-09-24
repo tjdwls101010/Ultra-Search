@@ -86,21 +86,21 @@ def _streams(run: _registry.Run) -> list[tuple[str, Path]]:
 def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool) -> list[str]:
     lines: list[str] = []
     streams = _streams(run)
-    start_line = 0
+    starts: dict[str, int] = {}
     meta = run.meta()
     if meta.get("resume_session_id"):
         # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
         turn = _evidence.turn_of(run)
         if not turn.observed:
             return lines
-        start_line = turn.start_line
-        children = set(turn.children)
-        streams = [(key, path) for key, path in streams if not key or key in children]
+        starts = {"": turn.start_line}
+        for cid, cev in turn.child_events.items():
+            starts[cid] = cev[0].index if cev else 0
+        streams = [(key, path) for key, path in streams if key in starts]
     for key, path in streams:
         events, cursor = _events.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
-        if not key:
-            events = [event for event in events if event.index >= start_line]
+        events = [event for event in events if event.index >= starts.get(key, 0)]
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"

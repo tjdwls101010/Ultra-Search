@@ -153,6 +153,7 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
 
 
 def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
+    import html
     from urllib.parse import urljoin, urldefrag
 
     from _crawl import origin as origin_of
@@ -170,6 +171,8 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
         # a page that could not be fetched at all.
         out.append({"kind": "page_read", "url": rec.get("url")})
         for href in rec.get("hrefs") or []:
+            # An href is an HTML attribute: `&amp;` in it is one `&` of the URL.
+            href = html.unescape(href)
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
             try:

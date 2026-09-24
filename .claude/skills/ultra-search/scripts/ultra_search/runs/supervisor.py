@@ -61,7 +61,7 @@ def spawn(run_path: str | os.PathLike[str]) -> int:
         start_new_session=True,
         close_fds=True,
         cwd=str(run),
-        env=dict(os.environ, PYTHONPATH=str(scripts)),
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [str(scripts), os.environ.get("PYTHONPATH")]))),
     )
     return proc.pid
 

@@ -27,6 +27,8 @@ python3 ~/.claude/skills/ultra-search/scripts/cli.py doctor   # 환경 점검
 
 `doctor`가 초록이면 준비된 것이다. 무엇이 왜 막혔는지는 `doctor`가 한 줄로 말한다.
 
+이미 설치한 것을 `git pull`로 올렸다면 `setup`을 다시 실행한다. Node 의존성은 git이 추적하지 않아서, 변환기 위치가 바뀐 버전에서는 옛 자리에 남는다.
+
 ## 써보기
 
 ```bash

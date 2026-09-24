@@ -1396,3 +1396,19 @@ def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path)
     assert set(merged[listed["url"]]["ids"]) == {"p1", "c1"}
     assert run["answer"].startswith(f"정리 page ({listed['url']}) other ({only_child['url']})")
     assert code == 0 and by_child_id["content"] == "다른 본문"
+
+
+def test_heartbeat_counts_only_the_children_still_working(cli, replay, aside_home: Path) -> None:
+    """The count is there to say the silence is busy. A finished child is not what makes it so."""
+    aside_session(aside_home, "DoneChild0000001", user("끝난 자식"), answer("끝"))
+    aside_session(aside_home, "LiveChild0000002", user("일하는 자식"), calling(("webfetch", {"url": "https://x.test"})))
+    replay([tool("subagent", "spawned", taskId="DoneChild0000001"),
+            tool("subagent", "spawned", taskId="LiveChild0000002"), {"__sleep__": 30}])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+
+    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5", "--heartbeat", "0.5")
+
+    beats = [line for line in lines_of(text) if line.startswith("heartbeat ")]
+    assert beats and beats[-1].endswith("running=1 children=1")
+    cli("stop", "--run", run_id)

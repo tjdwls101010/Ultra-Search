@@ -113,6 +113,12 @@ def _drain(run: _registry.Run, cursors: dict[str, int], level: str, label: bool)
     return lines
 
 
+def _live_children(run: _registry.Run) -> int:
+    """Children of this run's turn that have not finished -- the ones keeping a quiet parent busy."""
+    turn = _evidence.turn_of(run)
+    return sum(1 for cid in turn.children if not _evidence.child_is_terminal(turn.child_events[cid]))
+
+
 def follow(
     runs: list,
     *,
@@ -160,7 +166,7 @@ def follow(
 
         if heartbeat and now - last_beat >= heartbeat:
             last_beat = now
-            live = sum(len(r.meta().get("children") or []) for r in runs if states[r.run_id] not in TERMINAL_STATES)
+            live = sum(_live_children(r) for r in runs if states[r.run_id] not in TERMINAL_STATES)
             waiting = [r.run_id for r in runs if states[r.run_id] not in TERMINAL_STATES]
             emit(f"heartbeat elapsed={round(now - started, 1)}s running={len(waiting)} children={live}")
 

@@ -725,7 +725,9 @@ def test_a_crawl_writes_numbered_pages_and_a_manifest_that_crawls_again(cli, rou
 
     manifest = json.loads(Path(payload["manifest"]).read_text())
     assert manifest["root"] == "https://site.test/"
-    assert all(set(page) == {"n", "url", "final_url", "file", "title", "status", "via", "words"} for page in manifest["pages"])
+    assert all({"n", "url", "final_url", "file", "title", "status", "via", "words"} <= set(page)
+               <= {"n", "url", "final_url", "file", "title", "status", "via", "words", "http_status", "error"}
+               for page in manifest["pages"])
     assert [p["url"] for p in manifest["pages"]] == ["https://site.test/", "https://site.test/a", "https://site.test/b"]
     assert sorted(p.name[:4] for p in out.glob("*.md")) == ["000-", "001-", "002-"]
     code, again, _ = cli("crawl", "--from", payload["manifest"], "--out", str(tmp_path / "again"))
@@ -1042,6 +1044,9 @@ def test_crawl_lists_the_first_failures_and_counts_the_rest(cli, routes, tmp_pat
     assert payload["not_ok_count"] == 15
     assert [i["url"] for i in payload["not_ok"]] == urls[:10]
     assert payload["statuses"] == {"blocked": 15}
+    # The ones past the first ten keep their reason in the manifest.
+    pages = json.loads(Path(payload["manifest"]).read_text())["pages"]
+    assert [(p["http_status"], p["error"]) for p in pages[10:]] == [(403, "HTTP 403")] * 5
 
 
 def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Path, monkeypatch) -> None:

@@ -28,7 +28,7 @@ def dispatch(args) -> int:
     if args.command == "setup":
         return _setup()
     if args.command == "repl-api":
-        return _repl_api()
+        return _repl_api(args)
     return _doctor(args)
 
 
@@ -96,9 +96,10 @@ def _doctor(args) -> int:
                              None if account["ok"] else "Sign in to Aside, then re-run `doctor`."))
         ok = ok and account["ok"]
 
-    node = shutil.which("node")
-    checks.append(_check("node", bool(node), node or "not on PATH", None if node else "Install Node 20 or newer."))
-    ok = ok and bool(node)
+    node_ok, node_detail = _node_status()
+    checks.append(_check("node", node_ok, node_detail,
+                         None if node_ok else f"Install Node {_version_text(_node_minimum())} or newer; the converter packages require it."))
+    ok = ok and node_ok
 
     modules = CONVERTER / "node_modules"
     have_modules = (modules / "defuddle").exists() and (modules / ".bin" / "anydoc").exists()
@@ -222,18 +223,56 @@ def _daemon_status() -> dict:
 # --- setup --------------------------------------------------------------------------------
 
 
+def _node_minimum() -> tuple[int, ...]:
+    """The newest Node any locked converter package requires, read from the lockfile itself.
+
+    `setup` installs exactly what the lockfile pins, so this is the requirement that holds --
+    and it moves with the lockfile rather than going stale in a constant.
+    """
+    try:
+        lock = json.loads((CONVERTER / "package-lock.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return (20,)
+    floors = [(20,)]
+    for pkg in (lock.get("packages") or {}).values():
+        m = re.search(r">=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", str((pkg.get("engines") or {}).get("node") or ""))
+        if m:
+            floors.append(tuple(int(g) for g in m.groups() if g is not None))
+    return max(floors)
+
+
+def _version_text(version: tuple[int, ...]) -> str:
+    return ".".join(str(v) for v in version)
+
+
+def _node_status() -> tuple[bool, str]:
+    node = shutil.which("node")
+    if not node:
+        return False, "not on PATH"
+    try:
+        out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"could not run `node --version`: {e}"
+    m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", out)
+    if not m:
+        return False, f"{node} reported an unreadable version {out!r}"
+    version = tuple(int(g) for g in m.groups())
+    minimum = _node_minimum()
+    return version >= minimum, f"{node} v{_version_text(version)} (needs {_version_text(minimum)}+)"
+
+
 def _setup() -> int:
     if not shutil.which("npm"):
-        raise AsideUnavailable("npm is not on PATH", fix="Install Node 20 or newer, which ships npm.")
-    proc = subprocess.run(["npm", "install"], cwd=str(CONVERTER), capture_output=True, text=True, timeout=900)
-    ok = proc.returncode == 0
+        raise AsideUnavailable("npm is not on PATH",
+                               fix=f"Install Node {_version_text(_node_minimum())} or newer, which ships npm.")
+    # `ci`, not `install`: exactly the versions the lockfile pins, which are the ones measured.
+    try:
+        proc = subprocess.run(["npm", "ci"], cwd=str(CONVERTER), capture_output=True, text=True, timeout=900)
+        ok, detail = proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr) or ""
+    except (OSError, subprocess.SubprocessError) as e:
+        ok, detail = False, f"could not run `npm ci`: {e}"
     print(json.dumps(
-        {
-            "ok": ok,
-            "command": "setup",
-            "dir": str(CONVERTER),
-            "detail": (proc.stdout or "").strip()[-1500:] if ok else (proc.stderr or "").strip()[-1500:],
-        },
+        {"ok": ok, "command": "setup", "dir": str(CONVERTER), "detail": detail.strip()[-1500:]},
         ensure_ascii=False,
     ))
     return 0 if ok else contract.EXIT_ASIDE
@@ -242,7 +281,7 @@ def _setup() -> int:
 # --- repl-api -----------------------------------------------------------------------------
 
 
-def _repl_api() -> int:
+def _repl_api(args) -> int:
     """Ask the daemon over MCP what its repl tool accepts."""
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
@@ -281,5 +320,18 @@ def _repl_api() -> int:
             fix="Check the Aside app is running, then re-run `doctor`.",
             stderr=(proc.stderr or "").strip()[-400:],
         )
-    print(json.dumps({"ok": True, "command": "repl-api", "tools": tools}, ensure_ascii=False))
+    if getattr(args, "all", False):
+        print(json.dumps({"ok": True, "command": "repl-api", "tools": tools}, ensure_ascii=False))
+        return 0
+    repl_tool = next((t for t in tools if isinstance(t, dict) and t.get("name") == "repl"), None)
+    if repl_tool is None:
+        raise AsideUnavailable("the daemon lists no repl tool", fix="Run `repl-api --all` to see what it does list.",
+                               tools=[t.get("name") for t in tools if isinstance(t, dict)])
+    print(json.dumps({
+        "ok": True,
+        "command": "repl-api",
+        "tool": repl_tool,
+        "run": "Run code with `aside repl '<code>'`. This skill's permission rule covers only its own CLI, "
+               "so expect an approval prompt for it.",
+    }, ensure_ascii=False))
     return 0

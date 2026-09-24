@@ -143,7 +143,7 @@ def test_repl_api_reports_the_installed_browser_api() -> None:
     code, payload = cli("repl-api")
 
     assert code == 0
-    assert any(t.get("name") == "repl" for t in payload["tools"])
+    assert payload["tool"]["name"] == "repl"
 
 
 def test_a_missing_binary_fails_fast_rather_than_hanging(tmp_path: Path, monkeypatch) -> None:

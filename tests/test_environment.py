@@ -189,11 +189,23 @@ def test_setup_without_npm_says_what_to_install(tmp_path: Path) -> None:
     assert "Node" in payload["fix"]
 
 
-def test_repl_api_is_read_from_the_installed_daemon(aside_home: Path, fake_aside: Path) -> None:
+def test_repl_api_answers_with_the_repl_tool_and_how_to_run_it(aside_home: Path, fake_aside: Path) -> None:
+    """Read from the installed daemon, not a copy kept here. What a caller writing its own
+    snippet needs is the repl tool and the shape of the call -- which, unlike the CLI, no
+    permission rule pre-approves."""
     code, payload, _ = run_cli("repl-api")
 
     assert code == 0
-    assert payload["tools"] == [{"name": "repl", "description": "fake repl API description"}]
+    assert payload["tool"] == {"name": "repl", "description": "fake repl API description"}
+    assert "aside repl '<code>'" in payload["run"]
+    assert "approval" in payload["run"]
+    assert "tools" not in payload
+
+
+def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> None:
+    _, payload, _ = run_cli("repl-api", "--all")
+
+    assert [t["name"] for t in payload["tools"]] == ["repl", "navigate"]
 
 
 def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypatch) -> None:
@@ -311,3 +323,64 @@ def test_crawl_help_says_which_flags_apply_to_a_manifest() -> None:
     assert "With --from" in text
     for flag in ("--max-pages", "--via", "--concurrency", "--no-frontmatter", "--out"):
         assert flag in text.split("With --from", 1)[1].split("\n", 1)[0], flag
+
+
+
+# --- the conversion toolchain ----------------------------------------------------------------
+
+
+def tools_dir(tmp_path: Path, **scripts: str) -> Path:
+    """A PATH holding python3 and the given stand-in executables."""
+    d = tmp_path / "bin"
+    d.mkdir()
+    (d / "python3").symlink_to(sys.executable)
+    for name, body in scripts.items():
+        (d / name).write_text(body)
+        os.chmod(d / name, 0o755)
+    return d
+
+
+def cli_with_path(path: Path, *argv: str) -> tuple[int, dict]:
+    p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), *argv], capture_output=True, text=True,
+                       env=dict(os.environ, PATH=str(path)), timeout=120)
+    assert p.stdout.strip(), p.stderr
+    return p.returncode, json.loads(p.stdout.splitlines()[-1])
+
+
+@pytest.mark.parametrize("version,ok", [("v18.20.4", False), ("v20.18.0", False), ("v20.19.0", True), ("v22.1.0", True)])
+def test_doctor_checks_node_is_new_enough_for_the_converter(
+    tmp_path: Path, runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, version: str, ok: bool
+) -> None:
+    """The locked converter packages need Node 20.19 or newer; an older node is found on PATH
+    and then fails inside every conversion, which reads as the page being broken."""
+    path = tools_dir(tmp_path, node=f"#!/bin/sh\necho {version}\n")
+
+    code, payload = cli_with_path(path, "doctor", "--runs-dir", str(runs_dir))
+
+    node = check(payload, "node")
+    assert node["ok"] is ok
+    assert (code == 0) is ok
+    if not ok:
+        assert "20.19" in node["fix"]
+
+
+def test_setup_installs_exactly_what_the_lockfile_pins(tmp_path: Path) -> None:
+    record = tmp_path / "npm-call"
+    path = tools_dir(tmp_path, npm=f'#!/bin/sh\necho "$PWD $@" > {record}\n')
+
+    code, payload = cli_with_path(path, "setup")
+
+    assert code == 0 and payload["ok"] is True
+    cwd, args = record.read_text().strip().split(" ", 1)
+    assert args == "ci"
+    assert Path(cwd).resolve() == (SCRIPTS / "ultra_search" / "pages" / "converter").resolve()
+
+
+@pytest.mark.parametrize("npm", ["#!/bin/sh\necho broken >&2\nexit 1\n", "#!/nonexistent/interpreter\n"])
+def test_setup_failures_answer_in_json(tmp_path: Path, npm: str) -> None:
+    path = tools_dir(tmp_path, npm=npm)
+
+    code, payload = cli_with_path(path, "setup")
+
+    assert code == 3
+    assert payload["ok"] is False

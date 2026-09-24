@@ -38,6 +38,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside `-m live`, nothing reaches the real aside, ~/.aside or this repository.
+
+    A test that forgets the fake would otherwise start a real investigation on the user's
+    subscription the moment the CLI accepts its arguments -- which is exactly what a test of
+    argument handling does. `fake_aside` and `aside_home` override these for the tests that
+    want them.
+    """
+    if "live" in request.keywords:
+        return
+    monkeypatch.setenv("ULTRA_SEARCH_ASIDE_BIN", str(tmp_path / "no-real-aside-in-tests"))
+    monkeypatch.setenv("ULTRA_SEARCH_ASIDE_HOME", str(tmp_path / "no-real-aside-home"))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+
 @pytest.fixture
 def fixtures() -> Path:
     return FIXTURES

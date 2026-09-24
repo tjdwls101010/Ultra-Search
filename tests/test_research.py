@@ -236,7 +236,7 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     assert finished["next"]["run_in_background"] is False
     collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
     assert collected.returncode == 0
-    assert json.loads(collected.stdout.splitlines()[-1])["answer"] == "느린 답."
+    assert json.loads(collected.stdout.splitlines()[-1])["runs"][0]["answer"] == "느린 답."
 
 
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(cli, monkeypatch) -> None:
@@ -261,6 +261,7 @@ def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch)
     assert f"run.completed {run_id}" in text
 
     code, result, _ = cli("result", "--run", run_id)
+    result = result["runs"][0]
     assert code == 0
     assert result["answer"] == "느린 답."
     assert result["sources"]
@@ -271,6 +272,7 @@ def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
 
     code, payload, _ = search(cli, "질문")
     _, result, _ = cli("result", "--run", first_run(payload)["run_id"])
+    result = result["runs"][0]
 
     assert code == 4
     assert first_run(payload)["state"] == "failed"
@@ -341,7 +343,7 @@ def test_next_commands_preserve_the_installed_path_and_run_store(
         called = subprocess.run(nxt["command"], shell=True, cwd=collected_in, capture_output=True, text=True, timeout=15)
         assert called.returncode == 0, called.stderr + called.stdout
         payload = json.loads(called.stdout.splitlines()[-1])
-    assert payload["answer"] == "느린 답."
+    assert payload["runs"][0]["answer"] == "느린 답."
     assert (started_in / (runs_arg or ".ultra-search") / "runs").is_dir()
     assert not (collected_in / "injected").exists()
     assert not (collected_in / "leaked").exists()
@@ -405,6 +407,7 @@ def test_the_transcript_outlives_asides_own_copy(cli, aside_home: Path) -> None:
     shutil.rmtree(aside_home / "u" / "0" / "sessions")
 
     _, result, _ = cli("result", "--run", run_id)
+    result = result["runs"][0]
     code, shown, _ = cli("show", "--run", run_id, "--item", "0")
     _, _, logged = cli("log", "--run", run_id)
     assert result["answer"].startswith("Answer")
@@ -470,6 +473,7 @@ def test_a_child_still_running_when_the_parent_exits_is_named(cli, replay) -> No
     assert run["orphan_children"] == ["xtXKs5dqLhtZ9sCN"]
     assert "not collected" in run["note"]
     _, result, _ = cli("result", "--run", run["run_id"])
+    result = result["runs"][0]
     assert result["children"] == ["WvAjHmOMXm36S58Y", "jYjSOAaKKm79uXXI", "xtXKs5dqLhtZ9sCN"]
 
 
@@ -667,7 +671,7 @@ def test_a_timed_out_follow_continues_from_each_stream_and_collects_every_run(
     finished = json.loads(followed.stdout.splitlines()[-1])
     collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=20)
     result = json.loads(collected.stdout)
-    entries = result["runs"] if group else [result]
+    entries = result["runs"]
     assert [e["run_id"] for e in entries] == list(runs)
     states = {e["run_id"]: e["state"] for e in entries}
     assert collected.returncode == (4 if group else 0)
@@ -763,12 +767,15 @@ def test_steps_level_is_the_view_that_was_compact_before(recorded) -> None:
     stream's prefix. The one departure kept in the golden is a subagent's finishing record,
     which used to fall through as raw JSON and now renders as text like every other known
     record. The recording's run id is the only thing that differs."""
-    _, run_id = recorded
     _, _, text = log_of(recorded, "--level", "steps")
 
-    body = "\n".join(line for line in text.splitlines() if not line.startswith("# cursor="))
-    golden = (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n")
-    assert body == golden.replace("260829-235523-subagents", run_id)
+    body = [line for line in text.splitlines() if not line.startswith("# cursor=")]
+    golden = (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n").splitlines()
+    # The prompt block is the prompt the run was given, decorated by this version; everything
+    # after it is the recording.
+    prompt_end = next(i for i, line in enumerate(body) if line.startswith("call "))
+    assert body[0] == golden[0]
+    assert body[prompt_end:] == golden[golden.index(next(line for line in golden if line.startswith("call "))):]
 
 
 # --- what a recorded transcript turns into -----------------------------------------------
@@ -798,6 +805,7 @@ def test_steps_level_shows_call_arguments_and_result_sizes(simple_search) -> Non
 def test_a_recorded_answer_has_its_citations_resolved(simple_search) -> None:
     runs, run_id = simple_search
     _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
+    result = result["runs"][0]
 
     assert "3.14.7" in result["answer"]
     assert "<citation" not in result["answer"]
@@ -811,6 +819,7 @@ def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
     """This run only ran websearch -- it listed results and never opened one."""
     runs, run_id = simple_search
     _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
+    result = result["runs"][0]
 
     assert result["sources"]
     assert all(s["url"] for s in result["sources"])
@@ -820,6 +829,7 @@ def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
 def test_usage_totals_across_every_assistant_turn(simple_search) -> None:
     runs, run_id = simple_search
     _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
+    result = result["runs"][0]
 
     assert result["usage"]["total_tokens"] == 10813 + 18580
     assert result["usage"]["cost"] > 0
@@ -1131,6 +1141,7 @@ def test_sources_only_omits_the_answer(cli) -> None:
     run_id = finished_run_id(cli)
 
     _, result, _ = cli("result", "--run", run_id, "--sources-only")
+    result = result["runs"][0]
 
     assert "answer" not in result
     assert [s["url"] for s in result["sources"]] == ["https://example.org/a", "https://example.org/b"]
@@ -1201,7 +1212,7 @@ def test_stop_says_plainly_that_the_run_itself_continues(cli, monkeypatch) -> No
     assert "aside" in stopped["note"].lower()
     for command in ("status", "log", "result"):
         _, payload, _ = cli(command, "--run", run_id)
-        entry = payload["runs"][0] if command != "result" else payload
+        entry = payload["runs"][0]
         assert entry["state"] == "abandoned"
         assert entry["daemon_run_continues"] is True
         assert "credits" in entry["note"]
@@ -1282,6 +1293,7 @@ def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
     run = first_run(payload)
     assert run["state"] == "completed"
     _, result, _ = cli("result", "--run", run["run_id"])
+    result = result["runs"][0]
     assert result["children"] == []
 
 
@@ -1347,6 +1359,7 @@ def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> No
     _, payload, _ = cli("resume", first, "후속", "--wait", "30")
     run_id = first_run(payload)["run_id"]
     _, result, _ = cli("result", "--run", run_id)
+    result = result["runs"][0]
     _, status, _ = cli("status", "--run", run_id)
     code, item, _ = cli("show", "--run", run_id, "--item", "0")
     _, source, _ = cli("show", "--run", run_id, "--source", "0")
@@ -1447,6 +1460,7 @@ def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, a
     _, payload, _ = cli("resume", "ParentWithKid001", "new-prompt", "--wait", "30")
     run_id = first_run(payload)["run_id"]
     _, result, _ = cli("result", "--run", run_id)
+    result = result["runs"][0]
     _, status, _ = cli("status", "--run", run_id)
 
     _, _, logged = cli("log", "--run", run_id)
@@ -1455,3 +1469,51 @@ def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, a
     assert result["usage"]["input"] == first_run(status)["usage"]["input"] == 10
     assert "old child answer" not in result["answer"]
     assert "new child answer" in logged and "old child answer" not in logged
+
+
+
+def test_result_is_always_a_list_of_runs(cli) -> None:
+    """One shape whether one run or a group was asked for -- the shape `search` and `status`
+    already answer in -- so a caller never branches on how many runs there were."""
+    run_id = finished_run_id(cli)
+
+    _, one, _ = cli("result", "--run", run_id)
+    _, latest, _ = cli("result")
+
+    for payload in (one, latest):
+        assert [r["run_id"] for r in payload["runs"]] == [run_id]
+        assert "answer" not in payload
+
+
+
+def test_steps_numbers_tool_results_the_way_show_counts_them(cli, replay, aside_home: Path) -> None:
+    """`show --item N` fetches the N-th tool result of the run's own turn. The log is where
+    the caller finds N, so the numbers have to agree -- across reads from a cursor too."""
+    aside_session(aside_home, "NumberedChild001", user("자식"), tool("webfetch", "child page"), answer("자식 답"))
+    replay([tool("websearch", "found"), tool("subagent", "spawned", taskId="NumberedChild001"),
+            {"__sleep__": 4}, tool("webfetch", "read"), answer("답")])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+    first = poll(lambda: (lambda r: r if "#1 subagent" in r[2] else None)(cli("log", "--run", run_id, "--level", "steps")), timeout=10)
+
+    _, _, rest = cli("log", "--run", run_id, "--level", "steps", "--since", str(first[1]["cursor"]),
+                     "--follow", "--follow-timeout", "30")
+    numbered = [line for line in lines_of(first[2] + rest) if line[:1] == "#" and line[1:2].isdigit()]
+    shown = [cli("show", "--run", run_id, "--item", str(n))[1]["tool"] for n in range(3)]
+
+    assert [line.split(" ", 2)[:2] for line in numbered] == [["#0", "websearch"], ["#1", "subagent"], ["#2", "webfetch"]]
+    assert shown == ["websearch", "subagent", "webfetch"]
+    assert any(line.startswith("[child NumberedChild001] webfetch out=") for line in lines_of(first[2] + rest))
+
+
+def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None:
+    """The browsing agent acts as the user, in their logged-in browser. What research may not
+    do is said in the prompt it receives, every time, rather than hoped for."""
+    run_id = finished_run_id(cli)
+    cli("resume", run_id, "후속", "--wait", "30")
+
+    scope = "Read-only research: do not post, purchase, sign up, or change account settings."
+    prompts = [argv[-1] for argv in exec_calls(fake_aside)]
+    assert len(prompts) == 2 and all(scope in p for p in prompts)
+    for command in ("search", "resume"):
+        assert "Read-only research" in cli(command, "--help")[2]

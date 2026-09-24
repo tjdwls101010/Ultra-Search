@@ -189,11 +189,23 @@ def test_setup_without_npm_says_what_to_install(tmp_path: Path) -> None:
     assert "Node" in payload["fix"]
 
 
-def test_repl_api_is_read_from_the_installed_daemon(aside_home: Path, fake_aside: Path) -> None:
+def test_repl_api_answers_with_the_repl_tool_and_how_to_run_it(aside_home: Path, fake_aside: Path) -> None:
+    """Read from the installed daemon, not a copy kept here. What a caller writing its own
+    snippet needs is the repl tool and the shape of the call -- which, unlike the CLI, no
+    permission rule pre-approves."""
     code, payload, _ = run_cli("repl-api")
 
     assert code == 0
-    assert payload["tools"] == [{"name": "repl", "description": "fake repl API description"}]
+    assert payload["tool"] == {"name": "repl", "description": "fake repl API description"}
+    assert "aside repl '<code>'" in payload["run"]
+    assert "approval" in payload["run"]
+    assert "tools" not in payload
+
+
+def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> None:
+    _, payload, _ = run_cli("repl-api", "--all")
+
+    assert [t["name"] for t in payload["tools"]] == ["repl", "navigate"]
 
 
 def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypatch) -> None:
@@ -208,41 +220,175 @@ def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypat
 # --- the shared contract -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("argv", [["search"], ["fetch"], ["status", "--run", "a", "--group", "b"], ["no-such-command"]])
-def test_bad_arguments_exit_two(argv: list[str]) -> None:
-    code, _, _ = run_cli(*argv)
+@pytest.mark.parametrize("argv,command", [
+    (["search"], "search"),
+    (["fetch"], "fetch"),
+    (["status", "--run", "a", "--group", "b"], "status"),
+    (["no-such-command"], None),
+    (["search", "q", "--wait", "-1"], "search"),
+    (["search", "q", "--wait", "nan"], "search"),
+    (["search", "q", "--timeout", "inf"], "search"),
+    (["log", "--heartbeat", "0"], "log"),
+    (["fetch", "https://e.test/", "--concurrency", "0"], "fetch"),
+    (["fetch", "https://e.test/", "--max-chars", "-5"], "fetch"),
+    (["fetch", "ftp://e.test/file"], "fetch"),
+    (["fetch", "e.test/page"], "fetch"),
+    (["map", "https://e.test/", "--max-urls", "0"], "map"),
+    (["map", "https://e.test/", "--depth", "-1"], "map"),
+    (["crawl", "https://e.test/", "--max-pages", "0"], "crawl"),
+    (["crawl", "file:///etc/passwd"], "crawl"),
+    (["sessions", "--limit", "-2"], "sessions"),
+    (["show", "--item", "-1"], "show"),
+])
+def test_bad_arguments_answer_in_json_with_where_to_look(argv: list[str], command: str | None) -> None:
+    """Every command promises one JSON line, and a caller that mistyped a flag is the one
+    most in need of it. A number outside its range or a URL that is not a web page is refused
+    before any work, the same way."""
+    code, payload, text = run_cli(*argv)
 
     assert code == 2
+    assert text.strip().startswith("{") and len(text.strip().splitlines()) == 1
+    assert payload["ok"] is False and payload["error"] == "bad_arguments"
+    assert payload["message"]
+    assert payload["fix"] == (f"cli.py {command} --help" if command else "cli.py --help")
 
 
-def test_the_version_is_reported() -> None:
+def test_a_runs_dir_naming_an_unknown_home_is_refused_in_json() -> None:
+    code, payload, text = run_cli("status", "--runs-dir", "~no-such-user-9f3a/runs")
+
+    assert code == 2
+    assert payload["error"] == "bad_arguments" and payload["fix"]
+    assert len(text.strip().splitlines()) == 1
+
+
+def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 
     assert code == 0
-    assert text.strip().startswith("ultra-search ")
+    assert text.strip() == "ultra-search 1.0.0"
 
 
-def test_a_repl_that_answers_without_running_the_probe_fails_doctor(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
+def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
+    _, _, text = run_cli("status", "--help")
+
+    assert "under the current working directory" in text
+    assert "current project" not in text
+
+
+# --- what each command's help promises -----------------------------------------------------
+
+COMMANDS = ["search", "resume", "status", "log", "result", "show", "stop", "fetch", "map", "crawl",
+            "sessions", "repl-api", "doctor", "setup"]
+
+
+def help_of(command: str) -> str:
+    code, _, text = run_cli(command, "--help")
+    assert code == 0
+    return text
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_every_help_stands_on_its_own(command: str) -> None:
+    """A caller reads one command's help, at the moment it needs it. A pointer to another
+    command's help is a second lookup at the worst moment."""
+    assert "As for" not in help_of(command)
+
+
+@pytest.mark.parametrize("command", ["search", "resume", "log"])
+def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
+    text = help_of(command)
+
+    assert "run_in_background" in text and "foreground" in text and "bash_timeout_ms" in text
+
+
+def test_result_help_names_every_end_state_and_what_opened_means() -> None:
+    text = help_of("result")
+
+    for state in ("completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"):
+        assert state in text
+    assert "opened" in text and "not a check" in text
+
+
+def test_fetch_help_names_every_item_status_and_what_conversion_loses() -> None:
+    text = help_of("fetch")
+
+    for status in ("ok", "shell", "shell_escalated", "challenge", "blocked", "needs_ocr", "unsupported", "error"):
+        assert f"{status}:" in text, status
+    assert "--format html" in text and "original_path" in text and "tables" in text
+
+
+def test_show_says_how_sources_are_counted() -> None:
+    assert "Source index from `result`, counting from 0" in help_of("show")
+
+
+def test_map_help_says_what_it_does_not_do() -> None:
+    assert "without extracting or saving pages" in help_of("map")
+
+
+def test_crawl_help_says_which_flags_apply_to_a_manifest() -> None:
+    text = help_of("crawl")
+
+    assert "With --from" in text
+    for flag in ("--max-pages", "--via", "--concurrency", "--no-frontmatter", "--out"):
+        assert flag in text.split("With --from", 1)[1].split("\n", 1)[0], flag
+
+
+
+# --- the conversion toolchain ----------------------------------------------------------------
+
+
+def tools_dir(tmp_path: Path, **scripts: str) -> Path:
+    """A PATH holding python3 and the given stand-in executables."""
+    d = tmp_path / "bin"
+    d.mkdir()
+    (d / "python3").symlink_to(sys.executable)
+    for name, body in scripts.items():
+        (d / name).write_text(body)
+        os.chmod(d / name, 0o755)
+    return d
+
+
+def cli_with_path(path: Path, *argv: str) -> tuple[int, dict]:
+    p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), *argv], capture_output=True, text=True,
+                       env=dict(os.environ, PATH=str(path)), timeout=120)
+    assert p.stdout.strip(), p.stderr
+    return p.returncode, json.loads(p.stdout.splitlines()[-1])
+
+
+@pytest.mark.parametrize("version,ok", [("v18.20.4", False), ("v20.18.0", False), ("v20.19.0", True), ("v22.1.0", True)])
+def test_doctor_checks_node_is_new_enough_for_the_converter(
+    tmp_path: Path, runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, version: str, ok: bool
 ) -> None:
-    """Printing something is not a round trip. A sandbox that replies with a refusal would
-    pass a check that only looked for output, and every page command would then fail."""
-    monkeypatch.setenv("FAKE_ASIDE_REPL_PROBE", "fail")
+    """The locked converter packages need Node 20.19 or newer; an older node is found on PATH
+    and then fails inside every conversion, which reads as the page being broken."""
+    path = tools_dir(tmp_path, node=f"#!/bin/sh\necho {version}\n")
 
-    code, payload = doctor(runs_dir)
+    code, payload = cli_with_path(path, "doctor", "--runs-dir", str(runs_dir))
+
+    node = check(payload, "node")
+    assert node["ok"] is ok
+    assert (code == 0) is ok
+    if not ok:
+        assert "20.19" in node["fix"]
+
+
+def test_setup_installs_exactly_what_the_lockfile_pins(tmp_path: Path) -> None:
+    record = tmp_path / "npm-call"
+    path = tools_dir(tmp_path, npm=f'#!/bin/sh\necho "$PWD $@" > {record}\n')
+
+    code, payload = cli_with_path(path, "setup")
+
+    assert code == 0 and payload["ok"] is True
+    cwd, args = record.read_text().strip().split(" ", 1)
+    assert args == "ci"
+    assert Path(cwd).resolve() == (SCRIPTS / "ultra_search" / "pages" / "converter").resolve()
+
+
+@pytest.mark.parametrize("npm", ["#!/bin/sh\necho broken >&2\nexit 1\n", "#!/nonexistent/interpreter\n"])
+def test_setup_failures_answer_in_json(tmp_path: Path, npm: str) -> None:
+    path = tools_dir(tmp_path, npm=npm)
+
+    code, payload = cli_with_path(path, "setup")
 
     assert code == 3
-    assert check(payload, "browser repl")["ok"] is False
-    assert check(payload, "browser repl")["fix"]
-
-
-def test_the_writability_probe_cannot_collide_with_what_is_already_there(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon
-) -> None:
-    (runs_dir / ".write-probe").mkdir()
-
-    code, payload = doctor(runs_dir)
-
-    assert check(payload, "runs dir")["ok"] is True
-    assert code == 0
-    assert sorted(p.name for p in runs_dir.iterdir()) == [".write-probe"]
+    assert payload["ok"] is False

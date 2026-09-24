@@ -414,7 +414,8 @@ def main(argv: list[str]) -> int:
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")
     if cmd == "mcp":
-        print(json.dumps({"result": {"tools": [{"name": "repl", "description": "fake repl API description"}]}}))
+        print(json.dumps({"result": {"tools": [{"name": "repl", "description": "fake repl API description"},
+                                               {"name": "navigate", "description": "fake navigation tool"}]}}))
         return 0
     if cmd == "account":
         # FAKE_ASIDE_ACCOUNTS=none is a signed-out browser: the command succeeds with an

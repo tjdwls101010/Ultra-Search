@@ -3,15 +3,15 @@ user: 세 가지를 각각 별도의 서브에이전트로 병렬 조사해라: 
 (ultra-search:260829-235523-subagents — ignore this…(+6)
 call write_todos({"merge": false, "todos": [{"id": "py", "content": "Python 3.14 공식 릴리스 노트 조사", "status": "in_progress"}, {"id": "node", "content": "Node.js 24 LTS 공식 릴리스 자료 조사", "status": "in_progress"}, {"id": "go",…(+132))
 공식 릴리스 노트만 근거로 세 주제를 각각 독립 서브에이전트에 맡겨 병렬 조사하겠습니다. 세 결과가 모두 나온 뒤 공통 형식으로 통합하겠습니다.
-write_todos out=225B
+#0 write_todos out=225B
 call subagent({"action": "spawn", "description": "Python 3.14 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Python 3.14의 주요 신기능을 공식 Python 3.14 릴리스 노트/What'…(+226))
 call subagent({"action": "spawn", "description": "Node 24 LTS 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Node.js 24 LTS의 주요 변경점을 Node.js 공식 릴리스 블로그, 공식 v…(+246))
 call subagent({"action": "spawn", "description": "Go 1.27 조사", "subagent_profile": "default", "model_category": "standard", "run_in_background": true, "prompt": "Go 1.27의 주요 변경점을 go.dev의 공식 Go 1.27 릴리스 노트와 공식 Go 블로…(+260))
-subagent out=106B
-subagent out=106B
-subagent out=106B
+#1 subagent out=106B
+#2 subagent out=106B
+#3 subagent out=106B
 call subagent_wait({"task_ids": ["4kgZvArU4ipY0eIn", "GZ0SJQM23WNehVgp", "VC4gmB8dlfU4SE5d"]})
-subagent_wait out=11187B
+#4 subagent_wait out=11187B
 system: Subagent VC4gmB8dlfU4SE5d is done (status: idle, 1/3 completed)
 <result>
 ## 공개 상태
@@ -31,7 +31,7 @@ system: Subagent 4kgZvArU4ipY0eIn is done (status: idle, 3/3 completed)
    - GIL 없는 빌드가 실험 단계를 벗어…(+4524)
 call write_todos({"merge": true, "todos": [{"id": "py", "content": "Python 3.14 공식 릴리스 노트 조사", "status": "completed"}, {"id": "node", "content": "Node.js 24 LTS 공식 릴리스 자료 조사", "status": "completed"}, {"id": "go", "con…(+127))
 세 서브에이전트의 조사가 모두 끝났습니다. 이제 정식 여부, 핵심 기능, 업그레이드 위험을 같은 기준으로 맞춰 통합하겠습니다.
-write_todos out=221B
+#5 write_todos out=221B
 세 서브에이전트가 각각 공식 릴리스 자료를 조사한 결과를 통합했습니다.
 
 ## 한눈에 보기

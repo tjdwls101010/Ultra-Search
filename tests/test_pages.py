@@ -587,10 +587,15 @@ SITE = {
 }
 
 
+def listed(payload: dict) -> list[str]:
+    """Every URL a map found: its manifest holds the full list, not its reply."""
+    return json.loads(Path(payload["manifest_path"]).read_text())["urls"]
+
+
 def mapped(cli, *args: str) -> list[str]:
     code, payload, _ = cli("map", "https://site.test/", *args)
     assert code == 0, payload
-    return payload["urls"]
+    return listed(payload)
 
 
 def test_depth_one_visits_only_the_root_and_its_links(cli, routes) -> None:
@@ -707,7 +712,8 @@ def test_a_map_manifest_is_crawled_without_discovering_again(cli, routes, fake_a
     assert code == 0
     assert json.loads(manifest.read_text())["urls"] == ["https://site.test/", "https://site.test/a", "https://site.test/b"]
     assert len(repl_calls(fake_aside, "links")) == walked
-    assert [i["url"] for i in payload["items"]] == ["https://site.test/", "https://site.test/a", "https://site.test/b"]
+    crawled = json.loads(Path(payload["manifest"]).read_text())["pages"]
+    assert [p["url"] for p in crawled] == ["https://site.test/", "https://site.test/a", "https://site.test/b"]
     assert payload["saved"] == 3
 
 
@@ -719,11 +725,14 @@ def test_a_crawl_writes_numbered_pages_and_a_manifest_that_crawls_again(cli, rou
 
     manifest = json.loads(Path(payload["manifest"]).read_text())
     assert manifest["root"] == "https://site.test/"
-    assert [p["url"] for p in manifest["pages"]] == [i["url"] for i in payload["items"]]
+    assert all({"n", "url", "final_url", "file", "title", "status", "via", "words"} <= set(page)
+               <= {"n", "url", "final_url", "file", "title", "status", "via", "words", "http_status", "error"}
+               for page in manifest["pages"])
+    assert [p["url"] for p in manifest["pages"]] == ["https://site.test/", "https://site.test/a", "https://site.test/b"]
     assert sorted(p.name[:4] for p in out.glob("*.md")) == ["000-", "001-", "002-"]
     code, again, _ = cli("crawl", "--from", payload["manifest"], "--out", str(tmp_path / "again"))
     assert code == 0
-    assert [i["url"] for i in again["items"]] == [p["url"] for p in manifest["pages"]]
+    assert [p["url"] for p in json.loads(Path(again["manifest"]).read_text())["pages"]] == [p["url"] for p in manifest["pages"]]
 
 
 def test_max_pages_caps_what_a_crawl_fetches(cli, routes, fake_aside: Path) -> None:
@@ -777,8 +786,8 @@ def test_same_site_means_same_scheme_host_and_port_over_http(cli, routes) -> Non
     code, from_sitemap, _ = cli("map", "https://site.test/")
     _, from_links, _ = cli("map", "https://site.test/", "--no-sitemap", "--depth", "1")
 
-    assert from_sitemap["urls"] == ["https://site.test/listed"]
-    assert from_links["urls"] == ["https://site.test/", "https://site.test/same"]
+    assert listed(from_sitemap) == ["https://site.test/listed"]
+    assert listed(from_links) == ["https://site.test/", "https://site.test/same"]
 
 
 @pytest.mark.parametrize("left_behind", ["manifest", "other"])
@@ -908,7 +917,7 @@ def test_a_discovery_snippet_cut_off_by_the_repl_limit_is_reported(cli, routes, 
     code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
 
     assert code == 0
-    assert payload["urls"]
+    assert listed(payload)
     assert payload["coverage"]["budget_exhausted"] is True
 
 
@@ -918,7 +927,7 @@ def test_one_malformed_link_does_not_lose_the_rest_of_the_page(cli, routes) -> N
     code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
 
     assert code == 0
-    assert payload["urls"] == ["https://site.test/", "https://site.test/ok"]
+    assert listed(payload) == ["https://site.test/", "https://site.test/ok"]
 
 
 def test_a_document_that_converts_to_nothing_is_not_a_page_that_was_read(cli, routes) -> None:
@@ -941,7 +950,110 @@ def test_an_escaped_ampersand_in_a_link_is_the_url_the_page_meant(cli, routes) -
 
     # Decoded as a browser decodes an attribute: numeric and closed references always, a bare
     # name only when neither "=" nor a letter or digit follows it.
-    assert payload["urls"] == ["https://site.test/", "https://site.test/article?id=1&lang=ko",
+    assert listed(payload) == ["https://site.test/", "https://site.test/article?id=1&lang=ko",
                                "https://site.test/q?id=1&copy=2&notebook=3",
                                "https://site.test/n?id=1&lang=en", "https://site.test/c/©",
                                "https://site.test/q?x=1&notebook;=2", "https://site.test/d/©한글"]
+
+
+@pytest.mark.parametrize("flag", [["--depth", "1"], ["--depth", "0"], ["--max-urls", "5"], ["--include", "*/a*"], ["--exclude", "*/b*"], ["--no-sitemap"]])
+def test_a_manifest_is_crawled_as_it_is_so_discovery_flags_are_refused(cli, routes, tmp_path: Path, fake_aside: Path, flag) -> None:
+    """With --from nothing is discovered, so a discovery flag would silently do nothing."""
+    routes({})
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"root": "https://site.test/", "urls": ["https://site.test/"]}))
+
+    code, err, _ = cli("crawl", "--from", str(manifest), *flag)
+
+    assert code == 2 and err["error"] == "bad_arguments"
+    assert flag[0] in err["message"]
+    assert repl_calls(fake_aside, "fetch_batch") == []
+
+
+# --- replies sized for the caller, lists in files ------------------------------------------
+
+
+@pytest.mark.parametrize("size", [3, 180])
+def test_map_replies_with_a_summary_whatever_the_size_of_the_site(cli, routes, runs_dir: Path, size: int) -> None:
+    """The full list is a file the caller can open when it wants it. Printing it would put a
+    whole site's URLs into the caller's context as a side effect of asking how big it is."""
+    urls = [f"https://site.test/page-{i}" for i in range(size)]
+    routes({"sitemap": {"https://site.test/sitemap.xml": urls}})
+
+    code, payload, text = cli("map", "https://site.test/", "--max-urls", "500")
+
+    assert code == 0
+    assert "urls" not in payload
+    assert payload["count"] == size
+    assert payload["sample"] == urls[:10]
+    assert len(text) < 2500
+    assert Path(payload["manifest_path"]).parent == runs_dir / "maps"
+    assert Path(payload["manifest_path"]).name.startswith("site.test-")
+    assert listed(payload) == urls
+
+
+def test_map_list_all_prints_every_url_too(cli, routes, tmp_path: Path) -> None:
+    urls = [f"https://site.test/page-{i}" for i in range(15)]
+    routes({"sitemap": {"https://site.test/sitemap.xml": urls}})
+
+    _, payload, _ = cli("map", "https://site.test/", "--list-all", "--out", str(tmp_path / "m.json"))
+
+    assert payload["urls"] == urls
+    assert payload["manifest_path"] == str(tmp_path / "m.json")
+
+
+def test_crawl_replies_with_counts_and_only_what_went_wrong(cli, routes) -> None:
+    routes({"links": SITE, "fetch_batch": {**{u: page(ARTICLE) for u in SITE},
+                                           "https://site.test/b": page("<p>no</p>", status=403)}})
+
+    code, payload, _ = cli("crawl", "https://site.test/", "--depth", "1", "--via", "fetch")
+
+    assert code == 0
+    assert "items" not in payload
+    assert payload["statuses"] == {"ok": 2, "blocked": 1}
+    assert [(i["url"], i["status"], i["http_status"]) for i in payload["not_ok"]] == [("https://site.test/b", "blocked", 403)]
+    assert payload["saved"] == 2 and payload["requested"] == 3
+    assert Path(payload["manifest"]).parent == Path(payload["out_dir"])
+
+
+
+def test_what_discovery_missed_is_summarised_too(cli, routes, runs_dir: Path) -> None:
+    """A site that refuses most of its pages would otherwise answer with a list the size of
+    the site, the very thing the summary exists to avoid."""
+    hrefs = [f"/missing-{i}" for i in range(30)]
+    routes({"links": {"https://site.test/": hrefs}})
+
+    _, payload, text = cli("map", "https://site.test/", "--depth", "2")
+
+    coverage = payload["coverage"]
+    assert coverage["pages_missed_count"] == 30
+    assert len(coverage["pages_missed"]) == 10
+    assert len(text) < 2500
+    saved = json.loads(Path(payload["manifest_path"]).read_text())["coverage"]
+    assert len(saved["pages_missed"]) == 30
+
+
+def test_crawl_lists_the_first_failures_and_counts_the_rest(cli, routes, tmp_path: Path) -> None:
+    urls = [f"https://site.test/p{i}" for i in range(15)]
+    routes({"fetch_batch": {u: page("<p>no</p>", status=403) for u in urls}})
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"root": "https://site.test/", "urls": urls}))
+
+    _, payload, _ = cli("crawl", "--from", str(manifest), "--via", "fetch")
+
+    assert payload["not_ok_count"] == 15
+    assert [i["url"] for i in payload["not_ok"]] == urls[:10]
+    assert payload["statuses"] == {"blocked": 15}
+    # The ones past the first ten keep their reason in the manifest.
+    pages = json.loads(Path(payload["manifest"]).read_text())["pages"]
+    assert [(p["http_status"], p["error"]) for p in pages[10:]] == [(403, "HTTP 403")] * 5
+
+
+def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+
+    _, payload, _ = cli("fetch", "https://example.org/a", "--out", "~/v1.2/")
+
+    assert (tmp_path / "v1.2").is_dir()
+    assert Path(item_of(payload)["path"]).parent == tmp_path / "v1.2"

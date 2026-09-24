@@ -29,7 +29,7 @@ _TARGET_KEYS = ("url", "objective", "description", "title")
 _HOST_RE = re.compile(r"^https?://([^/]+)")
 
 
-def render(event: Event, level: str = "progress") -> str:
+def render(event: Event, level: str = "progress", ordinal: int | None = None) -> str:
     if level == "raw":
         return json.dumps(event.raw, ensure_ascii=False)
     if level == "progress":
@@ -39,7 +39,7 @@ def render(event: Event, level: str = "progress") -> str:
     if event.kind == "assistant":
         return _assistant(event, level)
     if event.kind == "tool_result":
-        return _tool_result(event, level)
+        return _tool_result(event, level, ordinal)
     if event.kind == "system":
         return f"system: {_clip(event.text, 200 if level == 'steps' else 2000)}"
     return f"raw[{event.index}]: {_clip(event.content, 200)}"
@@ -116,9 +116,12 @@ def _assistant(event: Event, level: str) -> str:
     return "\n".join(parts) if parts else f"assistant[{event.stop_reason}]"
 
 
-def _tool_result(event: Event, level: str) -> str:
+def _tool_result(event: Event, level: str, ordinal: int | None) -> str:
     n = len(event.content)
     head = f"{event.tool_name} {'ERROR ' if event.is_error else ''}out={n}B"
+    if ordinal is not None:
+        # The N of `show --item N`, so the result's full text is one call away.
+        head = f"#{ordinal} {head}"
     srcs = (event.details or {}).get("sources") or []
     if srcs:
         head += f" sources={len(srcs)}"

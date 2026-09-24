@@ -21,6 +21,7 @@ from pathlib import Path
 import _events
 import _registry
 import _render
+from _errors import ArgumentError
 
 TERMINAL_STATES = frozenset({"completed", "completed_with_orphans", "completed_unstructured", "failed", "abandoned"})
 POLL = 1.0
@@ -31,7 +32,8 @@ def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]
 
     A single run's cursor is a plain integer so the common case stays readable; a group's
     is the JSON object printed for it, because one number cannot describe several streams
-    advancing independently.
+    advancing independently. Anything else is refused: read as "from the start", it would
+    replay the whole run to a caller who believes it is new.
     """
     empty = {r.run_id: {} for r in runs}
     if since in (None, "", 0, "0"):
@@ -39,19 +41,29 @@ def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]
     text = str(since)
     if text.isdigit():
         return {runs[0].run_id: {"": int(text)}} if runs else empty
+    bad = ArgumentError(
+        f"--since {text!r} is not a cursor this command printed",
+        fix="Pass the `cursor` value from the previous `log` response, or omit --since to read from the start.",
+    )
     try:
         loaded = json.loads(text)
     except ValueError:
-        return empty
+        raise bad from None
     if not isinstance(loaded, dict):
-        return empty
+        raise bad
     out = dict(empty)
     for run_id, streams in loaded.items():
-        if isinstance(streams, dict):
-            out[run_id] = {k: int(v) for k, v in streams.items()}
-        elif isinstance(streams, int):
+        if _offset(streams):
             out[run_id] = {"": streams}
+        elif isinstance(streams, dict) and all(_offset(v) for v in streams.values()):
+            out[run_id] = dict(streams)
+        else:
+            raise bad
     return out
+
+
+def _offset(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:

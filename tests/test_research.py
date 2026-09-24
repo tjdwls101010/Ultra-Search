@@ -1301,3 +1301,33 @@ def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, mon
     assert code == 2
     assert "in flight" in err["message"]
     assert len(exec_calls(fake_aside)) == started
+
+
+# --- inputs the JSON contract has to survive ---------------------------------------------
+
+
+@pytest.mark.parametrize("cursor", ["garbage", "[1]", '{"RUN": {"": "abc"}}', '{"RUN": {"": -5}}', "-3"])
+def test_a_cursor_that_is_not_one_is_refused_rather_than_replayed(cli, cursor: str) -> None:
+    """A cursor this command did not print would otherwise restart the log from the top --
+    or crash -- and either way the caller reads the whole run again believing it is new."""
+    run_id = finished_run_id(cli)
+
+    code, err, text = cli("log", "--run", run_id, "--since", cursor.replace("RUN", run_id))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "prompt:" not in text
+
+
+def test_an_unwritable_registry_is_reported_in_json(aside_home: Path, fake_aside: Path, tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        code, err, _ = run_cli("search", "질문", "--runs-dir", str(locked / "runs"))
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 4
+    assert err["error"] == "run_failed"
+    assert err["fix"]

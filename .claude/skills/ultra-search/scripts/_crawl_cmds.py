@@ -57,8 +57,11 @@ def _crawl_cmd(args, runs_root: Path) -> int:
             manifest = json.loads(source.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             raise ArgumentError(f"could not read manifest {source}: {e}", fix="Produce one with `map --out`.") from e
-        root = manifest.get("root") or ""
         urls = _crawl.urls_from_manifest(manifest)
+        if urls is None:
+            raise ArgumentError(f"{source} is not a manifest written by `map` or `crawl`",
+                                fix="Produce one with `map --out`.")
+        root = manifest.get("root") or ""
         if not urls:
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:

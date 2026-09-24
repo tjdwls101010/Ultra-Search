@@ -733,3 +733,32 @@ def test_max_pages_caps_what_a_crawl_fetches(cli, routes, fake_aside: Path) -> N
 
     assert payload["requested"] == 2
     assert sum(len(c["urls"]) for c in repl_calls(fake_aside, "fetch_batch")) == 2
+
+
+@pytest.mark.parametrize("manifest", [[], {"pages": ["https://site.test/a"]}, {"urls": "https://site.test/a"}])
+def test_a_manifest_of_the_wrong_shape_is_refused(cli, routes, tmp_path: Path, manifest) -> None:
+    routes({})
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+
+    code, err, _ = cli("crawl", "--from", str(path))
+
+    assert code == 2
+    assert err["error"] == "bad_arguments"
+    assert "map" in err["fix"]
+
+
+def test_an_unwritable_destination_is_reported_in_json(cli, routes, tmp_path: Path) -> None:
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        code, err, _ = cli("fetch", "https://example.org/a", "--out", str(locked / "sub"))
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 4
+    assert err["ok"] is False and err["error"] == "run_failed"
+    assert str(locked / "sub") in err["message"]
+    assert err["fix"]

@@ -132,7 +132,19 @@ def build_manifest(root: str, pages: list[dict], urls: list[str] | None = None) 
     return manifest
 
 
-def urls_from_manifest(manifest: dict) -> list[str]:
-    if manifest.get("pages"):
-        return [p["url"] for p in manifest["pages"] if p.get("url")]
-    return list(manifest.get("urls") or [])
+def urls_from_manifest(manifest: object) -> list[str] | None:
+    """The URLs a manifest lists, or None when it is not shaped like one `map` or `crawl` wrote."""
+    if not isinstance(manifest, dict):
+        return None
+    pages, urls = manifest.get("pages"), manifest.get("urls")
+    if pages:
+        if not isinstance(pages, list) or not all(
+            isinstance(p, dict) and isinstance(p.get("url") or "", str) for p in pages
+        ):
+            return None
+        return [p["url"] for p in pages if p.get("url")]
+    if urls is None:
+        return []
+    if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+        return None
+    return list(urls)

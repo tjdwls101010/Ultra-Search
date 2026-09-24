@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.script_path = str(pathlib.Path(__file__).absolute())
 
-    from _errors import UltraSearchError
+    from _errors import RunFailed, UltraSearchError
 
     if args.command in ("search", "resume"):
         import _run_cmds as impl
@@ -381,6 +381,15 @@ def main(argv: list[str] | None = None) -> int:
         return e.exit_code
     except BrokenPipeError:
         return EXIT_OK
+    except OSError as e:
+        # Storage the caller pointed at -- an unwritable --out or --runs-dir, a full disk --
+        # still answers in the one shape every command promises.
+        err = RunFailed(
+            f"could not read or write {e.filename or 'a file'}: {e.strerror or e}",
+            fix="Check the path exists and is writable, or choose another with --out or --runs-dir.",
+        )
+        print(json.dumps(err.payload(), ensure_ascii=False))
+        return err.exit_code
 
 
 if __name__ == "__main__":

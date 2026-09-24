@@ -153,14 +153,35 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
     return resolve_links(records, same_origin_as)
 
 
-#: A character reference closed by its semicolon. Inside an attribute a reference without
-#: one is literal text when "=" or a letter follows -- `?a=1&copy=2` keeps its `&copy` --
-#: so only closed references are decoded.
-_CLOSED_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+_REFERENCE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;?)")
+
+
+def _decode_attribute(value: str) -> str:
+    """Character references in an attribute value, decoded the way a browser does.
+
+    Numeric references and ones closed by a semicolon always decode. A name without one
+    decodes as its longest known prefix -- unless "=" or a letter or digit follows that
+    prefix, when it is literal text: `?a=1&copy=2` keeps its `&copy`, `&notebook` its `&not`.
+    """
+    import html
+    from html.entities import html5
+
+    def sub(m: re.Match[str]) -> str:
+        ref = m.group(0)
+        if ref.startswith("&#") or ref.endswith(";"):
+            return html.unescape(ref)
+        name = next((ref[1:k] for k in range(len(ref), 1, -1) if ref[1:k] in html5), None)
+        if name is None:
+            return ref
+        after = ref[len(name) + 1:] or value[m.end():m.end() + 1]
+        if after[:1] == "=" or after[:1].isalnum():
+            return ref
+        return html5[name] + ref[len(name) + 1:]
+
+    return _REFERENCE.sub(sub, value)
 
 
 def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
-    import html
     from urllib.parse import urljoin, urldefrag
 
     from _crawl import origin as origin_of
@@ -179,7 +200,7 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
         out.append({"kind": "page_read", "url": rec.get("url")})
         for href in rec.get("hrefs") or []:
             # An href is an HTML attribute: `&amp;` in it is one `&` of the URL.
-            href = _CLOSED_REFERENCE.sub(lambda m: html.unescape(m.group(0)), href)
+            href = _decode_attribute(href)
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
             try:

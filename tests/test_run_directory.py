@@ -391,23 +391,23 @@ def test_a_reused_childs_earlier_answer_is_not_its_answer_now(
     assert "이전 답" not in result_of(run)["answer"]
 
 
-def test_a_reused_child_whose_new_task_has_not_landed_is_still_working(
+
+def test_resuming_to_collect_an_earlier_childs_late_result_counts_it(
     runs_dir: Path, aside_home: Path, fake_aside: Path, replay
 ) -> None:
-    """A resumed parent handed an earlier child a new task, but the child's transcript still
-    ends in its earlier answer. That answer is not this run's, and the child is not done."""
+    """An earlier run ended with a child still working. Resuming to wait for it collects its
+    result: the child finished, and what it found is this run's answer."""
     aside_session(aside_home, "ParentWithKid001", user("old-prompt"),
-                  tool("subagent", "spawned", taskId="ReusedKid0000001"), answer("old-answer"))
-    aside_session(aside_home, "ReusedKid0000001", {**user("old task"), "timestamp": 1_000},
-                  {**tool("webfetch", "old page", sources=[{"id": "o1", "url": "https://old.test/"}]), "timestamp": 2_000},
-                  {**answer("old child answer"), "timestamp": 3_000})
-    replay([tool("subagent", "resumed", taskId="ReusedKid0000001"), answer("new-answer")])
-    run = start(runs_dir, "new-prompt")
+                  tool("subagent", "spawned", taskId="LateKid000000001"), answer("partial"))
+    aside_session(aside_home, "LateKid000000001", {**user("task"), "timestamp": 1_000},
+                  {**tool("webfetch", "page", sources=[{"id": "l1", "url": "https://late.test/"}]), "timestamp": 2_000},
+                  {**answer("late child answer"), "timestamp": 3_000})
+    replay([tool("subagent_wait", "done", results=[{"taskId": "LateKid000000001"}]), answer("collected")])
+    run = start(runs_dir, "wait for it")
     run.update_meta(resume_session_id="ParentWithKid001")
 
     meta = supervise(run, settle=0.3)
 
-    result = result_of(run)
-    assert meta["orphan_children"] == ["ReusedKid0000001"]
-    assert "old child answer" not in result["answer"]
-    assert result["sources"] == []
+    assert meta["state"] == "completed"
+    assert "late child answer" in result_of(run)["answer"]
+    assert [s["url"] for s in result_of(run)["sources"]] == ["https://late.test/"]

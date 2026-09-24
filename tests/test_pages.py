@@ -762,3 +762,19 @@ def test_an_unwritable_destination_is_reported_in_json(cli, routes, tmp_path: Pa
     assert err["ok"] is False and err["error"] == "run_failed"
     assert str(locked / "sub") in err["message"]
     assert err["fix"]
+
+
+def test_same_site_means_same_scheme_host_and_port_over_http(cli, routes) -> None:
+    """A crawl acts as the user in their own browser. A link that shares only the host name
+    -- another scheme, another port -- is a different site, and ftp: is not a web page."""
+    routes({
+        "sitemap": {"https://site.test/sitemap.xml": ["ftp://site.test/listed", "https://site.test/listed"]},
+        "links": {"https://site.test/": ["ftp://site.test/file", "http://site.test/insecure",
+                                         "https://site.test:8443/other-port", "/same"]},
+    })
+
+    code, from_sitemap, _ = cli("map", "https://site.test/")
+    _, from_links, _ = cli("map", "https://site.test/", "--no-sitemap", "--depth", "1")
+
+    assert from_sitemap["urls"] == ["https://site.test/listed"]
+    assert from_links["urls"] == ["https://site.test/", "https://site.test/same"]

@@ -25,6 +25,22 @@ def normalise(url: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, ""))
 
 
+def origin(url: str) -> tuple[str, str, int] | None:
+    """Scheme, host and port of a web URL; None for anything that is not http(s).
+
+    The host name alone is not a site: http: and https: of one host, or two ports, can be
+    different servers, and a crawl acting as the user should not wander onto either.
+    """
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return None
+    try:
+        port = p.port or (443 if p.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return p.scheme, p.hostname.lower(), port
+
+
 def sitemap_candidates(root: str) -> list[str]:
     p = urlparse(root)
     base = f"{p.scheme}://{p.netloc}"
@@ -51,7 +67,7 @@ def discover(
     links_provider=None,
 ) -> list[str]:
     root = normalise(root)
-    origin = urlparse(root).netloc
+    site = origin(root)
 
     if use_sitemap and sitemap_provider:
         found = [
@@ -59,7 +75,7 @@ def discover(
             for r in sitemap_provider(sitemap_candidates(root))
             if r.get("kind") == "url" and r.get("url")
         ]
-        same_site = [u for u in found if urlparse(u).netloc == origin]
+        same_site = [u for u in found if origin(u) == site]
         if same_site:
             kept = [u for u in _dedupe(same_site) if matches(u, include, exclude)]
             return kept[:max_urls]
@@ -86,7 +102,7 @@ def discover(
             if record.get("kind") != "url" or not record.get("url"):
                 continue
             u = normalise(record["url"])
-            if u in seen or urlparse(u).netloc != origin:
+            if u in seen or origin(u) != site:
                 continue
             seen.add(u)
             frontier.append(u)

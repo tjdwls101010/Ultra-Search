@@ -152,9 +152,11 @@ def links(pages: list[str], same_origin_as: str, *, per_url_ms: int = DEFAULT_PE
 
 
 def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
-    from urllib.parse import urljoin, urldefrag, urlparse
+    from urllib.parse import urljoin, urldefrag
 
-    origin = urlparse(same_origin_as).netloc
+    from _crawl import origin as origin_of
+
+    origin = origin_of(same_origin_as)
     out: list[dict] = []
     seen: set[str] = set()
     for rec in records:
@@ -167,7 +169,7 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
             if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
                 continue
             absolute, _ = urldefrag(urljoin(base, href))
-            if urlparse(absolute).netloc != origin or absolute in seen:
+            if origin_of(absolute) != origin or absolute in seen:
                 continue
             seen.add(absolute)
             out.append({"kind": "url", "url": absolute, "from": rec.get("url")})

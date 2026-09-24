@@ -11,7 +11,10 @@ $FAKE_ASIDE_CALLS/calls.jsonl so a contract test can assert what was actually ru
 
 FAKE_ASIDE_REPLAY names a JSONL file of transcript records to write after the prompt,
 for `exec` and for a resumed `exec --session` alike; a `{"__sleep__": SEC}` line pauses
-the writer, so a run can be held open at any point of its transcript.
+the writer, so a run can be held open at any point of its transcript, and a record
+carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains TEXT, so
+the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
+resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
 
 `repl` answers the page snippets from FAKE_ASIDE_REPL_ROUTES, a JSON file keyed by the
 snippet named on the snippet's `// snippet: <name>` line and then by URL:
@@ -97,7 +100,7 @@ SEARCH_SOURCES = {"sources": [
 ]}
 
 
-def replay(d: Path) -> bool:
+def replay(d: Path, prompt: str) -> bool:
     """Write the records from FAKE_ASIDE_REPLAY after the prompt already in ``d``.
 
     A recorded session's own opening prompt is skipped: the prompt this run was given, with
@@ -122,6 +125,10 @@ def replay(d: Path) -> bool:
         if isinstance(rec, dict) and "__sleep__" in rec:
             time.sleep(float(rec["__sleep__"]))
             continue
+        if isinstance(rec, dict) and "__if_prompt__" in rec:
+            if str(rec.pop("__if_prompt__")) not in prompt:
+                continue
+            line = json.dumps(rec, ensure_ascii=False)
         if opening and role == "user":
             opening = False
             continue
@@ -146,9 +153,10 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         if d is None:
             print(f"no such session {session}", file=sys.stderr)
             return 1
+        time.sleep(float(os.environ.get("FAKE_ASIDE_PROMPT_DELAY", "0")))
         append(d, {"role": "user", "content": [{"type": "text", "text": prompt}],
                    "timestamp": int(time.time() * 1000)})
-        if replay(d):
+        if replay(d, prompt):
             return 0
         answer = "이어서 답합니다."
         # The reply can land after this process exits -- which is exactly when a supervisor
@@ -182,7 +190,7 @@ def do_exec(prompt: str, session: str | None = None) -> int:
     print(f"Thinking: starting {sid}")
     sys.stdout.flush()
 
-    if replay(d):
+    if replay(d, prompt):
         return 0
 
     if SCENARIO == "slow":
@@ -259,13 +267,22 @@ def do_repl(code: str) -> int:
 
     snippet, args = snippet_of(code)
     if snippet is None:
-        print(json.dumps({"ok": True, "pwd": str(HOME / "u" / "0" / "sessions" / "fake")}))
-        return 0
+        # The fake does not run JavaScript. The one untagged program it answers is doctor's
+        # round trip, with what that program really prints; anything else is refused rather
+        # than answered with output the real sandbox would never produce.
+        if code.strip() == DOCTOR_PROBE:
+            print(json.dumps({"ok": True}))
+            return 0
+        print("the fake aside cannot evaluate arbitrary JavaScript", file=sys.stderr)
+        return 2
     routes = load_routes().get(snippet) or {}
     for rec in SNIPPETS[snippet](args, routes):
         print(json.dumps(rec, ensure_ascii=False))
         sys.stdout.flush()
     return 0
+
+
+DOCTOR_PROBE = "console.log(JSON.stringify({ok:true}));"
 
 
 def snippet_of(code: str) -> tuple[str | None, dict]:

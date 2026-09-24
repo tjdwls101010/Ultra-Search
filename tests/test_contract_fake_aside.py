@@ -126,10 +126,14 @@ def test_every_snippet_names_itself_on_its_first_line() -> None:
         assert js.read_text(encoding="utf-8").splitlines()[0] == f"// snippet: {js.stem}", js.name
 
 
-def test_the_fake_repl_prints_ndjson_for_code_that_is_not_a_snippet(tmp_path: Path) -> None:
-    p = run_fake(["repl", "console.log(1)"], tmp_path / "home", tmp_path / "calls")
+def test_the_fake_runs_no_javascript_beyond_doctors_round_trip(tmp_path: Path) -> None:
+    """The fake cannot evaluate JavaScript, so the only untagged program it answers is the
+    one doctor sends, with what that program really prints."""
+    probe = run_fake(["repl", "console.log(JSON.stringify({ok:true}));"], tmp_path / "home", tmp_path / "calls")
+    other = run_fake(["repl", "console.log(1)"], tmp_path / "home", tmp_path / "calls")
 
-    assert ndjson(p)[0]["ok"] is True
+    assert ndjson(probe) == [{"ok": True}]
+    assert other.returncode != 0 and ndjson(other) == []
 
 
 def test_fetch_batch_answers_each_url_and_a_missing_one_as_a_404(tmp_path: Path) -> None:

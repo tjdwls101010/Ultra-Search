@@ -113,6 +113,24 @@ def test_a_child_is_finished_only_when_its_last_turn_stopped(
     assert meta["orphan_children"] == ["MidToolChild0001", "NewTurnChild0001"]
 
 
+def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """`--timeout` is recorded by the process that starts the run but enforced by the detached
+    supervisor, which cannot be passed an argument -- meta.json is the only link. The reason
+    it records is what tells a later reader this was a deadline and not a `stop`."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    run = start(runs_dir)
+    run.update_meta(watch_timeout=0.6)
+
+    meta = supervise(run, settle=0.2)
+
+    assert meta["state"] == "abandoned"
+    assert meta["reason"] == "watch timeout"
+    assert meta["daemon_run_continues"] is True
+
+
 # --- meta.json ---------------------------------------------------------------------------
 
 

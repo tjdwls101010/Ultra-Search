@@ -210,12 +210,13 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     the run has to still be going when the follower starts, and the follower has to be the
     thing that waits."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "2")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "5")
     code, payload, _ = run_cli("search", "질문", "--background", "--runs-dir", str(runs_dir))
 
     assert code == 0
     assert first_run(payload)["state"] in ("starting", "running")
     nxt = payload["next"]
+    assert set(nxt) == {"command", "bash_timeout_ms", "run_in_background"}, "one action, nothing to do afterwards"
     assert nxt["run_in_background"] is True
     assert nxt["bash_timeout_ms"] >= 600_000
 
@@ -269,9 +270,11 @@ def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "fail")
 
     code, payload, _ = search(cli, "질문")
+    _, result, _ = cli("result", "--run", first_run(payload)["run_id"])
 
     assert code == 4
     assert first_run(payload)["state"] == "failed"
+    assert result["exit_code"] == 1, "aside's own exit status is kept for diagnosis"
 
 
 def test_a_run_without_answer_or_sources_exits_five(cli, monkeypatch) -> None:
@@ -591,12 +594,14 @@ def test_a_group_follow_exits_only_when_every_member_is_terminal(cli, monkeypatc
 
 
 def test_a_group_cursor_round_trips_per_member(cli) -> None:
-    _, payload, _ = search(cli, "A", "B")
+    """The members' transcripts differ in length, so one member's position applied to the
+    other lands mid-record and shows up as output."""
+    _, payload, _ = search(cli, "A", "a much longer prompt for the second member")
     _, first, _ = cli("log", "--group", payload["group"])
 
     _, _, again = cli("log", "--group", payload["group"], "--since", first["cursor"])
 
-    assert "answer:" not in again and "prompt:" not in again
+    assert rendered(again) == ""
 
 
 def test_child_activity_appears_in_the_parents_stream_and_its_cursor(cli, monkeypatch) -> None:
@@ -613,42 +618,61 @@ def test_child_activity_appears_in_the_parents_stream_and_its_cursor(cli, monkey
     assert "child 1 done." not in again and "부모 답" not in again
 
 
-@pytest.mark.parametrize("prompts", [("질문",), ("A", "B")], ids=["run", "group"])
+@pytest.mark.parametrize("group", [False, True], ids=["run", "group"])
 def test_a_timed_out_follow_continues_from_each_stream_and_collects_every_run(
-    cli, replay, aside_home: Path, prompts
+    cli, replay, aside_home: Path, group: bool
 ) -> None:
     """A watch that ran out of time hands back a command that picks up where it stopped --
-    in the parent and in every child, which advance independently -- and then hands back
-    the collection of every run it was watching."""
-    kid = aside_session(aside_home, "KidOfFollow00001", user("seen-child"))
-    replay([tool("subagent", "spawned", taskId="KidOfFollow00001"), calling(text="seen-parent"),
-            {"__sleep__": 7}, answer("new-parent")])
+    in the parent and in every child, each advancing on its own -- and then hands back the
+    collection of every run it was watching, including one that had already ended."""
+    kids = {"first-member": "KidOfFirst000001", "second-member-with-longer-prompt": "KidOfSecond00001"}
+    for prompt, kid in kids.items():
+        aside_session(aside_home, kid, user(f"seen-child of {prompt}"))
+    replay([
+        *({**tool("subagent", "spawned", taskId=kid), "__if_prompt__": prompt} for prompt, kid in kids.items()),
+        calling(text="seen-parent"),
+        {"__sleep__": 10},
+        answer("new-parent"),
+    ])
+    prompts = list(kids) if group else ["second-member-with-longer-prompt"]
     _, payload, _ = search(cli, *prompts, wait="0")
-    target = ["--group", payload["group"]] if len(prompts) > 1 else ["--run", first_run(payload)["run_id"]]
-    time.sleep(3)
+    runs = {r["run_id"]: prompt for r, prompt in zip(payload["runs"], prompts)}
+    target = ["--group", payload["group"]] if group else ["--run", next(iter(runs))]
+    assert poll(lambda: rendered(cli("log", *target)[2]).count("seen-child") == len(runs), timeout=15)
+    if group:
+        ended = next(iter(runs))
+        cli("stop", "--run", ended)
 
     code, waiting, text = cli("log", *target, "--follow", "--follow-timeout", "0")
-    with (kid / "messages.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(answer("new-child")) + "\n")
+    for prompt, kid in kids.items():
+        with (aside_home / "u" / "0" / "sessions" / f"2026-09-25_{kid}" / "messages.jsonl").open("a") as f:
+            f.write(json.dumps(answer(f"new-child of {prompt}")) + "\n")
     followed = subprocess.run(waiting["next"]["command"], shell=True, capture_output=True, text=True, timeout=60)
 
     assert code == 0
-    assert "says: seen-parent" in text and "seen-child" in text
+    assert "says: seen-parent" in text
     assert "run.still-running" in text
+    assert set(waiting["next"]) == {"command", "bash_timeout_ms", "run_in_background"}
     assert waiting["next"]["run_in_background"] is True
     assert followed.returncode == 0
     assert "seen-" not in rendered(followed.stdout)
-    for run in payload["runs"]:
-        prefix = f"[{run['run_id']}]" if len(prompts) > 1 else ""
-        assert (f"{prefix} " if prefix else "") + "answer: new-parent" in lines_of(followed.stdout)
-        assert f"{prefix}[child KidOfFollow00001] answer: new-child" in lines_of(followed.stdout)
+    for run_id, prompt in runs.items():
+        prefix = f"[{run_id}]" if group else ""
+        lines = lines_of(followed.stdout)
+        if group and run_id == ended:
+            assert not any(line.startswith(prefix) and "new-" in line for line in lines)
+            continue
+        assert (f"{prefix} " if prefix else "") + "answer: new-parent" in lines
+        assert f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}" in lines
     finished = json.loads(followed.stdout.splitlines()[-1])
     collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=20)
     result = json.loads(collected.stdout)
-    assert collected.returncode == 0
-    entries = result["runs"] if len(prompts) > 1 else [result]
-    assert [e["run_id"] for e in entries] == [r["run_id"] for r in payload["runs"]]
-    assert all(e["state"] == "completed" and e["answer"].startswith("new-parent") for e in entries)
+    entries = result["runs"] if group else [result]
+    assert [e["run_id"] for e in entries] == list(runs)
+    states = {e["run_id"]: e["state"] for e in entries}
+    assert collected.returncode == (4 if group else 0)
+    for run_id in runs:
+        assert states[run_id] == ("abandoned" if group and run_id == ended else "completed")
 
 
 def test_every_line_of_a_child_event_carries_the_childs_prefix(cli, replay, aside_home: Path) -> None:
@@ -856,7 +880,8 @@ def test_a_resumed_run_reports_the_new_answer_not_the_previous_one(cli, monkeypa
     """The transcript a resume appends to already ends in an answer. Until the new one lands,
     "the last assistant message" is the previous turn's."""
     run_id = finished_run_id(cli)
-    monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "1.0")
+    # Longer than one supervisor poll, so it sees the process exit before the answer lands.
+    monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "4")
 
     _, payload, _ = cli("resume", run_id, "후속 질문", "--wait", "30")
 
@@ -888,18 +913,21 @@ def test_resume_is_refused_while_the_run_is_still_going(cli, monkeypatch) -> Non
     cli("stop", "--run", run_id)
 
 
-def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path) -> None:
-    """A resumed session's transcript opens with the earlier turns. The log of the new run
-    waits for its own prompt and never replays what came before -- including the earlier
-    turn's children."""
+def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path, monkeypatch) -> None:
+    """A resumed session's transcript opens with the earlier turns. Until the new prompt
+    lands, everything in it belongs to earlier turns -- so the log shows nothing rather than
+    the previous turn, and afterwards it never replays what came before, including the
+    earlier turn's children."""
     aside_session(aside_home, "OldTurnSession01", user("old-prompt"),
                   tool("subagent", "spawned", taskId="OldKid0000000001"), answer("old-answer"))
     aside_session(aside_home, "OldKid0000000001", user("old-child"), answer("old-child-answer"))
     aside_session(aside_home, "NewKid0000000001", user("new-child"), answer("new-child-answer"))
-    replay([{"__sleep__": 6}, tool("subagent", "spawned", taskId="NewKid0000000001"), answer("new-answer")])
+    replay([tool("subagent", "spawned", taskId="NewKid0000000001"), answer("new-answer")])
+    monkeypatch.setenv("FAKE_ASIDE_PROMPT_DELAY", "8")
     _, payload, _ = cli("resume", "OldTurnSession01", "new-prompt", "--background")
     run_id = first_run(payload)["run_id"]
-    time.sleep(3)
+    # The earlier turns are copied on the supervisor's first pass, before the prompt exists.
+    time.sleep(4)
 
     _, waiting, text = cli("log", "--run", run_id)
     _, finished, followed = cli("log", "--run", run_id, "--since", str(waiting["cursor"]),
@@ -907,9 +935,9 @@ def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path) -> No
     _, _, repeated = cli("log", "--run", run_id, "--since", str(finished["cursor"]))
     _, _, from_start = cli("log", "--run", run_id)
 
-    assert "old-" not in rendered(text)
+    assert rendered(text) == ""
     assert "old-" not in rendered(followed)
-    for expected in ("new-answer", "new-child"):
+    for expected in ("prompt: new-prompt", "new-answer", "new-child"):
         assert expected in rendered(followed)
     assert rendered(repeated) == ""
     assert "prompt: new-prompt" in rendered(from_start) and "old-" not in rendered(from_start)
@@ -1025,9 +1053,10 @@ def test_a_quiet_run_is_flagged_but_left_alone_until_a_child_writes(cli, replay,
     replay([tool("subagent", "spawned", taskId="BusyChild0000001"), {"__sleep__": 40}])
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
-    time.sleep(6.5)
 
-    _, quiet, _ = cli("status", "--run", run_id, "--stall-after", "3")
+    quiet = poll(lambda: (lambda s: s if first_run(s)["possibly_stalled"] else None)(
+        cli("status", "--run", run_id, "--stall-after", "3")[1]), timeout=20)
+    assert quiet, "nothing has written for longer than --stall-after"
     with (child / "messages.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(tool("webfetch", "새 결과")) + "\n")
     busy = poll(lambda: (lambda s: s if not first_run(s)["possibly_stalled"] else None)(

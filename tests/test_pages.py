@@ -457,14 +457,16 @@ def test_file_names_stay_within_a_sane_length(cli, routes) -> None:
 # --- frontmatter -------------------------------------------------------------------------
 
 
-def test_frontmatter_can_be_left_off(cli, routes) -> None:
+def test_frontmatter_can_be_left_off_without_touching_the_body(cli, routes, tmp_path: Path) -> None:
     routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
 
-    _, payload, _ = cli("fetch", "https://example.org/a", "--no-frontmatter")
+    _, with_header, _ = cli("fetch", "https://example.org/a", "--out", str(tmp_path / "with"))
+    _, bare, _ = cli("fetch", "https://example.org/a", "--no-frontmatter", "--out", str(tmp_path / "bare"))
 
-    text = saved(item_of(payload))
-    assert not text.startswith("---")
-    assert "via:" not in text and "단어" in text
+    headed = saved(item_of(with_header))
+    body = headed.split("---\n", 2)[2].lstrip("\n")
+    assert saved(item_of(bare)) == body
+    assert body.startswith("단어")
 
 
 def test_a_title_with_quotes_does_not_break_the_frontmatter(cli, routes) -> None:

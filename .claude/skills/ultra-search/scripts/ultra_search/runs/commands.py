@@ -397,11 +397,11 @@ def _resumable_session(session_id: str) -> str:
 
     # The database is not enough on its own: an ephemeral CLI session has no row there at
     # all, so a busy one would pass the check above by simply not existing in it. The
-    # transcript is the surface that always exists -- a turn that has not reached a
-    # terminal assistant message is a turn still in flight.
+    # transcript is the surface that always exists -- a turn that has not ended is a turn
+    # still in flight.
     d = sessions.session_dir(home, session_id)
     events, _ = transcript.read_events(d / "messages.jsonl") if d else ([], 0)
-    if events and not (events[-1].kind == "assistant" and events[-1].stop_reason != "toolUse"):
+    if events and not transcript.turn_finished(events):
         raise ArgumentError(
             f"session {session_id} has a turn still in flight",
             fix="Wait for it to finish -- attaching to a live session waits for the current "

@@ -64,6 +64,49 @@ def test_a_run_whose_session_is_never_found_still_produces_an_answer(
     assert "stdout only" in result["note"]
 
 
+RECORDED_STDOUT = Path(__file__).parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "stdout.log"
+
+
+def test_without_a_session_the_answer_is_the_whole_final_message_from_stdout(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """Recorded from the real binary: tool calls in colour, their output dimmed, and the
+    final message after the last dimmed block. Without its line the answer is whatever came
+    after the last blank line -- here the tail of a subagent's report -- with colour codes."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "no_session")
+    monkeypatch.setenv("FAKE_ASIDE_STDOUT", str(RECORDED_STDOUT))
+    run = start(runs_dir)
+
+    supervise(run, discovery_deadline=0.5, settle=0.1)
+
+    result = result_of(run)
+    assert result["answer"] == ("The latest stable Python 3 release is **Python 3.14.8**, according to "
+                                "[python.org](https://www.python.org/downloads/).")
+    assert "https://www.python.org/downloads/" in [s["url"] for s in result["sources"]]
+    assert not any("\x1b" in s["url"] for s in result["sources"])
+
+
+def test_a_final_message_with_paragraphs_is_not_cut_at_its_last_blank_line(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """A real run's report -- headings, a table, a list of what it could not confirm -- came
+    back as its last paragraph alone, 386 of 10,080 characters."""
+    final = "## 결론\n\n첫 문단.\n\n| 날짜 | 출처 |\n|---|---|\n| 9/7 | https://e.test/a |\n\n### 확인하지 못한 항목\n\n- 하나"
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(
+        "조사하겠습니다.\x1b[0m\n\n\x1b[32mwebfetch\x1b[0m(url: \x1b[32m'https://e.test/a'\x1b[39m)\n\n"
+        "\x1b[2m > page text\n\nwith a blank line\x1b[0m\n" + final + "\x1b[0m\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "no_session")
+    monkeypatch.setenv("FAKE_ASIDE_STDOUT", str(stdout))
+    run = start(runs_dir)
+
+    supervise(run, discovery_deadline=0.5, settle=0.1)
+
+    assert result_of(run)["answer"] == final
+
+
 def test_a_child_still_running_at_parent_exit_is_named_not_hidden(
     runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
 ) -> None:

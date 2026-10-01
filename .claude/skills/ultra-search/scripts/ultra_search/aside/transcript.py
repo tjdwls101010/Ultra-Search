@@ -37,6 +37,8 @@ class Event:
     stop_reason: str = ""
     timestamp: int = 0
     unknown_blocks: list[dict] = field(default_factory=list)
+    #: For a `lifecycle` event, which boundary of a turn it marks: started, final-started, finished.
+    lifecycle: str = ""
 
 
 def read_events(path: str | Path, since: int = 0) -> tuple[list[Event], int]:
@@ -106,11 +108,40 @@ def parse_record(line: str, index: int = 0) -> Event:
             is_error=bool(obj.get("isError")),
             timestamp=ts,
         )
+    if role == "turn-lifecycle":
+        return Event(kind="lifecycle", index=index, raw=obj, lifecycle=str(obj.get("event") or ""), timestamp=ts)
     if role == "system-message":
         # Aside reports a subagent finishing this way. It is the one record a supervisor
         # most wants to see, so it gets a kind of its own rather than the raw fallback.
         return Event(kind="system", index=index, raw=obj, text=_as_text(obj.get("content")), timestamp=ts)
     return Event(kind="raw", index=index, raw=obj, content=json.dumps(obj, ensure_ascii=False), timestamp=ts)
+
+
+def turn_finished(events: list[Event]) -> bool:
+    """Whether the last turn in these events has ended, rather than stopped mid-work.
+
+    Since mid-September 2026 the daemon frames every turn with lifecycle records, and the last
+    one decides: `finished` closes the turn, and a `started` after it opens the next. The
+    final message comes after `final-started`, and other records -- a subagent's report --
+    can follow it, so the last message alone says nothing in this format.
+
+    A transcript with no lifecycle records is the earlier format, where the last event
+    decides: an assistant turn that stopped for a reason other than a tool call. With no stop
+    reason recorded, a turn that said something has ended -- requiring text when a reason
+    is recorded would call a child that honestly found nothing, and stopped, unfinished.
+    """
+    # 성진: 형식 두 가지를 함께 읽는다; 옛 형식의 근거는 260829 fixture뿐이니 그것들이 새 형식 녹화로 바뀌면 lifecycle 분기만 남긴다.
+    marks = [e.lifecycle for e in events if e.kind == "lifecycle"]
+    if marks:
+        return marks[-1] == "finished"
+    if not events:
+        return False
+    last = events[-1]
+    if last.kind != "assistant":
+        return False
+    if last.stop_reason:
+        return last.stop_reason != "toolUse"
+    return bool(last.text.strip())
 
 
 def _assistant(obj: dict, index: int, ts: int) -> Event:

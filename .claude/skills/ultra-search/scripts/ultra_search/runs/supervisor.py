@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 import time
@@ -28,6 +27,7 @@ from pathlib import Path
 
 from ultra_search import contract
 from ultra_search.aside import process, sessions, transcript
+from ultra_search.aside.exec_output import parse_exec_output
 from ultra_search.runs import evidence, registry
 
 POLL = 2.0
@@ -35,8 +35,6 @@ POLL = 2.0
 DISCOVERY_DEADLINE = 30.0
 #: After the parent exits, how long a child gets to reach a terminal state.
 SETTLE = 10.0
-
-_URL_IN_STDOUT = re.compile(r'https?://[^\s"\'<>)\]]+')
 
 
 def spawn(run_path: str | os.PathLike[str]) -> int:
@@ -265,26 +263,11 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
 def _from_stdout(stdout: str):
     """Everything recoverable when the session was never correlated.
 
-    The last non-tool block of stdout is the agent's final message, and the URLs it
-    printed along the way are the only source list available. Both are worse than the
-    transcript -- which is why this path is labelled -- but they are not nothing.
+    The agent's final message, and the URLs printed along the way as the only source list
+    available -- none of them known to have been opened. Both are worse than the
+    transcript, which is why this path is labelled, but they are not nothing.
     """
-    lines = [l.rstrip() for l in stdout.splitlines()]
-    answer_lines: list[str] = []
-    for line in reversed(lines):
-        if not line.strip():
-            if answer_lines:
-                break
-            continue
-        if line.startswith(("Thinking:", " > ")) or re.match(r"^\w+\(", line):
-            break
-        answer_lines.append(line)
-    answer = "\n".join(reversed(answer_lines)).strip()
-    urls: list[str] = []
-    for u in _URL_IN_STDOUT.findall(stdout):
-        u = u.rstrip('.,")')
-        if u not in urls:
-            urls.append(u)
+    answer, urls = parse_exec_output(stdout)
     sources = [evidence.Source(url=u, opened=False) for u in urls]
     return answer, sources, evidence.total_usage([]), False
 

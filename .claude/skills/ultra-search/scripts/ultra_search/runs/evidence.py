@@ -329,18 +329,6 @@ def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
 
 
 def child_is_terminal(events: list[transcript.Event]) -> bool:
-    """A child is done when its last turn stopped for a reason other than a tool call.
-
-    The LAST event, not the last assistant one: a user turn after a finished answer means a
-    new turn has begun. And the stop reason alone decides it -- requiring text as well would
-    call a child that honestly found nothing, and said so by stopping, an orphan.
-    """
-    if not events:
-        return False
-    last = events[-1]
-    if last.kind != "assistant":
-        return False
-    if last.stop_reason:
-        return last.stop_reason != "toolUse"
-    # No stop reason recorded at all: fall back to whether it produced anything.
-    return bool(last.text.strip())
+    """A child is done when its last turn has ended -- a new task given to it after an
+    answer is a turn still going."""
+    return transcript.turn_finished(events)

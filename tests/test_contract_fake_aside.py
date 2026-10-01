@@ -59,9 +59,41 @@ def test_the_fakes_transcript_reads_like_a_real_one(cli) -> None:
     _, _, text = cli("log", "--run", run_id, "--level", "raw")
 
     roles = [json.loads(line)["role"] for line in text.splitlines()[:-1] if line.startswith("{")]
-    assert roles == ["user", "assistant", "toolResult", "assistant"]
+    assert roles == ["turn-lifecycle", "user", "assistant", "toolResult", "turn-lifecycle", "assistant", "turn-lifecycle"]
     run = payload["runs"][0]
     assert run["answer"] and run["sources"] and run["usage"]["total_tokens"] > 0
+
+
+RECORDED = Path(__file__).resolve().parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "session"
+
+
+def lifecycle_frame(path: Path) -> list[str]:
+    """Where the lifecycle records sit among the others: what a turn's boundaries look like."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        out.append(rec["event"] if rec["role"] == "turn-lifecycle" else rec["role"])
+    return out
+
+
+def test_the_fake_frames_a_turn_the_way_the_recorded_daemon_does(tmp_path: Path) -> None:
+    """The recording is daemon 1.26.1001.14's. A turn opens with `started` before its prompt
+    and closes with `final-started`, the last message, then `finished`."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    run_fake(["exec", "질문"], home, calls)
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+
+    for frame in (lifecycle_frame(RECORDED / "messages.jsonl"), lifecycle_frame(session / "messages.jsonl")):
+        assert frame[:2] == ["started", "user"]
+        assert frame[-3:] == ["final-started", "assistant", "finished"]
+
+
+def test_the_fake_can_still_write_the_format_before_lifecycle_records(tmp_path: Path) -> None:
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    run_fake(["exec", "질문"], home, calls, FAKE_ASIDE_FORMAT="legacy")
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+
+    assert "turn-lifecycle" not in (session / "messages.jsonl").read_text(encoding="utf-8")
 
 
 def test_the_fake_records_the_argv_it_was_given(tmp_path: Path) -> None:
@@ -104,8 +136,8 @@ def test_a_replay_follows_the_prompt_and_keeps_a_torn_tail_torn(tmp_path: Path) 
     (session,) = (home / "u" / "0" / "sessions").iterdir()
     written = (session / "messages.jsonl").read_text()
     assert "recorded prompt" not in written, "the recording's own prompt is replaced by this run's"
-    assert json.loads(written.splitlines()[0])["content"][0]["text"] == "새 질문"
-    assert json.loads(written.splitlines()[1])["toolName"] == "websearch"
+    assert json.loads(written.splitlines()[1])["content"][0]["text"] == "새 질문"
+    assert json.loads(written.splitlines()[2])["toolName"] == "websearch"
     assert written.endswith('"content":"half')
 
 

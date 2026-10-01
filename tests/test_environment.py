@@ -382,7 +382,9 @@ def test_setup_installs_exactly_what_the_lockfile_pins(tmp_path: Path) -> None:
     assert code == 0 and payload["ok"] is True
     cwd, args = record.read_text().strip().split(" ", 1)
     assert args == "ci"
-    assert Path(cwd).resolve() == (SCRIPTS / "ultra_search" / "pages" / "converter").resolve()
+    # Where the reply says the packages go, which is where the lockfile is.
+    assert Path(cwd).resolve() == Path(payload["dir"]).resolve()
+    assert (Path(cwd) / "package-lock.json").is_file()
 
 
 @pytest.mark.parametrize("npm", ["#!/bin/sh\necho broken >&2\nexit 1\n", "#!/nonexistent/interpreter\n"])

@@ -22,7 +22,7 @@ import pytest
 from conftest import SCRIPTS, run_cli, tool
 
 FAKE = Path(__file__).resolve().parent / "fake_aside" / "aside"
-SNIPPETS = SCRIPTS / "ultra_search" / "pages" / "snippets"
+SNIPPET_NAMES = {"fetch_batch", "tab_one", "sitemap", "links"}
 
 
 def run_fake(args: list[str], home: Path, calls: Path, scenario: str = "simple", **env: str) -> subprocess.CompletedProcess:
@@ -30,9 +30,36 @@ def run_fake(args: list[str], home: Path, calls: Path, scenario: str = "simple",
     return subprocess.run([str(FAKE), *args], capture_output=True, text=True, env=full, timeout=60)
 
 
-def snippet(name: str, args: dict) -> str:
-    """The code the CLI sends for a snippet: its ARGS line, then the snippet file."""
-    return f"const ARGS = {json.dumps(args)};\n" + (SNIPPETS / f"{name}.js").read_text(encoding="utf-8")
+@pytest.fixture(scope="module")
+def sent(tmp_path_factory) -> dict[str, str]:
+    """The code the CLI sends for each page snippet, as the fake recorded it: a fetch that
+    escalates to a tab, and a map that reads a sitemap and then links."""
+    base = tmp_path_factory.mktemp("sent")
+    calls = base / "calls"
+    routes = base / "routes.json"
+    routes.write_text(json.dumps({
+        "fetch_batch": {"https://e.test/a": {"status": 200, "content_type": "text/html", "kind": "text",
+                                             "text": "<html><body><div id=root></div></body></html>"}},
+        "links": {"https://e.test/": []},
+    }))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("FAKE_ASIDE_", "ULTRA_SEARCH_"))}
+    env.update(ULTRA_SEARCH_ASIDE_BIN=str(FAKE), ULTRA_SEARCH_ASIDE_HOME=str(base / "home"),
+               FAKE_ASIDE_CALLS=str(calls), FAKE_ASIDE_REPL_ROUTES=str(routes))
+    for argv in (["fetch", "https://e.test/a"], ["map", "https://e.test/", "--depth", "1"]):
+        subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), *argv, "--runs-dir", str(base / "runs")],
+                       capture_output=True, text=True, env=env, timeout=120, check=False)
+    codes: dict[str, str] = {}
+    for line in (calls / "calls.jsonl").read_text(encoding="utf-8").splitlines():
+        argv = json.loads(line)["argv"]
+        if argv[1] == "repl" and argv[-1].startswith("const ARGS = "):
+            code = argv[-1]
+            codes[code.splitlines()[1].removeprefix("// snippet: ")] = code
+    return codes
+
+
+def snippet(sent: dict[str, str], name: str, args: dict) -> str:
+    """The code the CLI sends for a snippet, with these ARGS."""
+    return f"const ARGS = {json.dumps(args)};\n" + sent[name].split("\n", 1)[1]
 
 
 def ndjson(p: subprocess.CompletedProcess) -> list[dict]:
@@ -166,11 +193,10 @@ def test_a_signed_out_fake_has_an_empty_roster(tmp_path: Path) -> None:
 # --- what the fake promises about the browser --------------------------------------------
 
 
-def test_every_snippet_names_itself_on_its_first_line() -> None:
+def test_every_snippet_names_itself_on_its_first_line(sent: dict[str, str]) -> None:
     """The fake tells snippets apart by this line, so a snippet without it would reach the
     fake as unrecognised code and every page test would be answering the wrong question."""
-    for js in SNIPPETS.glob("*.js"):
-        assert js.read_text(encoding="utf-8").splitlines()[0] == f"// snippet: {js.stem}", js.name
+    assert set(sent) == SNIPPET_NAMES
 
 
 def test_the_fake_runs_no_javascript_beyond_doctors_round_trip(tmp_path: Path) -> None:
@@ -183,12 +209,12 @@ def test_the_fake_runs_no_javascript_beyond_doctors_round_trip(tmp_path: Path) -
     assert other.returncode != 0 and ndjson(other) == []
 
 
-def test_fetch_batch_answers_each_url_and_a_missing_one_as_a_404(tmp_path: Path) -> None:
+def test_fetch_batch_answers_each_url_and_a_missing_one_as_a_404(tmp_path: Path, sent: dict[str, str]) -> None:
     routes = tmp_path / "routes.json"
     routes.write_text(json.dumps({"fetch_batch": {"https://e.test/a": {"status": 200, "content_type": "text/html",
                                                                        "kind": "text", "text": "<p>a</p>"}}}))
 
-    p = run_fake(["repl", snippet("fetch_batch", {"urls": ["https://e.test/a", "https://e.test/missing"],
+    p = run_fake(["repl", snippet(sent, "fetch_batch", {"urls": ["https://e.test/a", "https://e.test/missing"],
                                                   "perUrlTimeoutMs": 1, "budgetMs": 1})],
                  tmp_path / "home", tmp_path / "calls", FAKE_ASIDE_REPL_ROUTES=str(routes))
 
@@ -198,11 +224,11 @@ def test_fetch_batch_answers_each_url_and_a_missing_one_as_a_404(tmp_path: Path)
     assert done == {"kind": "batch_done", "requested": 2, "elapsed_ms": 1, "hit_budget": False}
 
 
-def test_a_sequence_route_answers_in_call_order_and_repeats_its_last(tmp_path: Path) -> None:
+def test_a_sequence_route_answers_in_call_order_and_repeats_its_last(tmp_path: Path, sent: dict[str, str]) -> None:
     routes = tmp_path / "routes.json"
     steps = [{"status": 0, "kind": "error", "error": "timeout"}, {"status": 200, "kind": "text", "text": "ok"}]
     routes.write_text(json.dumps({"fetch_batch": {"https://e.test/a": {"sequence": steps}}}))
-    code = snippet("fetch_batch", {"urls": ["https://e.test/a"], "perUrlTimeoutMs": 1, "budgetMs": 1})
+    code = snippet(sent, "fetch_batch", {"urls": ["https://e.test/a"], "perUrlTimeoutMs": 1, "budgetMs": 1})
 
     got = [ndjson(run_fake(["repl", code], tmp_path / "home", tmp_path / "calls", FAKE_ASIDE_REPL_ROUTES=str(routes)))[0]
            for _ in range(3)]
@@ -210,7 +236,7 @@ def test_a_sequence_route_answers_in_call_order_and_repeats_its_last(tmp_path: P
     assert [g.get("error") or g["text"] for g in got] == ["timeout", "ok", "ok"]
 
 
-def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path) -> None:
+def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path, sent: dict[str, str]) -> None:
     routes = tmp_path / "routes.json"
     routes.write_text(json.dumps({
         "tab_one": {"https://e.test/t": {"status": 200, "kind": "text", "text": "<p>t</p>", "visible_text": "t"}},
@@ -220,7 +246,7 @@ def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path) -> Non
     env = {"FAKE_ASIDE_REPL_ROUTES": str(routes)}
 
     def call(name: str, args: dict) -> list[dict]:
-        return ndjson(run_fake(["repl", snippet(name, args)], tmp_path / "home", tmp_path / "calls", **env))
+        return ndjson(run_fake(["repl", snippet(sent, name, args)], tmp_path / "home", tmp_path / "calls", **env))
 
     assert call("tab_one", {"url": "https://e.test/t", "waitMs": 1, "settleMs": 1})[0]["via"] == "tab"
     assert call("tab_one", {"url": "https://e.test/gone", "waitMs": 1, "settleMs": 1})[0]["kind"] == "error"
@@ -285,7 +311,7 @@ def test_the_real_repl_fs_is_promise_based_without_sync_variants() -> None:
 # --- the snippets must only use globals the sandbox actually has --------------------------
 
 
-def test_no_snippet_reaches_for_a_global_the_sandbox_lacks() -> None:
+def test_no_snippet_reaches_for_a_global_the_sandbox_lacks(sent: dict[str, str]) -> None:
     """Measured absent from the REPL sandbox. A snippet that touches one of these throws
     before its own try block, so the rejection is swallowed by Promise.allSettled and the
     snippet reports an empty result instead of an error -- which is how sitemap discovery
@@ -293,10 +319,8 @@ def test_no_snippet_reaches_for_a_global_the_sandbox_lacks() -> None:
     forbidden = ("AbortController", "new URL(", "URLSearchParams", "structuredClone", "require(", "writeFileSync")
 
     offenders = []
-    for js in SNIPPETS.glob("*.js"):
-        code = "\n".join(
-            line for line in js.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//")
-        )
-        offenders += [f"{js.name}: {tok}" for tok in forbidden if tok in code]
+    for name, sent_code in sent.items():
+        code = "\n".join(line for line in sent_code.splitlines()[1:] if not line.strip().startswith("//"))
+        offenders += [f"{name}: {tok}" for tok in forbidden if tok in code]
 
     assert offenders == []

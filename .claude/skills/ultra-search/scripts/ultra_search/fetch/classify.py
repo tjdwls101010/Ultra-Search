@@ -11,18 +11,13 @@ anyone noticing it left, which is worse than an error, because an error gets ret
 """
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-#: The Node side of conversion, with the packages `setup` installs beside it.
-CONVERTER = Path(__file__).resolve().parent / "converter"
-TO_MARKDOWN = CONVERTER / "to_markdown.mjs"
-ANYDOC = CONVERTER / "node_modules" / ".bin" / "anydoc"
+from ultra_search import converter
 
 #: Below this many words a page is treated as a shell worth re-fetching in a real tab.
 #: Calibrated on real captures: x.com 0 and threads 9 fall under, while docs.aside.com
@@ -171,29 +166,28 @@ def extract_html(html: str, url: str = "", *, via: str = "fetch") -> Document:
         return Document(url=url, via=via, raw=html, status="challenge", kind="html",
                         error="the response is a bot challenge, not the page")
 
-    result = _run_to_markdown(html, url)
-    if not result.get("ok"):
-        return Document(url=url, via=via, raw=html, status="error", kind="html",
-                        error=str(result.get("message") or "extraction failed"))
+    result = converter.to_markdown(html, url)
+    if not result["ok"]:
+        return Document(url=url, via=via, raw=html, status="error", kind="html", error=result["error"])
 
-    markdown = result.get("markdown") or ""
-    words = int(result.get("words") or 0)
+    markdown = result["markdown"]
+    words = result["words"]
 
     if looks_like_challenge(html, words):
         return Document(url=url, via=via, raw=html, status="challenge", kind="html", words=words,
-                        title=result.get("title") or "", markdown=markdown,
+                        title=result["title"], markdown=markdown,
                         error="the response is a bot challenge, not the page")
 
     doc = Document(
         markdown=markdown,
-        title=result.get("title") or "",
+        title=result["title"],
         url=url,
         via=via,
         words=words,
         kind="html",
-        author=result.get("author") or "",
-        published=result.get("published") or "",
-        site=result.get("site") or "",
+        author=result["author"],
+        published=result["published"],
+        site=result["site"],
     )
     doc.raw = html
     doc.status = "ok" if words >= SHELL_WORD_THRESHOLD else "shell"
@@ -202,58 +196,18 @@ def extract_html(html: str, url: str = "", *, via: str = "fetch") -> Document:
     return doc
 
 
-def _run_to_markdown(html: str, url: str) -> dict:
-    payload = json.dumps({"html": html, "url": url}, ensure_ascii=False)
-    try:
-        proc = subprocess.run(
-            ["node", str(TO_MARKDOWN)],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except FileNotFoundError:
-        return {"ok": False, "message": "node is not installed; run `setup`"}
-    except subprocess.SubprocessError as e:
-        return {"ok": False, "message": f"markdown conversion failed: {e}"}
-    for line in (proc.stdout or "").splitlines():
-        if line.startswith("{"):
-            try:
-                return json.loads(line)
-            except ValueError:
-                continue
-    return {"ok": False, "message": (proc.stderr or "no output from to_markdown.mjs").strip()[:400]}
-
-
 # --- documents -------------------------------------------------------------------------
 
 
 def extract_document(path: str | Path) -> Document:
-    p = Path(path)
-    code, out, err = _run_anydoc(p)
-    if code == 0:
-        text = out or ""
-        if not count_words(text):
-            return Document(kind="document", status="unsupported", error="the document converted to no text")
-        return Document(markdown=text, title=_first_heading(text), kind="document",
-                        words=count_words(text), status="ok")
-    if code == 3:
-        # No text layer. Hosted OCR exists but ships the document to a third party, which
-        # nobody has agreed to -- so this is reported, not silently escalated.
-        return Document(kind="document", status="needs_ocr", error=(err or "").strip()[:300] or "the PDF has no text layer")
-    return Document(kind="document", status="unsupported", error=(err or out or "").strip()[:300] or f"anydoc exit {code}")
-
-
-def _run_anydoc(path: Path) -> tuple[int, str, str]:
-    if not ANYDOC.exists():
-        return 1, "", "document conversion is not installed; run `setup`"
-    try:
-        proc = subprocess.run([str(ANYDOC), str(path)], capture_output=True, text=True, timeout=300)
-    except FileNotFoundError:
-        return 1, "", "document conversion is not installed; run `setup`"
-    except subprocess.SubprocessError as e:
-        return 1, "", f"document conversion failed: {e}"
-    return proc.returncode, proc.stdout, proc.stderr
+    converted = converter.document_text(path)
+    if converted["status"] != "ok":
+        return Document(kind="document", status=converted["status"], error=converted["error"])
+    text = converted["text"]
+    if not count_words(text):
+        return Document(kind="document", status="unsupported", error="the document converted to no text")
+    return Document(markdown=text, title=_first_heading(text), kind="document",
+                    words=count_words(text), status="ok")
 
 
 def _first_heading(text: str) -> str:

@@ -13,33 +13,15 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ultra_search.contract import ArgumentError, is_safe_id
+from ultra_search.ids import is_safe_id, label_for
+from ultra_search.outcome import ArgumentError
 
 RUNS_SUBDIR = "runs"
-PAGES_SUBDIR = "pages"
-DEFAULT_DIRNAME = ".ultra-search"
-
-_LABEL_SAFE = re.compile(r"[^a-zA-Z0-9._-]+")
-
-
-def default_runs_dir() -> Path:
-    return Path.cwd() / DEFAULT_DIRNAME
-
-
-def resolve_runs_dir(explicit: str | os.PathLike[str] | None = None) -> Path:
-    return Path(explicit).expanduser().resolve() if explicit else default_runs_dir()
-
-
-def pages_dir(runs_root: str | os.PathLike[str]) -> Path:
-    d = Path(runs_root) / PAGES_SUBDIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 @dataclass
@@ -121,15 +103,6 @@ class Run:
         return load_meta(self.path)
 
 
-def _sanitize_label(label: str | None) -> str:
-    if not label:
-        return "run"
-    # Only the basename, and only safe characters: a label reaches here from the command
-    # line and would otherwise be able to name a directory outside the registry.
-    clean = _LABEL_SAFE.sub("-", Path(str(label)).name).strip("-.")
-    return clean[:40] or "run"
-
-
 def create_run(
     runs_root: str | os.PathLike[str],
     label: str | None = None,
@@ -139,7 +112,7 @@ def create_run(
     root = Path(runs_root) / RUNS_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%y%m%d-%H%M%S")
-    safe = _sanitize_label(label)
+    safe = label_for(label)
     for attempt in range(100):
         suffix = "" if attempt == 0 else f"-{secrets.token_hex(2)}"
         run_id = f"{stamp}{suffix}-{safe}"
@@ -269,24 +242,3 @@ def latest_group(runs_root: str | os.PathLike[str]) -> list[Run]:
 def new_group_name() -> str:
     return time.strftime("g%y%m%d-%H%M%S-") + secrets.token_hex(2)
 
-
-# --- correlation ------------------------------------------------------------------
-
-
-def marker_for(run_id: str) -> str:
-    return f"ultra-search:{run_id}"
-
-
-#: Said in every prompt: the browsing agent acts as the user, in their logged-in browser.
-SCOPE = "Read-only research: do not post, purchase, sign up, or change account settings."
-
-
-def decorate_prompt(prompt: str, marker: str) -> str:
-    """Append the research scope and the correlation marker to a prompt.
-
-    Aside's CLI never reports which session it created, and matching on the prompt text
-    cannot tell two parallel runs of the same question apart. The marker goes last and
-    says what it is, so the agent reads it as bookkeeping rather than as part of the
-    task; a run was measured answering the question correctly with it attached.
-    """
-    return f"{prompt}\n\n{SCOPE}\n\n({marker} — ignore this line)"

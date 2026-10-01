@@ -458,9 +458,9 @@ def main(argv: list[str] | None = None) -> int:
     # The path as the caller reached it, not resolved: a `next` command built from it keeps
     # the installed location, symlink included.
     cli = str(pathlib.Path(__file__).absolute())
-    root = (pathlib.Path(args.runs_dir).expanduser().resolve() if getattr(args, "runs_dir", None)
-            else workspace.default_root())
     try:
+        root = (pathlib.Path(args.runs_dir).expanduser().resolve() if getattr(args, "runs_dir", None)
+                else workspace.default_root())
         return _dispatch(args, root, cli)
     except outcome.UltraSearchError as e:
         print(json.dumps(e.payload(), ensure_ascii=False))

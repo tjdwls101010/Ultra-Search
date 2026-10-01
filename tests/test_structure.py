@@ -141,65 +141,94 @@ def direction_violations(source: str, module: str) -> list[str]:
 
 
 def reach_violations(source: str, module: str) -> list[str]:
-    """Uses of another unit beyond what its interface exports."""
+    """Uses of another unit beyond what its interface exports, under whatever name it was imported as."""
     mine = unit_of(module)
     out = []
     aliases: dict[str, str] = {}
     tree = ast.parse(source)
-    for target, names, line in imports(source, module):
-        parts = target.split(".")
-        theirs = unit_of(target) if parts[0] == PACKAGE_NAME else None
-        if target == PACKAGE_NAME:
-            for n in names:
-                if n in KINDS and n != mine:
-                    aliases[n] = n
-            continue
-        if theirs is None or theirs == mine:
-            continue
-        if len(parts) > 2:
-            out.append(f"{module}:{line} reaches into {target}")
-            continue
-        public = exported(theirs)
-        for n in names:
-            if n not in public:
-                out.append(f"{module}:{line} takes {theirs}.{n}, which {theirs} does not export")
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
-                if unit_of(a.name) not in (None, mine) and len(a.name.split(".")) > 2:
+                theirs = unit_of(a.name)
+                if theirs in (None, mine):
+                    continue
+                if len(a.name.split(".")) > 2:
                     out.append(f"{module}:{node.lineno} reaches into {a.name}")
+                elif a.asname:
+                    aliases[a.asname] = theirs
+        elif isinstance(node, ast.ImportFrom):
+            target = imports(ast.unparse(node), module)[0][0] if node.level else (node.module or "")
+            parts = target.split(".")
+            if target == PACKAGE_NAME:
+                for a in node.names:
+                    if a.name in KINDS and a.name != mine:
+                        aliases[a.asname or a.name] = a.name
+                continue
+            theirs = unit_of(target) if parts[0] == PACKAGE_NAME else None
+            if theirs in (None, mine):
+                continue
+            if len(parts) > 2:
+                out.append(f"{module}:{node.lineno} reaches into {target}")
+                continue
+            public = exported(theirs)
+            out += [f"{module}:{node.lineno} takes {theirs}.{a.name}, which {theirs} does not export"
+                    for a in node.names if a.name not in public]
+    for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
             unit = aliases[node.value.id]
             if node.attr not in exported(unit):
                 out.append(f"{module}:{node.lineno} uses {unit}.{node.attr}, which {unit} does not export")
+        # `ultra_search.runs.registry` spelled out after `import ultra_search.runs`
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) \
+                and isinstance(node.value.value, ast.Name) and node.value.value.id == PACKAGE_NAME:
+            unit = node.value.attr
+            if unit in KINDS and unit != mine and node.attr not in exported(unit):
+                out.append(f"{module}:{node.lineno} uses {unit}.{node.attr}, which {unit} does not export")
     return out
 
 
-def _mark_path_changes(tree: ast.AST) -> None:
-    for node in ast.walk(tree):
-        # sys.path.insert(...), sys.path.append(...), sys.path.extend(...)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("insert", "append", "extend"):
-            value = node.func.value
-            if isinstance(value, ast.Attribute):
-                value._parent = node  # type: ignore[attr-defined]
-        # sys.path = ..., sys.path += ...
-        if isinstance(node, (ast.Assign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for t in targets:
-                if isinstance(t, ast.Attribute):
-                    t._parent = node  # type: ignore[attr-defined]
+#: Calls that put something on the import path when given `sys.path`.
+_PATH_MUTATORS = ("insert", "append", "extend", "remove", "pop", "clear", "__setitem__")
+#: Code handed to a child process that edits its import path.
+_PATH_IN_CODE = ("sys.path.insert(", "sys.path.append(", "sys.path.extend(", "sys.path[", "sys.path =", "sys.path +=")
 
 
 def path_edits(source: str, where: str) -> list[str]:
+    """`sys.path` changed -- by attribute or under any name `path` was imported as -- in code or in
+    code handed to a child process, or PYTHONPATH set in an environment."""
     tree = ast.parse(source)
-    _mark_path_changes(tree)
+    names = {"sys.path"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "sys":
+            names |= {a.asname or a.name for a in node.names if a.name == "path"}
+
+    def is_path(expr: ast.AST) -> bool:
+        return ast.unparse(expr) in names
+
     out = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr == "path" and isinstance(node.value, ast.Name) \
-                and node.value.id == "sys" and getattr(node, "_parent", None) is not None:
-            out.append(f"{where}:{node.lineno} changes sys.path")
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and ("sys.path." in node.value or "PYTHONPATH" in node.value):
-            out.append(f"{where}:{node.lineno} sets the import path in a string")
+        line = getattr(node, "lineno", 0)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in _PATH_MUTATORS and is_path(node.func.value):
+            out.append(f"{where}:{line} changes sys.path")
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                if is_path(t) or (isinstance(t, ast.Subscript) and is_path(t.value)):
+                    out.append(f"{where}:{line} changes sys.path")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and any(c in node.value for c in _PATH_IN_CODE):
+            out.append(f"{where}:{line} changes sys.path in code it hands on")
+        # PYTHONPATH as an environment key: a dict key, a keyword, a subscript, or setenv's name.
+        if isinstance(node, ast.Dict) and any(isinstance(k, ast.Constant) and k.value == "PYTHONPATH" for k in node.keys):
+            out.append(f"{where}:{line} sets PYTHONPATH")
+        if isinstance(node, ast.keyword) and node.arg == "PYTHONPATH":
+            out.append(f"{where}:{node.value.lineno} sets PYTHONPATH")
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
+                and isinstance(node.slice, ast.Constant) and node.slice.value == "PYTHONPATH":
+            out.append(f"{where}:{line} sets PYTHONPATH")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("setenv", "putenv") \
+                and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "PYTHONPATH":
+            out.append(f"{where}:{line} sets PYTHONPATH")
     return out
 
 
@@ -238,15 +267,24 @@ def test_the_reach_checker_catches_a_module_past_an_interface() -> None:
     assert reach_violations("import ultra_search.aside.sessions\n", "cli")
     assert reach_violations("from ultra_search.runs import registry\n", "ultra_search.research.commands")
     assert reach_violations("from ultra_search import runs\nruns.registry.Run\n", "tests.test_x")
+    assert reach_violations("from ultra_search import runs as storage\nstorage.registry.Run\n", "tests.test_x")
+    assert reach_violations("import ultra_search.runs as storage\nstorage.registry.Run\n", "tests.test_x")
+    assert reach_violations("import ultra_search.runs\nultra_search.runs.registry.Run\n", "tests.test_x")
     assert not reach_violations("from ultra_search import runs\nruns.Run\n", "tests.test_x")
+    assert not reach_violations("from ultra_search import runs as storage\nruns = []\nruns.clear()\n", "tests.test_x")
 
 
 def test_the_path_checker_catches_every_way_of_editing_the_import_path() -> None:
     for source in ("import sys\nsys.path.insert(0, 'x')\n", "import sys\nsys.path.append('x')\n",
                    "import sys\nsys.path = ['x']\n", "import sys\nsys.path += ['x']\n",
-                   "code = 'import sys; sys.path.insert(0, \"x\")'\n", "env = {'PYTHONPATH': 'x'}\n"):
+                   "import sys\nsys.path[:] = ['x']\n", "from sys import path\npath.insert(0, 'x')\n",
+                   "from sys import path as p\np.append('x')\n",
+                   "code = 'import sys; sys.path.insert(0, \"x\")'\n", "env = {'PYTHONPATH': 'x'}\n",
+                   "env = dict(os.environ, PYTHONPATH='x')\n", "os.environ['PYTHONPATH'] = 'x'\n",
+                   "monkeypatch.setenv('PYTHONPATH', 'x')\n"):
         assert path_edits(source, "x"), source
-    assert not path_edits("import sys\nprint(sys.path)\n", "x")
+    for source in ("import sys\nprint(sys.path)\n", "message = 'Do not set PYTHONPATH'\n", "path = []\npath.append(1)\n"):
+        assert not path_edits(source, "x"), source
 
 
 def test_the_entry_point_checker_and_the_test_path_checker_catch_their_cases() -> None:

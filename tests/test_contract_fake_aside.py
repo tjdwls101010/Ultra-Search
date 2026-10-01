@@ -142,6 +142,20 @@ def test_a_replay_follows_the_prompt_and_keeps_a_torn_tail_torn(tmp_path: Path) 
     assert written.endswith('"content":"half')
 
 
+def test_a_replay_that_stops_mid_work_leaves_the_turn_open(tmp_path: Path) -> None:
+    """Only a recording that ends on a finished answer gets the `finished` record the daemon
+    would write; one that ends mid-tool is a turn still going, or cut off."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({"role": "assistant", "content": [{"type": "toolCall", "name": "webfetch", "arguments": {}}],
+                                  "stopReason": "toolUse"}) + "\n" + json.dumps(tool("webfetch", "r")) + "\n")
+
+    run_fake(["exec", "질문"], home, calls, FAKE_ASIDE_REPLAY=str(replay))
+
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+    assert lifecycle_frame(session / "messages.jsonl") == ["started", "user", "assistant", "toolResult"]
+
+
 def test_a_signed_out_fake_has_an_empty_roster(tmp_path: Path) -> None:
     p = run_fake(["account", "list"], tmp_path / "home", tmp_path / "calls", FAKE_ASIDE_ACCOUNTS="none")
 

@@ -16,7 +16,9 @@ the earlier format, which has none of these records.
 
 FAKE_ASIDE_REPLAY names a JSONL file of transcript records to write after the prompt,
 for `exec` and for a resumed `exec --session` alike; a `{"__sleep__": SEC}` line pauses
-the writer, so a run can be held open at any point of its transcript, and a record
+the writer, so a run can be held open at any point of its transcript, a
+`{"__after_exit__": SEC}` line lets the process exit and has the rest written SEC later,
+the way the daemon's last writes can land after `aside exec` has returned, and a record
 carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains TEXT, so
 the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
 resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
@@ -133,9 +135,9 @@ def replay(d: Path, prompt: str) -> bool:
     A recorded session's own opening prompt is skipped, with the `started` record before it:
     the prompt this run was given, with its marker, is already there, exactly as the real
     binary writes it. A recording made before the lifecycle records existed gets its turn
-    closed with `finished`, as the daemon would close it now. A recording that ends without
-    a newline ends the same way here -- half a record, as a transcript looks while its
-    writer is mid-line.
+    closed with `finished` when it ends on a finished answer, as the daemon would close it
+    now; one that ends mid-work stays open. A recording that ends without a newline ends the
+    same way here -- half a record, as a transcript looks while its writer is mid-line.
     """
     source = os.environ.get("FAKE_ASIDE_REPLAY")
     if not source:
@@ -144,6 +146,7 @@ def replay(d: Path, prompt: str) -> bool:
     lines = text.splitlines()
     opening = True
     recorded_lifecycle = False
+    answered = False
     for i, line in enumerate(lines):
         if not line.strip():
             continue
@@ -154,6 +157,11 @@ def replay(d: Path, prompt: str) -> bool:
         role = rec.get("role") if isinstance(rec, dict) else None
         if isinstance(rec, dict) and "__sleep__" in rec:
             time.sleep(float(rec["__sleep__"]))
+            continue
+        if isinstance(rec, dict) and "__after_exit__" in rec:
+            if os.fork() != 0:
+                return True
+            time.sleep(float(rec["__after_exit__"]))
             continue
         if isinstance(rec, dict) and "__if_prompt__" in rec:
             if str(rec.pop("__if_prompt__")) not in prompt:
@@ -171,7 +179,8 @@ def replay(d: Path, prompt: str) -> bool:
         torn = i == len(lines) - 1 and not text.endswith("\n")
         with (d / "messages.jsonl").open("a", encoding="utf-8") as f:
             f.write(line if torn else line + "\n")
-    if not recorded_lifecycle and text.endswith("\n"):
+        answered = role == "assistant" and rec.get("stopReason") not in (None, "", "toolUse") and not torn
+    if not recorded_lifecycle and answered:
         lifecycle(d, "finished")
     return True
 

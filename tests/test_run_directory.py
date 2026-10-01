@@ -14,13 +14,14 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from ultra_search.aside import sessions
 from ultra_search.runs import registry, supervisor
-from conftest import SCRIPTS, aside_session, answer, calling, tool, user
+from conftest import SCRIPTS, aside_session, answer, calling, tool, turn, user
 
 SESSIONS = Path(__file__).parent / "fixtures" / "sessions"
 
@@ -153,6 +154,45 @@ def test_a_child_is_finished_only_when_its_last_turn_stopped(
 
     assert meta["state"] == "completed_with_orphans"
     assert meta["orphan_children"] == ["MidToolChild0001", "NewTurnChild0001"]
+
+
+@pytest.mark.parametrize("between", [[], [{"role": "system-message", "content": "Relevant skill docs are available."}]],
+                         ids=["adjacent", "system-message-between"])
+def test_a_child_that_reported_mid_turn_is_still_running(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, between: list
+) -> None:
+    """Recorded from a real child: it messages its parent and stops with `stop` well before
+    its turn's `final-started` and final answer. Its turn is only over at `finished` -- read
+    from the prompt it got in this run, which is where its transcript is cut, and real turns
+    can carry a system message between `started` and that prompt."""
+    now = int(time.time() * 1000) + 60_000
+    aside_session(aside_home, "ReportingChild01",
+                  {**turn("started"), "timestamp": now}, *between, {**user("조사해"), "timestamp": now},
+                  {**calling(("webfetch", {"url": "https://x.test"})), "timestamp": now},
+                  {**tool("webfetch", "page"), "timestamp": now}, {**answer("중간 보고"), "timestamp": now})
+    replay([tool("subagent", "spawned", taskId="ReportingChild01"), answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed_with_orphans"
+    assert meta["orphan_children"] == ["ReportingChild01"]
+
+
+def test_the_parents_turn_is_waited_for_until_it_has_finished(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The process can exit before the daemon's last writes land. A message that stopped
+    earlier in the turn is not its end; `finished` is."""
+    replay([turn("started"), user("recorded prompt"), calling(("webfetch", {"url": "https://x.test"})),
+            tool("webfetch", "page"), answer("중간 보고"), {"__after_exit__": 1.0},
+            turn("final-started"), answer("최종 답"), turn("finished")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=5.0)
+
+    assert meta["state"] == "completed"
+    assert result_of(run)["answer"] == "최종 답"
 
 
 def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(

@@ -163,10 +163,16 @@ def turn_start_index(events: list[transcript.Event], marker: str) -> int | None:
 
 
 def has_terminal_answer(events: list[transcript.Event]) -> bool:
-    """Whether an assistant turn has finished here, as opposed to stopping to call a tool.
+    """Whether the turn has given its answer, as opposed to stopping to call a tool.
 
-    An empty answer still counts: a run that honestly found nothing has finished.
+    Where the daemon frames turns, only `finished` says so: a message that stopped earlier
+    in the turn -- a report to the parent, a pause -- is followed by more work and the final
+    answer. In the earlier format, any message that stopped for another reason than a tool
+    call is the answer. An empty answer still counts: a run that honestly found nothing has
+    finished.
     """
+    if any(e.kind == "lifecycle" for e in events):
+        return transcript.turn_finished(events)
     for e in events:
         if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
             return True
@@ -301,16 +307,30 @@ def turn_of(run: registry.Run) -> Turn:
     start = turn_start_index(events, marker)
     if start is None:
         return Turn(observed=False)
-    mine = events[start:]
+    opened_at = events[start].timestamp
+    mine = events[_framed(events, start):]
     children = child_session_ids(mine)
     return Turn(
         observed=True,
         start_line=mine[0].index,
         events=mine,
         children=children,
-        child_events={cid: _from(transcript.read_events(run.child_transcript(cid))[0], mine[0].timestamp)
+        child_events={cid: _from(transcript.read_events(run.child_transcript(cid))[0], opened_at)
                       for cid in children},
     )
+
+
+def _framed(events: list[transcript.Event], prompt: int) -> int:
+    """Where the turn that opens with the prompt at ``prompt`` begins: at its `started`
+    record, if it has one. A turn cut at its prompt has lost the record that says it began,
+    and without it a message that stopped mid-turn reads as the turn's end. Records can sit
+    between the two -- a system message, attachment metadata -- but no conversation does."""
+    i = prompt - 1
+    while i >= 0 and events[i].kind not in ("user", "assistant", "tool_result"):
+        if events[i].kind == "lifecycle" and events[i].lifecycle == "started":
+            return i
+        i -= 1
+    return prompt
 
 
 def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
@@ -324,7 +344,7 @@ def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
     if since:
         for i, e in enumerate(events):
             if e.kind == "user" and e.timestamp >= since:
-                return events[i:]
+                return events[_framed(events, i):]
     return events
 
 

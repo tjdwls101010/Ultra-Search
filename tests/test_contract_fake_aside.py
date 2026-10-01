@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -220,16 +221,18 @@ def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path) -> Non
 
 @pytest.mark.live
 def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) -> None:
-    """If this fails and the fake's equivalent passes, the fake has drifted."""
-    marker = "ultra-search:contract-live"
+    """If this fails and the fake's equivalent passes, the fake has drifted. The marker is new
+    each time: Aside keeps sessions for weeks, so an earlier run's would match as well."""
+    run_id = f"contract-live-{os.getpid()}-{int(time.time())}"
+    marker = f"ultra-search:{run_id}"
     prompt = f"Reply with the single word OK.\n\n({marker} — ignore this line)"
-    subprocess.run(["aside", "exec", prompt], capture_output=True, text=True, timeout=180)
+    subprocess.run(["aside", "exec", "--effort", "low", prompt], capture_output=True, text=True, timeout=180)
 
     p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "sessions", "--mine", "--search", marker,
                         "--runs-dir", str(tmp_path)], capture_output=True, text=True, timeout=60)
 
     found = json.loads(p.stdout)["sessions"]
-    assert [s["run_id"] for s in found] == ["contract-live"], "the real transcript must be findable by its prompt marker"
+    assert [s["run_id"] for s in found] == [run_id], "the real transcript must be findable by its prompt marker"
 
 
 @pytest.mark.live

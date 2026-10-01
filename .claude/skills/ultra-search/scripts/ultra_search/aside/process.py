@@ -20,7 +20,7 @@ DEFAULT_BIN = "aside"
 #: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
 #: entirely while still writing full transcripts to disk.
 VERIFIED_VERSION = "1.26.810.1915"
-VERIFIED_DAEMON_VERSION = "1.26.829.1514"
+VERIFIED_DAEMON_VERSION = "1.26.1001.14"
 DAEMON_URL = "http://127.0.0.1:21420/"
 
 

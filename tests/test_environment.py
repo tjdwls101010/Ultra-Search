@@ -21,7 +21,7 @@ import pytest
 
 from conftest import SCRIPTS, run_cli
 
-VERIFIED_DAEMON = {"ready": True, "version": "1.26.829.1514", "runningSessionCount": 0,
+VERIFIED_DAEMON = {"ready": True, "version": "1.26.1001.14", "runningSessionCount": 0,
                    "semaphore": {"available": 4, "capacity": 4}}
 
 

@@ -202,19 +202,25 @@ def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) ->
 
 @pytest.mark.live
 def test_the_real_repl_still_lacks_the_globals_the_snippets_avoid() -> None:
-    """The snippets work around a specific sandbox shape. If that shape widens, the
-    workarounds become unnecessary complexity -- and if it narrows further, they break."""
+    """The snippets work around a specific sandbox shape. If that shape narrows further, they
+    break; if it widens, a workaround may become unnecessary.
+
+    Daemon 1.26.923 added URL, URLSearchParams and structuredClone, which 1.26.829 lacked.
+    The snippets keep avoiding them so that both run, so only what is still absent -- and
+    what the snippets do use -- is pinned here."""
     code = (
-        'const r={}; for (const n of ["URL","AbortController","fetch","Buffer","fs","path","pwd"]) '
+        'const r={}; for (const n of ["AbortController","require","fetch","Buffer","fs","path","pwd"]) '
         '{ try { r[n]=typeof eval(n); } catch(e) { r[n]="undefined"; } } console.log(JSON.stringify(r));'
     )
     p = subprocess.run(["aside", "repl", code], capture_output=True, text=True, timeout=120)
     got = json.loads(next(line for line in p.stdout.splitlines() if line.startswith("{")))
 
-    assert got["URL"] == "undefined"
     assert got["AbortController"] == "undefined"
+    assert got["require"] == "undefined"
     assert got["fetch"] == "function"
+    assert got["Buffer"] == "function"
     assert got["fs"] == "object"
+    assert got["pwd"] == "string"
 
 
 @pytest.mark.live

@@ -287,7 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
         "result",
         help="A finished run's answer and sources.",
         description="Each run's answer with <citation> tags resolved to URL footnotes, and every source the run and its "
-        "children touched -- always as a runs list, one entry per run. empty means no answer and no sources, not that a claim was disproved; a textual "
+        "children touched -- always as a runs list, one entry per run. Results are saved in the runs directory and "
+        "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
         "`opened` means a page-opening tool (webfetch, repl, read_file) returned that URL: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"

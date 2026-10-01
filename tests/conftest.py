@@ -12,7 +12,6 @@ import io
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -21,12 +20,6 @@ TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 SCRIPTS = REPO / ".claude" / "skills" / "ultra-search" / "scripts"
 FIXTURES = TESTS / "fixtures"
-
-sys.path.insert(0, str(SCRIPTS))
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line("markers", "live: needs a running Aside app; skipped unless -m live is given")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

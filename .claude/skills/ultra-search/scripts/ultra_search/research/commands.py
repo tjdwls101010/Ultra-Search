@@ -26,38 +26,26 @@ import shlex
 import time
 from pathlib import Path
 
-from ultra_search import contract
-from ultra_search.aside import process, sessions, transcript
-from ultra_search.contract import FAILED_STATES, TERMINAL_STATES, ArgumentError, RunFailed
-from ultra_search.runs import evidence, follow, registry, supervisor
+from ultra_search import aside, outcome, runs
+from ultra_search.ids import is_safe_id
+from ultra_search.outcome import ArgumentError, RunFailed
+from ultra_search.research import evidence, follow, supervisor
+from ultra_search.research.marker import marker_for, run_id_in
+from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
 
 
-def dispatch(args) -> int:
-    runs_root = registry.resolve_runs_dir(args.runs_dir)
-    return {
-        "search": _search,
-        "resume": _resume,
-        "status": _status,
-        "log": _log,
-        "result": _result,
-        "show": _show,
-        "stop": _stop,
-        "sessions": _sessions,
-    }[args.command](args, runs_root)
-
-
-def _sessions(args, runs_root: Path) -> int:
+def sessions(*, limit: int, mine: bool, search: str | None) -> int:
     # A filter searches everything and then takes the first N matches. Reading a page first
     # and filtering it afterwards reports "no match" for a session that is simply further
     # down the list, which is indistinguishable from its not existing.
-    scan = 10_000 if (args.mine or args.search) else args.limit
-    rows = sessions.session_summaries(limit=scan)
-    if args.mine:
+    scan = 10_000 if (mine or search) else limit
+    rows = [_session_row(s) for s in aside.session_summaries(limit=scan)]
+    if mine:
         rows = [r for r in rows if r["started_by_ultra_search"]]
-    if args.search:
-        needle = args.search.lower()
+    if search:
+        needle = search.lower()
         rows = [r for r in rows if needle in (r["prompt"] or "").lower()]
-    rows = rows[: args.limit]
+    rows = rows[:limit]
     print(json.dumps(
         {
             "ok": True,
@@ -67,34 +55,48 @@ def _sessions(args, runs_root: Path) -> int:
         },
         ensure_ascii=False,
     ))
-    return 0 if rows else contract.EXIT_EMPTY
+    return 0 if rows else outcome.EXIT_EMPTY
 
 
-def _targets(args, runs_root: Path) -> list:
-    if getattr(args, "all", False):
-        runs = registry.all_runs(runs_root)
-        if not runs:
-            raise ArgumentError(f"no runs under {runs_root}", fix="Start one with `search`.")
-        return runs
-    if getattr(args, "run", None):
-        return [registry.resolve_run(runs_root, args.run)]
-    if getattr(args, "group", None):
-        return registry.resolve_group(runs_root, args.group)
-    return registry.latest_group(runs_root)
+def _session_row(summary: dict) -> dict:
+    """A session as `sessions` lists it. The marker is read before the prompt is shortened for
+    display: it sits at the end."""
+    run_id = run_id_in(summary["opening_prompt"])
+    return {
+        "session_id": summary["session_id"],
+        "date": summary["date"],
+        "modified_at": summary["modified_at"],
+        "prompt": " ".join(summary["opening_prompt"].split())[:160],
+        "started_by_ultra_search": bool(run_id),
+        "run_id": run_id,
+    }
+
+
+def _targets(root: Path, run: str | None, group: str | None, every: bool = False) -> list:
+    if every:
+        found = runs.all_runs(root)
+        if not found:
+            raise ArgumentError(f"no runs under {root}", fix="Start one with `search`.")
+        return found
+    if run:
+        return [runs.resolve_run(root, run)]
+    if group:
+        return runs.resolve_group(root, group)
+    return runs.latest_group(root)
 
 
 # --- status ---------------------------------------------------------------------------
 
 
-def _status(args, runs_root: Path) -> int:
+def status(root: Path, *, run: str | None, group: str | None, stall_after: float) -> int:
     now = time.time()
-    runs = _targets(args, runs_root)
-    entries = [_status_entry(r, now, args.stall_after) for r in runs]
+    targets = _targets(root, run, group)
+    entries = [_status_entry(r, now, stall_after) for r in targets]
     print(json.dumps({"ok": True, "command": "status", "runs": entries}, ensure_ascii=False))
-    return contract.EXIT_RUN_FAILED if any(e["state"] in contract.FAILED_STATES for e in entries) else 0
+    return outcome.EXIT_RUN_FAILED if any(e["state"] in FAILED_STATES for e in entries) else 0
 
 
-def _status_entry(run: registry.Run, now: float, stall_after: float) -> dict:
+def _status_entry(run: runs.Run, now: float, stall_after: float) -> dict:
     meta = run.meta()
     # This run's turn and its children: a resumed run's transcript also holds earlier turns,
     # whose children and tokens belong to the runs that asked for them.
@@ -105,7 +107,7 @@ def _status_entry(run: registry.Run, now: float, stall_after: float) -> dict:
     last = max(float(meta.get("last_activity_at") or 0), run.last_write())
     idle = round(now - last, 1) if last else None
     state = meta.get("state") or "unknown"
-    live = state not in contract.TERMINAL_STATES
+    live = state not in TERMINAL_STATES
     entry = {
         **run_summary(run),
         "label": meta.get("label"),
@@ -122,7 +124,7 @@ def _status_entry(run: registry.Run, now: float, stall_after: float) -> dict:
     if meta.get("session_id"):
         # Aside documents a run pausing for an approval or MFA prompt. It has never been
         # observed here, so it is surfaced rather than interpreted.
-        susp = sessions.db_suspension(None, meta["session_id"])
+        susp = aside.suspension(meta["session_id"])
         if susp:
             entry["suspension"] = susp
     if entry["possibly_stalled"]:
@@ -133,7 +135,7 @@ def _status_entry(run: registry.Run, now: float, stall_after: float) -> dict:
     return entry
 
 
-def run_summary(run: registry.Run) -> dict:
+def run_summary(run: runs.Run) -> dict:
     meta = run.meta()
     entry = {"run_id": run.run_id, "state": meta.get("state") or "unknown"}
     notes = []
@@ -151,15 +153,15 @@ def run_summary(run: registry.Run) -> dict:
 # --- log ------------------------------------------------------------------------------
 
 
-def next_step(runs: list, group: str | None, runs_root: Path, script: str, *, since=None) -> dict:
-    pending = any(r.meta().get("state") not in contract.TERMINAL_STATES for r in runs)
-    target = ["--group", group] if group else ["--run", runs[0].run_id]
-    argv = ["log" if pending else "result", *target, "--runs-dir", str(runs_root)]
+def next_step(targets: list, group: str | None, root: Path, cli: str, *, since=None) -> dict:
+    pending = any(r.meta().get("state") not in TERMINAL_STATES for r in targets)
+    target = ["--group", group] if group else ["--run", targets[0].run_id]
+    argv = ["log" if pending else "result", *target, "--runs-dir", str(root)]
     if pending:
         argv += ["--follow"]
         if since is not None:
             argv += ["--since", str(since)]
-    quoted_script = script.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    quoted_script = cli.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
     return {
         "command": f'python3 "{quoted_script}" {shlex.join(argv)}',
         "bash_timeout_ms": 600_000 if pending else 120_000,
@@ -167,23 +169,24 @@ def next_step(runs: list, group: str | None, runs_root: Path, script: str, *, si
     }
 
 
-def _log(args, runs_root: Path) -> int:
-    runs = _targets(args, runs_root)
+def log(root: Path, *, run: str | None, group: str | None, since: str, level: str, follow_: bool,
+        follow_timeout: float, heartbeat: float | None, cli: str) -> int:
+    targets = _targets(root, run, group)
     cursor = follow.follow(
-        runs,
-        level=args.level,
-        since=args.since,
-        follow=args.follow,
-        follow_timeout=args.follow_timeout,
-        heartbeat=args.heartbeat,
+        targets,
+        level=level,
+        since=since,
+        follow=follow_,
+        follow_timeout=follow_timeout,
+        heartbeat=heartbeat,
     )
-    group = None if args.run else (args.group or runs[0].meta().get("group"))
+    group = None if run else (group or targets[0].meta().get("group"))
     print(json.dumps({
         "ok": True,
         "command": "log",
-        "runs": [run_summary(r) for r in runs],
+        "runs": [run_summary(r) for r in targets],
         "cursor": cursor,
-        "next": next_step(runs, group, runs_root, args.script_path, since=cursor),
+        "next": next_step(targets, group, root, cli, since=cursor),
     }, ensure_ascii=False))
     return 0
 
@@ -191,22 +194,22 @@ def _log(args, runs_root: Path) -> int:
 # --- result ---------------------------------------------------------------------------
 
 
-def _result(args, runs_root: Path) -> int:
-    runs = _targets(args, runs_root)
-    entries = [_result_entry(r, args.sources_only) for r in runs]
+def result(root: Path, *, run: str | None, group: str | None, sources_only: bool) -> int:
+    targets = _targets(root, run, group)
+    entries = [_result_entry(r, sources_only) for r in targets]
     print(json.dumps({"ok": True, "command": "result", "runs": entries}, ensure_ascii=False))
 
     states = [e["state"] for e in entries]
-    if any(s in contract.FAILED_STATES for s in states):
-        return contract.EXIT_RUN_FAILED
-    if any(s not in contract.TERMINAL_STATES for s in states):
-        return contract.EXIT_RUN_FAILED
+    if any(s in FAILED_STATES for s in states):
+        return outcome.EXIT_RUN_FAILED
+    if any(s not in TERMINAL_STATES for s in states):
+        return outcome.EXIT_RUN_FAILED
     if all(e.get("empty") for e in entries):
-        return contract.EXIT_EMPTY
+        return outcome.EXIT_EMPTY
     return 0
 
 
-def _result_entry(run: registry.Run, sources_only: bool) -> dict:
+def _result_entry(run: runs.Run, sources_only: bool) -> dict:
     meta = run.meta()
     state = meta.get("state") or "unknown"
     path = run.path / "result.json"
@@ -216,7 +219,7 @@ def _result_entry(run: registry.Run, sources_only: bool) -> dict:
             "state": state,
             "sources": [],
             "empty": True,
-            "note": "no result yet" if state not in contract.TERMINAL_STATES else "the run ended without writing a result",
+            "note": "no result yet" if state not in TERMINAL_STATES else "the run ended without writing a result",
             **run_summary(run),
         }
     try:
@@ -232,40 +235,40 @@ def _result_entry(run: registry.Run, sources_only: bool) -> dict:
 # --- show -----------------------------------------------------------------------------
 
 
-def _show(args, runs_root: Path) -> int:
-    run = registry.resolve_run(runs_root, args.run) if args.run else registry.latest_run(runs_root)
-    turn = evidence.turn_of(run)
+def show(root: Path, *, run: str | None, source: str | None, item: int | None) -> int:
+    target = runs.resolve_run(root, run) if run else runs.latest_run(root)
+    turn = evidence.turn_of(target)
 
-    if args.item is not None:
+    if item is not None:
         results = turn.tool_results()
-        if not 0 <= args.item < len(results):
+        if not 0 <= item < len(results):
             raise ArgumentError(
-                f"run {run.run_id} has {len(results)} tool result(s); no item {args.item}",
+                f"run {target.run_id} has {len(results)} tool result(s); no item {item}",
                 fix="Index them with `log --level steps`.",
             )
-        e = results[args.item]
-        payload = {"ok": True, "command": "show", "run_id": run.run_id, "item": args.item,
+        e = results[item]
+        payload = {"ok": True, "command": "show", "run_id": target.run_id, "item": item,
                    "tool": e.tool_name, "content": e.content, "details": e.details}
         print(json.dumps(payload, ensure_ascii=False))
         return 0
 
     sources = turn.sources()
     hit = None
-    if str(args.source).isdigit():
-        i = int(args.source)
+    if str(source).isdigit():
+        i = int(source)
         if 0 <= i < len(sources):
             hit = sources[i]
     else:
-        hit = next((s for s in sources if args.source in s.ids or s.url == args.source), None)
+        hit = next((s for s in sources if source in s.ids or s.url == source), None)
     if hit is None:
         raise ArgumentError(
-            f"run {run.run_id} has no source {args.source!r}",
+            f"run {target.run_id} has no source {source!r}",
             fix="List them with `result --sources-only`.",
             source_count=len(sources),
         )
     # The text Aside already fetched, not a fresh request: re-fetching would cost a round
     # trip and could return something different from what the answer was based on.
-    payload = {"ok": True, "command": "show", "run_id": run.run_id,
+    payload = {"ok": True, "command": "show", "run_id": target.run_id,
                "source": {"url": hit.url, "title": hit.title, "id": hit.id, "ids": hit.ids, "opened": hit.opened},
                "content": turn.source_text(hit.url)}
     print(json.dumps(payload, ensure_ascii=False))
@@ -275,12 +278,12 @@ def _show(args, runs_root: Path) -> int:
 # --- stop -----------------------------------------------------------------------------
 
 
-def _stop(args, runs_root: Path) -> int:
-    runs = _targets(args, runs_root)
+def stop(root: Path, *, run: str | None, group: str | None, every: bool) -> int:
+    targets = _targets(root, run, group, every)
     stopped = []
-    for run in runs:
+    for run in targets:
         meta = run.meta()
-        if (meta.get("state") or "") in contract.TERMINAL_STATES:
+        if (meta.get("state") or "") in TERMINAL_STATES:
             continue
         run.update_meta(stop_requested=True)
         # The supervisor notices the flag and writes `abandoned` itself. Give it a moment
@@ -290,7 +293,7 @@ def _stop(args, runs_root: Path) -> int:
         if not _await_terminal(run, 1.5):
             _terminate(meta.get("supervisor_pid"))
             _terminate(meta.get("pid"))
-            if (run.meta().get("state") or "") not in contract.TERMINAL_STATES:
+            if (run.meta().get("state") or "") not in TERMINAL_STATES:
                 run.update_meta(state="abandoned", reason="stop requested",
                                 daemon_run_continues=True, finished_at=time.time())
         if run.meta().get("state") == "abandoned":
@@ -309,10 +312,10 @@ def _stop(args, runs_root: Path) -> int:
     return 0
 
 
-def _await_terminal(run: registry.Run, timeout: float) -> bool:
+def _await_terminal(run: runs.Run, timeout: float) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if (run.meta().get("state") or "") in contract.TERMINAL_STATES:
+        if (run.meta().get("state") or "") in TERMINAL_STATES:
             return True
         time.sleep(0.05)
     return False
@@ -333,14 +336,16 @@ def _terminate(pid: object) -> None:
 # --- search and resume ----------------------------------------------------------------
 
 
-def _search(args, runs_root: Path) -> int:
-    prompts = list(args.prompt)
-    group = registry.new_group_name() if len(prompts) > 1 else None
-    runs = [_start_run(runs_root, p, args, group=group) for p in prompts]
-    return _await_and_report(runs, args, runs_root, group)
+def search(root: Path, prompts: list[str], *, wait: float, background: bool, label: str | None,
+           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> int:
+    group = runs.new_group_name() if len(prompts) > 1 else None
+    started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout,
+                          group=group) for p in prompts]
+    return _await_and_report(started, "search", root, group, wait=0.0 if background else wait, cli=cli)
 
 
-def _resume(args, runs_root: Path) -> int:
+def resume(root: Path, target: str, prompt: str, *, wait: float, background: bool, label: str | None,
+           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> int:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
@@ -348,10 +353,9 @@ def _resume(args, runs_root: Path) -> int:
     continuable from here. Either way the session itself is checked last: a run this tool
     abandoned stopped being watched, not working.
     """
-    target = args.target
     resumed_from = target
     try:
-        run = registry.resolve_run(runs_root, target)
+        run = runs.resolve_run(root, target)
     except ArgumentError:
         session_id = _resumable_session(target)
     else:
@@ -373,35 +377,27 @@ def _resume(args, runs_root: Path) -> int:
         _resumable_session(session_id)
 
     new_run = _start_run(
-        runs_root, args.prompt, args, group=None,
+        root, prompt, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,
     )
-    return _await_and_report([new_run], args, runs_root, None)
+    return _await_and_report([new_run], "resume", root, None, wait=0.0 if background else wait, cli=cli)
 
 
 def _resumable_session(session_id: str) -> str:
     """Verify a session exists on disk and has no turn in flight."""
-    home = sessions.aside_home()
-    if not contract.is_safe_id(session_id) or sessions.session_dir(home, session_id) is None:
+    if not is_safe_id(session_id) or aside.session_transcript(session_id) is None:
         raise ArgumentError(
             f"no run and no Aside session called {session_id!r}",
             fix="List what exists with `sessions`. Aside deletes sessions within about a day.",
         )
-    row = sessions.db_session_row(home, session_id)
-    if row and str(row.get("status") or "") == "running":
+    busy = aside.session_busy(session_id)
+    if busy == "database":
         raise ArgumentError(
             f"session {session_id} is still working",
             fix="Wait for it to finish, or ask in the Aside app.",
             state="running",
         )
-
-    # The database is not enough on its own: an ephemeral CLI session has no row there at
-    # all, so a busy one would pass the check above by simply not existing in it. The
-    # transcript is the surface that always exists -- a turn that has not ended is a turn
-    # still in flight.
-    d = sessions.session_dir(home, session_id)
-    events, _ = transcript.read_events(d / "messages.jsonl") if d else ([], 0)
-    if events and not transcript.turn_finished(events):
+    if busy:
         raise ArgumentError(
             f"session {session_id} has a turn still in flight",
             fix="Wait for it to finish -- attaching to a live session waits for the current "
@@ -411,25 +407,26 @@ def _resumable_session(session_id: str) -> str:
     return session_id
 
 
-def _start_run(runs_root: Path, prompt: str, args, *, group: str | None, **extra) -> registry.Run:
+def _start_run(root: Path, prompt: str, cli: str, *, label: str | None, effort: str | None, model: str | None,
+               speed: str | None, timeout: float | None, group: str | None, **extra) -> runs.Run:
     # Fail before reserving anything if aside is not usable: a registry full of runs that
     # never started is worse than an error.
-    process.aside_bin()
-    run = registry.create_run(
-        runs_root,
-        label=getattr(args, "label", None) or _slug(prompt),
+    aside.aside_bin()
+    run = runs.create_run(
+        root,
+        label=label or _slug(prompt),
         group=group,
         prompt=prompt,
-        effort=getattr(args, "effort", None),
-        model=getattr(args, "model", None),
-        speed=getattr(args, "speed", None),
-        watch_timeout=getattr(args, "timeout", None),
+        effort=effort,
+        model=model,
+        speed=speed,
+        watch_timeout=timeout,
         **extra,
     )
-    run.update_meta(marker=registry.marker_for(run.run_id))
+    run.update_meta(marker=marker_for(run.run_id))
     # Nothing is written after the spawn: the supervisor records its own pid, so the two
     # processes never both hold a stale copy of this file at once.
-    supervisor.spawn(run.path)
+    supervisor.spawn(cli, run.path)
     return run
 
 
@@ -438,28 +435,27 @@ def _slug(prompt: str) -> str:
     return "-".join(words[:4])[:40] or "run"
 
 
-def _await_and_report(runs: list, args, runs_root: Path, group: str | None) -> int:
-    wait = 0.0 if getattr(args, "background", False) else float(getattr(args, "wait", 100.0))
+def _await_and_report(started: list, command: str, root: Path, group: str | None, *, wait: float, cli: str) -> int:
     deadline = time.time() + wait
     while time.time() < deadline:
-        if all((r.meta().get("state") or "") in TERMINAL_STATES for r in runs):
+        if all((r.meta().get("state") or "") in TERMINAL_STATES for r in started):
             break
         time.sleep(0.1)
 
-    entries = [_entry(r) for r in runs]
-    payload = {"ok": True, "command": args.command, "runs": entries}
+    entries = [_entry(r) for r in started]
+    payload = {"ok": True, "command": command, "runs": entries}
     if group:
         payload["group"] = group
 
-    pending = [r for r, e in zip(runs, entries) if e["state"] not in TERMINAL_STATES]
+    pending = [r for r, e in zip(started, entries) if e["state"] not in TERMINAL_STATES]
     if pending:
-        payload["next"] = next_step(runs, group, runs_root, args.script_path)
+        payload["next"] = next_step(started, group, root, cli)
         payload["note"] = "Still running. Execute next, then follow its response; a watcher exiting does not mean the investigation finished."
     print(json.dumps(payload, ensure_ascii=False))
     return _exit_code(entries)
 
 
-def _entry(run: registry.Run) -> dict:
+def _entry(run: runs.Run) -> dict:
     meta = run.meta()
     entry = {**run_summary(run), "label": meta.get("label")}
     for key in ("resumed_from", "session_id", "orphan_children"):
@@ -487,8 +483,8 @@ def _entry(run: registry.Run) -> dict:
 def _exit_code(entries: list[dict]) -> int:
     states = [e["state"] for e in entries]
     if any(s in FAILED_STATES for s in states):
-        return contract.EXIT_RUN_FAILED
+        return outcome.EXIT_RUN_FAILED
     finished = [e for e in entries if e["state"] in TERMINAL_STATES]
     if finished and all(e.get("empty") for e in finished) and len(finished) == len(entries):
-        return contract.EXIT_EMPTY
+        return outcome.EXIT_EMPTY
     return 0

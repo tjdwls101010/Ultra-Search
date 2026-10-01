@@ -261,6 +261,31 @@ def test_a_runs_dir_naming_an_unknown_home_is_refused_in_json() -> None:
     assert len(text.strip().splitlines()) == 1
 
 
+def test_a_working_directory_that_is_gone_is_reported_in_json(tmp_path: Path, monkeypatch) -> None:
+    """The default runs dir is found from the working directory, which can be deleted under a
+    shell that is still in it."""
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+
+    code, payload, text = run_cli("status")
+
+    assert code == 4
+    assert payload["error"] == "run_failed" and payload["fix"]
+    assert len(text.strip().splitlines()) == 1
+
+
+def test_a_runs_dir_that_is_a_symlink_loop_is_refused_in_json(tmp_path: Path) -> None:
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+
+    code, payload, text = run_cli("status", "--runs-dir", str(loop))
+
+    assert code in (2, 4) and payload["ok"] is False and payload["fix"]
+    assert len(text.strip().splitlines()) == 1
+
+
 def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 
@@ -382,7 +407,10 @@ def test_setup_installs_exactly_what_the_lockfile_pins(tmp_path: Path) -> None:
     assert code == 0 and payload["ok"] is True
     cwd, args = record.read_text().strip().split(" ", 1)
     assert args == "ci"
-    assert Path(cwd).resolve() == (SCRIPTS / "ultra_search" / "pages" / "converter").resolve()
+    # The converter's own npm package, known by its name, and the directory the reply names.
+    assert json.loads((Path(cwd) / "package.json").read_text(encoding="utf-8"))["name"] == "ultra-search-page"
+    assert (Path(cwd) / "package-lock.json").is_file()
+    assert Path(cwd).resolve() == Path(payload["dir"]).resolve()
 
 
 @pytest.mark.parametrize("npm", ["#!/bin/sh\necho broken >&2\nexit 1\n", "#!/nonexistent/interpreter\n"])

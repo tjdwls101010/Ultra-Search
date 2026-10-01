@@ -11,7 +11,7 @@ for" are different questions.
 from __future__ import annotations
 
 import fnmatch
-from urllib.parse import urldefrag, urlparse, urlunparse
+from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
 DEFAULT_DEPTH = 2
 DEFAULT_MAX_URLS = 200
@@ -184,3 +184,35 @@ def urls_from_manifest(manifest: object) -> list[str] | None:
     if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
         return None
     return list(urls)
+
+
+def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
+    """The browser's href records as the URLs a crawl may visit: joined to the page they were
+    on, without fragments, on the same site, each once.
+
+    A page with no usable links was still read; a `page_read` record says so, which is what
+    separates it from a page that could not be fetched at all.
+    """
+    site = origin(same_origin_as)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for rec in records:
+        if rec.get("kind") != "hrefs":
+            if rec.get("kind") in ("link_miss", "links_done"):
+                out.append(rec)
+            continue
+        base = rec.get("final_url") or rec.get("url") or same_origin_as
+        out.append({"kind": "page_read", "url": rec.get("url")})
+        for href in rec.get("hrefs") or []:
+            if href.lower().startswith(("javascript:", "mailto:", "tel:", "data:")):
+                continue
+            try:
+                absolute, _ = urldefrag(urljoin(base, href))
+            except ValueError:
+                # One malformed href (an unclosed IPv6 bracket) is one link lost, not the page.
+                continue
+            if origin(absolute) != site or absolute in seen:
+                continue
+            seen.add(absolute)
+            out.append({"kind": "url", "url": absolute, "from": rec.get("url")})
+    return out

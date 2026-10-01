@@ -17,9 +17,11 @@ import json
 import time
 from pathlib import Path
 
-from ultra_search.aside import transcript
-from ultra_search.contract import TERMINAL_STATES, ArgumentError
-from ultra_search.runs import evidence, registry, render
+from ultra_search import aside, runs
+from ultra_search.outcome import ArgumentError
+from ultra_search.research import evidence, render
+from ultra_search.research.states import TERMINAL_STATES
+
 POLL = 1.0
 
 
@@ -70,7 +72,7 @@ def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:
     return json.dumps(cursors, ensure_ascii=False, separators=(",", ":"))
 
 
-def _streams(run: registry.Run) -> list[tuple[str, Path]]:
+def _streams(run: runs.Run) -> list[tuple[str, Path]]:
     """The parent transcript plus every child's, each with its own cursor key."""
     out = [("", run.session_transcript)]
     for p in run.child_transcripts():
@@ -78,7 +80,7 @@ def _streams(run: registry.Run) -> list[tuple[str, Path]]:
     return out
 
 
-def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool, numbering: dict[str, int]) -> list[str]:
+def _drain(run: runs.Run, cursors: dict[str, int], level: str, label: bool, numbering: dict[str, int]) -> list[str]:
     lines: list[str] = []
     streams = _streams(run)
     starts: dict[str, int] = {}
@@ -93,7 +95,7 @@ def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool, 
             starts[cid] = cev[0].index if cev else 0
         streams = [(key, path) for key, path in streams if key in starts]
     for key, path in streams:
-        events, cursor = transcript.read_events(path, cursors.get(key, 0))
+        events, cursor = aside.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
         events = [event for event in events if event.index >= starts.get(key, 0)]
         ordinals = _number(run, path, events, starts.get(key, 0), numbering) if not key and level in ("steps", "full") else {}
@@ -109,7 +111,7 @@ def _drain(run: registry.Run, cursors: dict[str, int], level: str, label: bool, 
     return lines
 
 
-def _number(run: registry.Run, path, events: list, start_line: int, numbering: dict[str, int]) -> dict[int, int]:
+def _number(run: runs.Run, path, events: list, start_line: int, numbering: dict[str, int]) -> dict[int, int]:
     """Line index -> N for this turn's own tool results, the numbering `show --item N` uses.
 
     Counted over the whole turn, not the chunk being printed, so a read from a cursor carries
@@ -121,7 +123,7 @@ def _number(run: registry.Run, path, events: list, start_line: int, numbering: d
     n = numbering.get(run.run_id)
     if n is None:
         first = events[0].index
-        earlier, _ = transcript.read_events(path) if first > start_line else ([], 0)
+        earlier, _ = aside.read_events(path) if first > start_line else ([], 0)
         n = sum(1 for e in earlier if e.kind == "tool_result" and start_line <= e.index < first)
     ordinals = {}
     for e in events:
@@ -132,7 +134,7 @@ def _number(run: registry.Run, path, events: list, start_line: int, numbering: d
     return ordinals
 
 
-def _live_children(run: registry.Run) -> int:
+def _live_children(run: runs.Run) -> int:
     """Children of this run's turn that have not finished -- the ones keeping a quiet parent busy."""
     turn = evidence.turn_of(run)
     return sum(1 for cid in turn.children if not evidence.child_is_terminal(turn.child_events[cid]))

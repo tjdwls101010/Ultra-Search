@@ -10,9 +10,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ultra_search.aside import transcript
-from ultra_search.contract import is_safe_id
-from ultra_search.runs import registry
+from ultra_search import aside, runs
+from ultra_search.ids import is_safe_id
+from ultra_search.research.marker import marker_for
 
 
 #: Tools whose result means the agent actually read a page, rather than merely being
@@ -46,7 +46,7 @@ class Source:
                 self.ids.append(i)
 
 
-def final_answer(events: list[transcript.Event], sources: list[Source] | None = None) -> str:
+def final_answer(events: list[aside.Event], sources: list[Source] | None = None) -> str:
     """The text of the last finished assistant turn, with citation tags resolved to URLs.
 
     Only a turn that stopped for a reason other than calling a tool is an answer; text beside
@@ -84,7 +84,7 @@ def resolve_citations(text: str, sources: list[Source]) -> str:
     return _CITATION_RE.sub(sub, text)
 
 
-def collect_sources(events: list[transcript.Event]) -> list[Source]:
+def collect_sources(events: list[aside.Event]) -> list[Source]:
     """Every URL the run touched, in order, deduplicated by URL.
 
     ``opened`` separates a URL the agent was shown in a result list from one it actually
@@ -142,7 +142,7 @@ def merge_sources(lists: list[list[Source]]) -> list[Source]:
     return out
 
 
-def turn_start_index(events: list[transcript.Event], marker: str) -> int | None:
+def turn_start_index(events: list[aside.Event], marker: str) -> int | None:
     """Index of the user message that began this run's turn, or None if it is not there yet.
 
     A resumed run appends to a transcript that already holds earlier turns, so "the last
@@ -162,7 +162,7 @@ def turn_start_index(events: list[transcript.Event], marker: str) -> int | None:
     return None
 
 
-def has_terminal_answer(events: list[transcript.Event]) -> bool:
+def has_terminal_answer(events: list[aside.Event]) -> bool:
     """Whether the turn has given its answer, as opposed to stopping to call a tool.
 
     Where the daemon frames turns, only `finished` says so: a message that stopped earlier
@@ -172,14 +172,14 @@ def has_terminal_answer(events: list[transcript.Event]) -> bool:
     finished.
     """
     if any(e.kind == "lifecycle" for e in events):
-        return transcript.turn_finished(events)
+        return aside.turn_finished(events)
     for e in events:
         if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
             return True
     return False
 
 
-def child_session_ids(events: list[transcript.Event]) -> list[str]:
+def child_session_ids(events: list[aside.Event]) -> list[str]:
     """Child sessions spawned by this run, in spawn order.
 
     Read from the parent's own transcript rather than the database, because an ephemeral
@@ -203,7 +203,7 @@ def child_session_ids(events: list[transcript.Event]) -> list[str]:
     return out
 
 
-def total_usage(events: list[transcript.Event]) -> dict:
+def total_usage(events: list[aside.Event]) -> dict:
     keys = ("input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens")
     acc = dict.fromkeys(keys, 0)
     cost = 0.0
@@ -243,10 +243,10 @@ class Turn:
     observed: bool
     #: Line index of this run's prompt in the transcript.
     start_line: int = 0
-    events: list[transcript.Event] = field(default_factory=list)
+    events: list[aside.Event] = field(default_factory=list)
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
-    child_events: dict[str, list[transcript.Event]] = field(default_factory=dict)
+    child_events: dict[str, list[aside.Event]] = field(default_factory=dict)
 
     def sources(self) -> list[Source]:
         """Every URL the turn and its children touched, one entry per URL."""
@@ -276,7 +276,7 @@ class Turn:
                 total[k] = round(total.get(k, 0) + v, 6) if k == "cost" else total.get(k, 0) + v
         return total
 
-    def tool_results(self) -> list[transcript.Event]:
+    def tool_results(self) -> list[aside.Event]:
         """This turn's own tool results, in order -- what `show --item N` counts."""
         return [e for e in self.events if e.kind == "tool_result"]
 
@@ -300,10 +300,10 @@ class Turn:
         return fallback
 
 
-def turn_of(run: registry.Run) -> Turn:
+def turn_of(run: runs.Run) -> Turn:
     meta = run.meta()
-    marker = meta.get("marker") or registry.marker_for(run.run_id)
-    events, _ = transcript.read_events(run.session_transcript)
+    marker = meta.get("marker") or marker_for(run.run_id)
+    events, _ = aside.read_events(run.session_transcript)
     start = turn_start_index(events, marker)
     if start is None:
         return Turn(observed=False)
@@ -315,12 +315,12 @@ def turn_of(run: registry.Run) -> Turn:
         start_line=mine[0].index,
         events=mine,
         children=children,
-        child_events={cid: _from(transcript.read_events(run.child_transcript(cid))[0], opened_at)
+        child_events={cid: _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
                       for cid in children},
     )
 
 
-def _framed(events: list[transcript.Event], prompt: int) -> int:
+def _framed(events: list[aside.Event], prompt: int) -> int:
     """Where the turn that opens with the prompt at ``prompt`` begins: at its `started`
     record, if it has one. A turn cut at its prompt has lost the record that says it began,
     and without it a message that stopped mid-turn reads as the turn's end. Records can sit
@@ -333,7 +333,7 @@ def _framed(events: list[transcript.Event], prompt: int) -> int:
     return prompt
 
 
-def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
+def _from(events: list[aside.Event], since: int) -> list[aside.Event]:
     """A child's part in this turn: from the first prompt it received after the turn began.
 
     A resumed parent can hand an earlier child a new task, and the child's transcript then
@@ -348,7 +348,7 @@ def _from(events: list[transcript.Event], since: int) -> list[transcript.Event]:
     return events
 
 
-def child_is_terminal(events: list[transcript.Event]) -> bool:
+def child_is_terminal(events: list[aside.Event]) -> bool:
     """A child is done when its last turn has ended -- a new task given to it after an
     answer is a turn still going."""
-    return transcript.turn_finished(events)
+    return aside.turn_finished(events)

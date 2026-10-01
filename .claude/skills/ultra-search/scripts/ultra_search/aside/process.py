@@ -12,21 +12,18 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ultra_search.contract import AsideUnavailable
+from ultra_search.outcome import AsideUnavailable
 
 DEFAULT_BIN = "aside"
+#: What `aside exec` accepts for --effort and --speed.
+EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
+SPEEDS = ("default", "fast")
 #: The versions this skill's behaviour was measured against. `doctor` compares both,
 #: because they move independently and it is the daemon that decides what a run records:
 #: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
 #: entirely while still writing full transcripts to disk.
 VERIFIED_VERSION = "1.26.810.1915"
 VERIFIED_DAEMON_VERSION = "1.26.1001.14"
-DAEMON_URL = "http://127.0.0.1:21420/"
-
-
-def daemon_url() -> str:
-    """The daemon's health endpoint; ULTRA_SEARCH_DAEMON_URL points doctor at another one."""
-    return os.environ.get("ULTRA_SEARCH_DAEMON_URL") or DAEMON_URL
 
 
 def aside_bin() -> str:
@@ -47,8 +44,13 @@ def aside_bin() -> str:
     return found
 
 
-def exec_argv(prompt: str, *, session: str | None = None, effort: str | None = None,
-              model: str | None = None, speed: str | None = None) -> list[str]:
+def start_exec(prompt: str, *, stdout_path: str | os.PathLike[str], session: str | None = None,
+               effort: str | None = None, model: str | None = None, speed: str | None = None,
+               cwd: str | os.PathLike[str] | None = None) -> subprocess.Popen:
+    """Start `aside exec` detached, streaming its stdout to a file the supervisor tails.
+
+    The returned process's `args` is the argv it was started with.
+    """
     argv = [aside_bin(), "exec"]
     if session:
         argv += ["--session", session]
@@ -61,11 +63,6 @@ def exec_argv(prompt: str, *, session: str | None = None, effort: str | None = N
     # The prompt goes last and unquoted-as-one-argument: passing it on stdin mixes the
     # daemon's interactive banner into the stream.
     argv.append(prompt)
-    return argv
-
-
-def spawn_exec(argv: list[str], stdout_path: str | os.PathLike[str]) -> subprocess.Popen:
-    """Run `aside exec`, streaming its stdout to a file the supervisor tails."""
     out = Path(stdout_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     handle = out.open("ab")
@@ -76,6 +73,7 @@ def spawn_exec(argv: list[str], stdout_path: str | os.PathLike[str]) -> subproce
         stdin=subprocess.DEVNULL,
         start_new_session=True,
         close_fds=True,
+        cwd=cwd,
     )
 
 

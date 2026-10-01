@@ -20,6 +20,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from ultra_search.aside.transcript import read_events, turn_finished
+
 DEFAULT_ASIDE_HOME = "~/.aside"
 ACCOUNT = "u/0"
 #: How far into a transcript the opening prompt is looked for. Records come before it -- a
@@ -38,19 +40,18 @@ class SessionRef:
         return self.path / "messages.jsonl"
 
 
-def aside_home(explicit: str | os.PathLike[str] | None = None) -> Path:
-    if explicit:
-        return Path(explicit).expanduser()
+def aside_home() -> Path:
+    """~/.aside, or ULTRA_SEARCH_ASIDE_HOME."""
     return Path(os.environ.get("ULTRA_SEARCH_ASIDE_HOME") or DEFAULT_ASIDE_HOME).expanduser()
 
 
-def sessions_root(home: str | os.PathLike[str] | None = None) -> Path:
-    return aside_home(home) / ACCOUNT / "sessions"
+def sessions_root() -> Path:
+    return aside_home() / ACCOUNT / "sessions"
 
 
-def iter_sessions(home: str | os.PathLike[str] | None = None) -> list[SessionRef]:
+def _sessions() -> list[SessionRef]:
     """Every session directory, newest first by directory mtime."""
-    root = sessions_root(home)
+    root = sessions_root()
     try:
         entries = [d for d in root.iterdir() if d.is_dir() and "_" in d.name]
     except OSError:
@@ -59,9 +60,9 @@ def iter_sessions(home: str | os.PathLike[str] | None = None) -> list[SessionRef
     return [SessionRef(session_id=d.name.split("_", 1)[1], path=d) for d in entries]
 
 
-def session_dir(home: str | os.PathLike[str] | None, session_id: str) -> Path | None:
+def _session_dir(session_id: str) -> Path | None:
     """The directory for a session id, whatever date prefix Aside gave it."""
-    root = sessions_root(home)
+    root = sessions_root()
     try:
         for d in root.iterdir():
             if d.is_dir() and d.name.endswith("_" + session_id):
@@ -71,7 +72,16 @@ def session_dir(home: str | os.PathLike[str] | None, session_id: str) -> Path | 
     return None
 
 
-def opening_prompt(transcript: str | os.PathLike[str]) -> str | None:
+def session_transcript(session_id: str) -> Path | None:
+    """Where a session's transcript is written, or None when Aside has no such session.
+
+    The file itself may not exist yet: Aside creates the directory before the first record.
+    """
+    d = _session_dir(session_id)
+    return d / "messages.jsonl" if d else None
+
+
+def _opening_prompt(transcript: str | os.PathLike[str]) -> str | None:
     """The text of the first user record, or None when there is none yet.
 
     Decoded rather than searched as bytes: JSON may store the prompt's non-ASCII characters
@@ -100,63 +110,38 @@ def _text_of(content: object) -> str:
     return " ".join(str(b.get("text") or "") for b in (content or []) if isinstance(b, dict))
 
 
-def find_session_by_marker(home: str | os.PathLike[str] | None, marker: str) -> SessionRef | None:
-    """The session whose opening prompt contains ``marker``.
+def find_session_by_marker(marker: str) -> str | None:
+    """The id of the session whose opening prompt contains ``marker``.
 
     A session whose prompt has not been written yet is a session in progress, not a
     mismatch, and is passed over until it has one.
     """
-    for ref in iter_sessions(home):
-        prompt = opening_prompt(ref.transcript)
+    for ref in _sessions():
+        prompt = _opening_prompt(ref.transcript)
         if prompt and marker in prompt:
-            return ref
+            return ref.session_id
     return None
 
 
-# --- copying out ------------------------------------------------------------------
+def session_busy(session_id: str) -> str | None:
+    """Why a session cannot take a new turn now: "database" when Aside's database says it is
+    running, "transcript" when its last turn has not ended; None when it can.
 
-
-def copy_new_lines(src: str | os.PathLike[str], dst: str | os.PathLike[str], since: int) -> int:
-    """Append whole lines from ``src`` after byte ``since`` onto ``dst``; return the new cursor.
-
-    Append-only and whole-lines-only, both deliberately. The destination outlives the
-    source, so a source that shrinks or vanishes must never shorten the copy; and a line
-    still being written is not yet a record, so consuming it would store a fragment that
-    can never be completed.
+    The database is not enough on its own: an ephemeral CLI session has no row there at all,
+    so a busy one would pass that check by simply not existing in it. The transcript is the
+    surface that always exists.
     """
-    src_p, dst_p = Path(src), Path(dst)
-    try:
-        size = src_p.stat().st_size
-    except OSError:
-        return since
-    # The destination's own size is the cursor. The `since` a caller passes is a hint
-    # recorded separately from the append it describes, so the two drift in both
-    # directions: a lost or truncated copy leaves it too high, and a crash between the
-    # append and the record that followed it leaves it too low. Trusting it either way
-    # skips records or copies them twice, and duplicated records are then counted twice
-    # in usage, sources and child discovery. The bytes on disk cannot drift from
-    # themselves.
-    since = dst_p.stat().st_size if dst_p.exists() else 0
-    if size <= since:
-        return since
-    with src_p.open("rb") as f:
-        f.seek(since)
-        chunk = f.read(size - since)
-    end = chunk.rfind(b"\n")
-    if end == -1:
-        return since
-    complete = chunk[: end + 1]
-    dst_p.parent.mkdir(parents=True, exist_ok=True)
-    with dst_p.open("ab") as out:
-        out.write(complete)
-    return since + len(complete)
+    row = _db_session_row(session_id)
+    if row and str(row.get("status") or "") == "running":
+        return "database"
+    transcript = session_transcript(session_id)
+    events, _ = read_events(transcript) if transcript else ([], 0)
+    if events and not turn_finished(events):
+        return "transcript"
+    return None
 
 
-def last_activity(
-    home: str | os.PathLike[str] | None,
-    session_id: str,
-    child_ids: list[str] | None = None,
-) -> float:
+def last_activity(session_id: str, child_ids: list[str] | None = None) -> float:
     """Newest write time across the run's own transcript and every child's.
 
     A parent that spawned subagents goes silent while they work. Measuring only the
@@ -164,7 +149,7 @@ def last_activity(
     """
     newest = 0.0
     for sid in [session_id, *(child_ids or [])]:
-        d = session_dir(home, sid)
+        d = _session_dir(sid)
         if not d:
             continue
         newest = max(newest, _mtime(d), _mtime(d / "messages.jsonl"))
@@ -181,12 +166,12 @@ def _mtime(p: Path) -> float:
 # --- the database, best-effort ------------------------------------------------------
 
 
-def db_path(home: str | os.PathLike[str] | None = None) -> Path:
-    return aside_home(home) / ACCOUNT / "state.db"
+def _db_path() -> Path:
+    return aside_home() / ACCOUNT / "state.db"
 
 
-def _query(home, sql: str, args: tuple) -> list[dict]:
-    p = db_path(home)
+def _query(sql: str, args: tuple) -> list[dict]:
+    p = _db_path()
     if not p.exists():
         return []
     try:
@@ -205,13 +190,14 @@ def _query(home, sql: str, args: tuple) -> list[dict]:
         return []
 
 
-def db_session_row(home: str | os.PathLike[str] | None, session_id: str) -> dict | None:
-    rows = _query(home, "select * from sessions where id = ?", (session_id,))
+def _db_session_row(session_id: str) -> dict | None:
+    rows = _query("select * from sessions where id = ?", (session_id,))
     return rows[0] if rows else None
 
 
-def db_suspension(home: str | os.PathLike[str] | None, session_id: str) -> object | None:
-    row = db_session_row(home, session_id)
+def suspension(session_id: str) -> object | None:
+    """What Aside's database says the session is paused on, if anything -- surfaced, not interpreted."""
+    row = _db_session_row(session_id)
     if not row:
         return None
     raw = row.get("suspension")
@@ -223,35 +209,30 @@ def db_suspension(home: str | os.PathLike[str] | None, session_id: str) -> objec
         return raw
 
 
-def session_summaries(home: str | os.PathLike[str] | None = None, limit: int = 30) -> list[dict]:
-    """Every Aside session on disk, newest first, with enough to pick one out.
+def session_summaries(limit: int = 30) -> list[dict]:
+    """Sessions on disk that have a prompt, newest first: session_id, date, modified_at and
+    the whole opening_prompt.
 
     Sessions made in the Aside app or by a bare `aside exec` are continuable too, but a
     session id is not something anyone can recall -- so the opening prompt is what makes
-    the list usable, and the marker is what says whether ultra-search started it.
+    the list usable.
     """
     out: list[dict] = []
     # Filtered before limited, not after: repl calls leave behind session directories with
     # no transcript at all, and they are the newest ones, so slicing first returns a page
     # of nothing on a machine that has used the browser recently.
-    for ref in iter_sessions(home):
+    for ref in _sessions():
         if len(out) >= limit:
             break
-        prompt = opening_prompt(ref.transcript)
+        prompt = _opening_prompt(ref.transcript)
         if prompt is None:
             continue
-        # The marker is read before the prompt is shortened for display: it sits at the end.
-        marker = ""
-        if "ultra-search:" in prompt:
-            marker = prompt.split("ultra-search:", 1)[1].split(" ", 1)[0].strip(")\n")
         out.append(
             {
                 "session_id": ref.session_id,
                 "date": ref.path.name.split("_", 1)[0],
                 "modified_at": _mtime(ref.transcript) or _mtime(ref.path),
-                "prompt": " ".join(prompt.split())[:160],
-                "started_by_ultra_search": bool(marker),
-                "run_id": marker or None,
+                "opening_prompt": prompt,
             }
         )
     return out

@@ -20,14 +20,8 @@ import pathlib
 import sys
 from urllib.parse import urlparse
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from ultra_search import __version__, aside, doctor, fetch, outcome, research, site, workspace
 
-from ultra_search import __version__  # noqa: E402 - after the path it is found on
-from ultra_search.contract import EXIT_ARGS, EXIT_OK  # noqa: E402
-from ultra_search.runs.render import LEVELS  # noqa: E402
-
-EFFORT_CHOICES = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse")
-SPEED_CHOICES = ("default", "fast")
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
 NEXT_HELP = (
@@ -46,7 +40,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # type: ignore[override]
         print(json.dumps({"ok": False, "error": "bad_arguments", "message": message, "fix": f"{self.prog} --help"},
                          ensure_ascii=False))
-        raise SystemExit(EXIT_ARGS)
+        raise SystemExit(outcome.EXIT_ARGS)
 
 
 def _count(minimum: int):
@@ -154,9 +148,9 @@ def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
 
 def _add_exec_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--label", help="Short name for the run directory, so a later `status` is readable.")
-    p.add_argument("--effort", choices=EFFORT_CHOICES, help="Aside reasoning effort. Default: the account's setting.")
+    p.add_argument("--effort", choices=aside.EFFORTS, help="Aside reasoning effort. Default: the account's setting.")
     p.add_argument("--model", help="Aside model id, e.g. openai-codex/gpt-5.6-sol. Default: the account's setting.")
-    p.add_argument("--speed", choices=SPEED_CHOICES, help="Aside speed setting. Default: the account's setting.")
+    p.add_argument("--speed", choices=aside.SPEEDS, help="Aside speed setting. Default: the account's setting.")
     p.add_argument(
         "--timeout",
         type=_seconds(positive=True),
@@ -256,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lg.add_argument(
         "--level",
-        choices=LEVELS,
+        choices=research.LEVELS,
         default="progress",
         help="What each event becomes. progress: one line per turn -- what the run reached for (tool, count, "
         "the host or objective) and what it said; a result appears only when it errored, an answer as its "
@@ -455,35 +449,82 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    args.script_path = str(pathlib.Path(__file__).absolute())
-
-    from ultra_search.contract import RunFailed, UltraSearchError
-
-    if args.command in ("search", "resume", "status", "log", "result", "show", "stop", "sessions"):
-        from ultra_search.runs import commands as impl
-    elif args.command in ("fetch", "map", "crawl"):
-        from ultra_search.pages import commands as impl
-    else:
-        from ultra_search import doctor as impl
-
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["_supervise"]:
+        # Internal: the detached supervisor a `search` or `resume` starts, through the same
+        # entry point the caller used. Not a command, so not in --help.
+        return research.run_detached(argv[1])
+    args = build_parser().parse_args(argv)
+    # The path as the caller reached it, not resolved: a `next` command built from it keeps
+    # the installed location, symlink included.
+    cli = str(pathlib.Path(__file__).absolute())
     try:
-        return impl.dispatch(args)
-    except UltraSearchError as e:
+        return _dispatch(args, _root(args), cli)
+    except outcome.UltraSearchError as e:
         print(json.dumps(e.payload(), ensure_ascii=False))
         return e.exit_code
     except BrokenPipeError:
-        return EXIT_OK
+        return outcome.EXIT_OK
     except OSError as e:
         # Storage the caller pointed at -- an unwritable --out or --runs-dir, a full disk --
         # still answers in the one shape every command promises.
-        err = RunFailed(
+        err = outcome.RunFailed(
             f"could not read or write {e.filename or 'a file'}: {e.strerror or e}",
             fix="Check the path exists and is writable, or choose another with --out or --runs-dir.",
         )
         print(json.dumps(err.payload(), ensure_ascii=False))
         return err.exit_code
+
+
+def _root(args: argparse.Namespace) -> pathlib.Path:
+    """Where runs and saved pages go: --runs-dir, or .ultra-search/ in the working directory."""
+    if not getattr(args, "runs_dir", None):
+        return workspace.default_root()
+    try:
+        return pathlib.Path(args.runs_dir).expanduser().resolve()
+    except RuntimeError as e:  # a symlink loop, on the Pythons that raise rather than OSError
+        raise outcome.ArgumentError(f"--runs-dir {args.runs_dir!r} cannot be resolved: {e}",
+                                    fix="Pass a directory that is not a symlink loop.") from e
+
+
+def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> int:
+    c = args.command
+    if c in ("search", "resume"):
+        common = dict(wait=args.wait, background=args.background, label=args.label, effort=args.effort,
+                      model=args.model, speed=args.speed, timeout=args.timeout, cli=cli)
+        if c == "search":
+            return research.search(root, list(args.prompt), **common)
+        return research.resume(root, args.target, args.prompt, **common)
+    if c == "status":
+        return research.status(root, run=args.run, group=args.group, stall_after=args.stall_after)
+    if c == "log":
+        return research.log(root, run=args.run, group=args.group, since=args.since, level=args.level,
+                            follow_=args.follow, follow_timeout=args.follow_timeout, heartbeat=args.heartbeat, cli=cli)
+    if c == "result":
+        return research.result(root, run=args.run, group=args.group, sources_only=args.sources_only)
+    if c == "show":
+        return research.show(root, run=args.run, source=args.source, item=args.item)
+    if c == "stop":
+        return research.stop(root, run=args.run, group=args.group, every=args.all)
+    if c == "sessions":
+        return research.sessions(limit=args.limit, mine=args.mine, search=args.search)
+    if c == "fetch":
+        return fetch.fetch(root, args.url, out=args.out, fmt=args.format, via=args.via, concurrency=args.concurrency,
+                           frontmatter=not args.no_frontmatter, print_content=args.print_content,
+                           max_chars=args.max_chars)
+    if c == "map":
+        return site.map_site(root, args.url, depth=args.depth, max_urls=args.max_urls, include=args.include,
+                             exclude=args.exclude, no_sitemap=args.no_sitemap, out=args.out, list_all=args.list_all)
+    if c == "crawl":
+        return site.crawl(root, args.url, from_manifest=args.from_manifest, max_pages=args.max_pages,
+                          depth=args.depth, max_urls=args.max_urls, include=args.include, exclude=args.exclude,
+                          no_sitemap=args.no_sitemap, via=args.via, concurrency=args.concurrency,
+                          frontmatter=not args.no_frontmatter, out=args.out)
+    if c == "doctor":
+        return doctor.doctor(root)
+    if c == "setup":
+        return doctor.setup()
+    return doctor.repl_api(every=args.all)
 
 
 if __name__ == "__main__":

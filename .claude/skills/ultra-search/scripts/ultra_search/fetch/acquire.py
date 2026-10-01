@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ultra_search.contract import ArgumentError
-from ultra_search.pages import browser, classify
+from ultra_search import aside, saved
+from ultra_search.fetch import classify
+from ultra_search.outcome import ArgumentError
 
 DEFAULT_CONCURRENCY = 8
 DEFAULT_RETRIES = 1
@@ -47,7 +48,7 @@ def fetch_urls(
     raw: dict[str, dict] = {}
     if via != "tab":
         for batch in _chunks(urls, max(1, concurrency)):
-            for record in browser.fetch_batch(batch):
+            for record in aside.fetch_pages(batch):
                 if record.get("kind") == "batch_done" or not record.get("url"):
                     continue
                 raw[record["url"]] = record
@@ -58,7 +59,7 @@ def fetch_urls(
             for u in missing:
                 # Alone, not re-batched: it gets the whole per-URL budget rather than a
                 # share of the one it already used up.
-                for record in browser.fetch_batch([u]):
+                for record in aside.fetch_pages([u]):
                     if record.get("url"):
                         raw[record["url"]] = record
 
@@ -111,7 +112,7 @@ def _escalate(url: str, doc: classify.Document) -> classify.Document:
     is still thin, the original verdict stands and is reported as escalated-and-still-empty
     rather than as a page.
     """
-    records = [r for r in (browser.tab_one(url) or []) if r.get("kind") == "text"]
+    records = [r for r in (aside.open_tab(url) or []) if r.get("kind") == "text"]
     if not records:
         doc.status = "shell_escalated" if doc.status == "shell" else "blocked"
         return doc
@@ -178,7 +179,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     elif doc.status != "ok" or not (doc.markdown or "").strip():
         return item
 
-    path = out_file or _unique_path(dest, stem, used_names, fmt)
+    path = out_file or saved.unique_path(dest, stem, used_names, {"md": ".md", "html": ".html"}.get(fmt, ".md"))
     text = doc.raw if fmt == "html" else classify.render_markdown(doc, frontmatter=frontmatter)
     body_for_print = text
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,16 +202,3 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
         item["content"] = body_for_print[:max_chars]
         item["truncated"] = len(body_for_print) > max_chars
     return item
-
-
-def _unique_path(dest: Path, slug: str, used: set[str], fmt: str) -> Path:
-    ext = {"md": ".md", "html": ".html"}.get(fmt, ".md")
-    name = slug
-    n = 2
-    # Slugs flatten punctuation, so /a/b and /a-b arrive here identical. Suffixing keeps
-    # the second page instead of silently replacing the first.
-    while name in used or (dest / f"{name}{ext}").exists():
-        name = f"{slug}-{n}"
-        n += 1
-    used.add(name)
-    return dest / f"{name}{ext}"

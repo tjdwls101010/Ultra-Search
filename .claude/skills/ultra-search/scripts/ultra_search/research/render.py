@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 
-from ultra_search.aside.transcript import Event
+from ultra_search.aside import Event
 
 LEVELS = ("progress", "steps", "full", "raw")
 

@@ -852,6 +852,42 @@ def test_a_fetched_page_counts_as_opened(cli, replay) -> None:
     assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [(src["url"], True)]
 
 
+def test_a_quote_in_the_answer_is_resolved_like_a_citation(cli, replay) -> None:
+    """Answers quote their pages with Aside's own tag; left in, the tag is noise and its id is
+    a source the reader cannot look up."""
+    src = {"id": "q1", "url": "https://e.test/q", "title": "Q"}
+    replay([tool("websearch", "검색 결과", sources=[src]), answer('보도는 <quote ref="q1">“확인했다”</quote>고 전했다.')])
+
+    _, payload, _ = search(cli, "질문")
+
+    assert first_run(payload)["answer"] == "보도는 “확인했다” (https://e.test/q)고 전했다."
+
+
+def test_a_page_whose_fetch_failed_is_not_opened(cli, replay) -> None:
+    """A tool that opens pages can name a URL and still fail on it -- a 403, a timeout. That
+    page was not read."""
+    src = {"id": "f1", "url": "https://e.test/forbidden", "title": "F"}
+    replay([calling(("webfetch", {"url": src["url"]})),
+            {**tool("webfetch", "403 Forbidden", sources=[src]), "isError": True}, answer("못 읽었다")])
+
+    _, payload, _ = search(cli, "질문")
+
+    assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [(src["url"], False)]
+
+
+def test_a_page_read_through_a_browser_tab_counts_as_opened(cli, replay) -> None:
+    """Recorded from a real run: the agent opened python.org in a tab and read its snapshot, and
+    answered from it. The REPL lists no sources, so the page is known only from what it printed."""
+    child = [json.loads(line) for line in (LIFECYCLE_RUN / "session" / "children" / f"{LIFECYCLE_CHILD}.jsonl")
+             .read_text(encoding="utf-8").splitlines()]
+    read = next(r for r in child if r.get("toolName") == "repl" and "page →" in json.dumps(r, ensure_ascii=False))
+    replay([calling(("repl", {"title": "open", "code": "..."})), read, answer("3.14.8")])
+
+    _, payload, _ = search(cli, "질문")
+
+    assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [("https://www.python.org/downloads/", True)]
+
+
 def test_a_citation_to_an_unknown_source_keeps_its_label(cli, replay) -> None:
     replay([answer('See <citation refs="nosuchref">the release notes</citation> for detail.')])
 

@@ -64,12 +64,20 @@ def test_usage_comes_out_in_this_skills_keys_and_as_numbers() -> None:
 
 
 def test_a_page_a_fetch_returned_is_a_source_it_opened() -> None:
-    sources = [s for e in events(CHILD) for s in e.sources]
+    sources = [s for e in events(CHILD) if e.tool_name == "webfetch" for s in e.sources]
 
     assert [(s.url, s.id, s.opened) for s in sources] == [
         ("https://www.python.org/downloads/", "RRY-TcWzgg1MznOsnlqMd", True),
         ("https://www.python.org/downloads/", "cPvWvEirM0bvXVllioGJx", True),
     ]
+
+
+def test_a_page_opened_in_a_browser_tab_is_a_source_it_opened() -> None:
+    """The REPL lists no sources, but says which page a tab opened and which page a snapshot
+    read. The recorded child read python.org this way after its fetches came back empty."""
+    read = [(s.url, s.title, s.opened) for e in events(CHILD) if e.tool_name == "repl" for s in e.sources]
+
+    assert read == [("https://www.python.org/downloads/", "Download Python | Python.org", True)]
 
 
 def test_a_search_listing_is_a_source_not_opened() -> None:
@@ -161,6 +169,13 @@ def test_with_no_tool_call_everything_printed_is_the_message() -> None:
 
 
 # --- the answer's tags ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tag", ['<quote ref="s1">', '<quote refs="s1">', '<quote source="s1">'])
+def test_a_quote_becomes_its_text_and_the_url_its_id_names(tag: str) -> None:
+    text = f"그는 {tag}“그렇다”</quote>고 했다. <quote>출처 없는 인용</quote>."
+
+    assert aside.resolve_answer_tags(text, {"s1": "https://e.test/1"}) == "그는 “그렇다” (https://e.test/1)고 했다. 출처 없는 인용."
 
 
 def test_a_citation_becomes_the_urls_its_ids_name() -> None:

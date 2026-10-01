@@ -20,6 +20,10 @@ from pathlib import Path
 
 #: Tools whose result means the agent read a page, rather than being shown it in a list.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
+#: The browser REPL lists no sources; it prints the pages it touched. Opening a tab says
+#: "page → <title> (<url>)", and a snapshot of a page starts `- title: "<title>" [url=<url>]`.
+_TAB_OPENED = re.compile(r"page → (.*) \((https?://[^\s)]+)\)\s*$", re.M)
+_SNAPSHOT_OF = re.compile(r'^- title: "(.*)" \[url=(https?://[^\]\s]+)\]', re.M)
 #: Arguments that name something outside the session -- the thing a call reached for. A local
 #: path or an offset says how the worker asked, not what it went after.
 _TARGET_KEYS = ("url", "objective", "description", "title")
@@ -215,7 +219,10 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
     details = obj.get("details") or {}
     if not isinstance(details, dict):
         details = {}
-    opened = name in _OPENING_TOOLS
+    is_error = bool(obj.get("isError"))
+    # A tool that opens pages can still fail on the one it was given -- a 403, a timeout.
+    opened = name in _OPENING_TOOLS and not is_error
+    content = _as_text(obj.get("content"))
     sources = []
     for raw in details.get("sources") or []:
         if not isinstance(raw, dict):
@@ -231,14 +238,21 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
             published=str(raw.get("publishDate") or raw.get("published") or ""),
             opened=opened,
         ))
+    if name == "repl" and opened:
+        listed = {s.url for s in sources}
+        printed = _flatten_text(obj.get("content"))
+        for title, url in [*_TAB_OPENED.findall(printed), *_SNAPSHOT_OF.findall(printed)]:
+            if url not in listed:
+                listed.add(url)
+                sources.append(SourceRef(url=url, title=title.strip(), opened=True))
     return Event(
         kind="tool_result",
         index=index,
         raw=obj,
         tool_name=name,
-        content=_as_text(obj.get("content")),
+        content=content,
         details=details,
-        is_error=bool(obj.get("isError")),
+        is_error=is_error,
         sources=sources,
         child_ids=_child_ids(name, details),
         timestamp=ts,
@@ -314,18 +328,22 @@ def _as_text(content: object) -> str:
 
 
 _CITATION_RE = re.compile(r'<citation\s+refs="([^"]*)"\s*>(.*?)</citation>', re.DOTALL)
+#: Answers quote their pages as `<quote>`, `<quote ref="id">` or `<quote refs="id,id">`.
+_QUOTE_RE = re.compile(r'<quote(?:\s+(?:refs?|source)="([^"]*)")?\s*>(.*?)</quote>', re.DOTALL)
 
 
 def resolve_answer_tags(text: str, id_to_url: dict[str, str]) -> str:
-    """An answer with Aside's citation tags replaced by the URLs they cite, as `label (url, ...)`.
+    """An answer with Aside's quote and citation tags replaced by the text they wrap and the
+    URLs they cite, as `text (url, ...)`.
 
-    A tag whose ids name no known source keeps its label: the claim stays, without a URL to
+    A tag whose ids name no known source keeps its text: the claim stays, without a URL to
     vouch for it. An id may arrive longer than the one a source was listed under, so a
-    listed id that the cited one starts with matches too.
+    listed id that the cited one starts with matches too. Quotes go first: a citation can
+    wrap one.
     """
 
     def sub(m: re.Match[str]) -> str:
-        refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
+        refs = [r.strip() for r in (m.group(1) or "").split(",") if r.strip()]
         label = m.group(2).strip()
         urls = []
         for ref in refs:
@@ -336,4 +354,4 @@ def resolve_answer_tags(text: str, id_to_url: dict[str, str]) -> str:
             return label
         return f"{label} ({', '.join(urls)})" if label else f"({', '.join(urls)})"
 
-    return _CITATION_RE.sub(sub, text)
+    return _CITATION_RE.sub(sub, _QUOTE_RE.sub(sub, text))

@@ -37,8 +37,8 @@ def test_doctor_reports_a_working_environment() -> None:
 def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
     """`completed`, a session id and token usage are the correlation working: when the run's
     own session is not found, the run still ends, as `completed_unstructured`, with an answer
-    cut from stdout and no usage. Which tool opens the page is the agent's choice, and a page
-    read through `repl` lists no source, so the sources are not asserted here."""
+    cut from stdout and no usage. The page it was asked to open is a source it opened, whichever
+    tool the agent chose to open it with."""
     code, payload = cli(
         "search",
         "현재 Python 3의 최신 안정 버전은 무엇인가? python.org 다운로드 페이지를 직접 열어 확인하고 한 줄로 답해라.",
@@ -52,6 +52,7 @@ def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
     assert run["state"] == "completed", run.get("note")
     assert run["session_id"]
     assert run["answer"].strip()
+    assert any(s["opened"] for s in run["sources"]), run["sources"]
     assert run["usage"]["total_tokens"] > 0
 
 

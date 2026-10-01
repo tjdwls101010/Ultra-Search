@@ -4,7 +4,7 @@ The skill is read by its tree before any file: `scripts/` holds `cli.py`, the on
 
 State does not live in the skill's `data/`, as the skill layout would have it: runs, saved pages, maps and crawls go to `./.ultra-search/` in the working directory. The skill is loaded globally and several projects' sessions run at once, a per-project registry is what keeps a bare `status` or `result` to that project's most recent run, and what the skill saves has to be readable with Read, which refuses files inside an installed skill folder.
 
-Each checker is a function of source text, so it is shown failing on a short source that breaks its rule before it is trusted on the real tree.
+Each checker is a function of source text, so it is shown failing on a short source that breaks its rule before it is trusted on the real tree. They read the usual ways of spelling an import or an edit, not every way Python allows: they catch a slip, and a deliberate workaround is a change to these rules to raise in review.
 """
 from __future__ import annotations
 
@@ -140,29 +140,47 @@ def direction_violations(source: str, module: str) -> list[str]:
     return out
 
 
+def _rebound(tree: ast.AST) -> set[str]:
+    """Names given another value somewhere in the file -- a parameter, an assignment -- whose
+    attributes then say nothing about a unit."""
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg):
+            out.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            out.add(node.id)
+    return out
+
+
 def reach_violations(source: str, module: str) -> list[str]:
     """Uses of another unit beyond what its interface exports, under whatever name it was imported as."""
     mine = unit_of(module)
     out = []
-    aliases: dict[str, str] = {}
+    units: dict[str, str] = {}  # local name -> unit
+    packages: set[str] = set()  # local names bound to the package itself
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
+                if a.name == PACKAGE_NAME:
+                    packages.add(a.asname or a.name)
+                    continue
                 theirs = unit_of(a.name)
                 if theirs in (None, mine):
                     continue
                 if len(a.name.split(".")) > 2:
                     out.append(f"{module}:{node.lineno} reaches into {a.name}")
                 elif a.asname:
-                    aliases[a.asname] = theirs
+                    units[a.asname] = theirs
+                else:
+                    packages.add(PACKAGE_NAME)
         elif isinstance(node, ast.ImportFrom):
             target = imports(ast.unparse(node), module)[0][0] if node.level else (node.module or "")
             parts = target.split(".")
             if target == PACKAGE_NAME:
                 for a in node.names:
                     if a.name in KINDS and a.name != mine:
-                        aliases[a.asname or a.name] = a.name
+                        units[a.asname or a.name] = a.name
                 continue
             theirs = unit_of(target) if parts[0] == PACKAGE_NAME else None
             if theirs in (None, mine):
@@ -173,37 +191,42 @@ def reach_violations(source: str, module: str) -> list[str]:
             public = exported(theirs)
             out += [f"{module}:{node.lineno} takes {theirs}.{a.name}, which {theirs} does not export"
                     for a in node.names if a.name not in public]
+    rebound = _rebound(tree)
+    units = {k: v for k, v in units.items() if k not in rebound}
+    packages -= rebound
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
-            unit = aliases[node.value.id]
-            if node.attr not in exported(unit):
-                out.append(f"{module}:{node.lineno} uses {unit}.{node.attr}, which {unit} does not export")
-        # `ultra_search.runs.registry` spelled out after `import ultra_search.runs`
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) \
-                and isinstance(node.value.value, ast.Name) and node.value.value.id == PACKAGE_NAME:
+        if not isinstance(node, ast.Attribute):
+            continue
+        unit = None
+        if isinstance(node.value, ast.Name) and node.value.id in units:
+            unit = units[node.value.id]
+        elif isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name) \
+                and node.value.value.id in packages and node.value.attr in KINDS:
             unit = node.value.attr
-            if unit in KINDS and unit != mine and node.attr not in exported(unit):
-                out.append(f"{module}:{node.lineno} uses {unit}.{node.attr}, which {unit} does not export")
+        if unit and unit != mine and node.attr not in exported(unit):
+            out.append(f"{module}:{node.lineno} uses {unit}.{node.attr}, which {unit} does not export")
     return out
 
 
-#: Calls that put something on the import path when given `sys.path`.
-_PATH_MUTATORS = ("insert", "append", "extend", "remove", "pop", "clear", "__setitem__")
-#: Code handed to a child process that edits its import path.
-_PATH_IN_CODE = ("sys.path.insert(", "sys.path.append(", "sys.path.extend(", "sys.path[", "sys.path =", "sys.path +=")
+#: Calls that change a list in place, when the list is `sys.path`.
+_PATH_MUTATORS = ("insert", "append", "extend", "remove", "pop", "clear")
+#: Ways an environment is given a key.
+_ENV_SETTERS = ("setenv", "putenv", "setdefault")
 
 
 def path_edits(source: str, where: str) -> list[str]:
-    """`sys.path` changed -- by attribute or under any name `path` was imported as -- in code or in
-    code handed to a child process, or PYTHONPATH set in an environment."""
+    """`sys.path` changed -- under any name `sys` or `path` was imported as -- in code, or in code
+    handed to a child process as a string, or PYTHONPATH set in an environment."""
     tree = ast.parse(source)
-    names = {"sys.path"}
+    paths = {"sys.path"}
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            paths |= {f"{a.asname}.path" for a in node.names if a.name == "sys" and a.asname}
         if isinstance(node, ast.ImportFrom) and node.module == "sys":
-            names |= {a.asname or a.name for a in node.names if a.name == "path"}
+            paths |= {a.asname or a.name for a in node.names if a.name == "path"}
 
     def is_path(expr: ast.AST) -> bool:
-        return ast.unparse(expr) in names
+        return ast.unparse(expr) in paths
 
     out = []
     for node in ast.walk(tree):
@@ -211,22 +234,28 @@ def path_edits(source: str, where: str) -> list[str]:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
                 and node.func.attr in _PATH_MUTATORS and is_path(node.func.value):
             out.append(f"{where}:{line} changes sys.path")
-        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+            targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
             for t in targets:
-                if is_path(t) or (isinstance(t, ast.Subscript) and is_path(t.value)):
+                if (isinstance(t, ast.Attribute) and ast.unparse(t) in paths) \
+                        or (isinstance(t, ast.Subscript) and ast.unparse(t.value) in paths):
                     out.append(f"{where}:{line} changes sys.path")
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and any(c in node.value for c in _PATH_IN_CODE):
-            out.append(f"{where}:{line} changes sys.path in code it hands on")
-        # PYTHONPATH as an environment key: a dict key, a keyword, a subscript, or setenv's name.
-        if isinstance(node, ast.Dict) and any(isinstance(k, ast.Constant) and k.value == "PYTHONPATH" for k in node.keys):
-            out.append(f"{where}:{line} sets PYTHONPATH")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "sys" in node.value:
+            try:
+                inner = path_edits(node.value, where)
+            except SyntaxError:
+                inner = []
+            if inner:
+                out.append(f"{where}:{line} changes sys.path in code it hands on")
         if isinstance(node, ast.keyword) and node.arg == "PYTHONPATH":
             out.append(f"{where}:{node.value.lineno} sets PYTHONPATH")
+        if isinstance(node, ast.keyword) and node.arg == "env" and isinstance(node.value, ast.Dict) \
+                and any(isinstance(k, ast.Constant) and k.value == "PYTHONPATH" for k in node.value.keys):
+            out.append(f"{where}:{line} sets PYTHONPATH")
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
                 and isinstance(node.slice, ast.Constant) and node.slice.value == "PYTHONPATH":
             out.append(f"{where}:{line} sets PYTHONPATH")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("setenv", "putenv") \
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _ENV_SETTERS \
                 and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "PYTHONPATH":
             out.append(f"{where}:{line} sets PYTHONPATH")
     return out
@@ -263,27 +292,34 @@ def test_the_direction_checker_catches_a_feature_importing_a_feature() -> None:
 
 
 def test_the_reach_checker_catches_a_module_past_an_interface() -> None:
-    assert reach_violations("from ultra_search.runs.registry import Run\n", "tests.test_x")
-    assert reach_violations("import ultra_search.aside.sessions\n", "cli")
+    for source in ("from ultra_search.runs.registry import Run\n", "import ultra_search.aside.sessions\n",
+                   "from ultra_search import runs\nruns.registry.Run\n",
+                   "from ultra_search import runs as storage\nstorage.registry.Run\n",
+                   "import ultra_search.runs as storage\nstorage.registry.Run\n",
+                   "import ultra_search.runs\nultra_search.runs.registry.Run\n",
+                   "import ultra_search as us\nus.runs.registry.Run\n"):
+        assert reach_violations(source, "tests.test_x"), source
     assert reach_violations("from ultra_search.runs import registry\n", "ultra_search.research.commands")
-    assert reach_violations("from ultra_search import runs\nruns.registry.Run\n", "tests.test_x")
-    assert reach_violations("from ultra_search import runs as storage\nstorage.registry.Run\n", "tests.test_x")
-    assert reach_violations("import ultra_search.runs as storage\nstorage.registry.Run\n", "tests.test_x")
-    assert reach_violations("import ultra_search.runs\nultra_search.runs.registry.Run\n", "tests.test_x")
-    assert not reach_violations("from ultra_search import runs\nruns.Run\n", "tests.test_x")
-    assert not reach_violations("from ultra_search import runs as storage\nruns = []\nruns.clear()\n", "tests.test_x")
+    for source in ("from ultra_search import runs\nruns.Run\n",
+                   "from ultra_search import runs as storage\nruns = []\nruns.clear()\n",
+                   "from ultra_search import runs\ndef count(runs):\n    return runs.count(1)\n"):
+        assert not reach_violations(source, "tests.test_x"), source
 
 
 def test_the_path_checker_catches_every_way_of_editing_the_import_path() -> None:
     for source in ("import sys\nsys.path.insert(0, 'x')\n", "import sys\nsys.path.append('x')\n",
                    "import sys\nsys.path = ['x']\n", "import sys\nsys.path += ['x']\n",
-                   "import sys\nsys.path[:] = ['x']\n", "from sys import path\npath.insert(0, 'x')\n",
-                   "from sys import path as p\np.append('x')\n",
-                   "code = 'import sys; sys.path.insert(0, \"x\")'\n", "env = {'PYTHONPATH': 'x'}\n",
-                   "env = dict(os.environ, PYTHONPATH='x')\n", "os.environ['PYTHONPATH'] = 'x'\n",
-                   "monkeypatch.setenv('PYTHONPATH', 'x')\n"):
+                   "import sys\nsys.path[:] = ['x']\n", "import sys\ndel sys.path[0]\n",
+                   "from sys import path\npath.insert(0, 'x')\n", "from sys import path as p\np.append('x')\n",
+                   "import sys as runtime\nruntime.path.insert(0, 'x')\n",
+                   "code = 'import sys; sys.path.insert(0, \"x\")'\n",
+                   "env = dict(os.environ, PYTHONPATH='x')\n", "subprocess.run(argv, env={'PYTHONPATH': 'x'})\n",
+                   "os.environ['PYTHONPATH'] = 'x'\n", "monkeypatch.setenv('PYTHONPATH', 'x')\n",
+                   "os.environ.setdefault('PYTHONPATH', 'x')\n"):
         assert path_edits(source, "x"), source
-    for source in ("import sys\nprint(sys.path)\n", "message = 'Do not set PYTHONPATH'\n", "path = []\npath.append(1)\n"):
+    for source in ("import sys\nprint(sys.path)\n", "message = 'Do not set PYTHONPATH'\n", "path = []\npath.append(1)\n",
+                   "code = 'import sys; print(sys.path[0])'\n", "expected = {'PYTHONPATH': None}\n",
+                   "from sys import path\npath = []\n"):
         assert not path_edits(source, "x"), source
 
 

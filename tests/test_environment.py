@@ -276,6 +276,16 @@ def test_a_working_directory_that_is_gone_is_reported_in_json(tmp_path: Path, mo
     assert len(text.strip().splitlines()) == 1
 
 
+def test_a_runs_dir_that_is_a_symlink_loop_is_refused_in_json(tmp_path: Path) -> None:
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+
+    code, payload, text = run_cli("status", "--runs-dir", str(loop))
+
+    assert code in (2, 4) and payload["ok"] is False and payload["fix"]
+    assert len(text.strip().splitlines()) == 1
+
+
 def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 

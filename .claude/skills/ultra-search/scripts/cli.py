@@ -459,9 +459,7 @@ def main(argv: list[str] | None = None) -> int:
     # the installed location, symlink included.
     cli = str(pathlib.Path(__file__).absolute())
     try:
-        root = (pathlib.Path(args.runs_dir).expanduser().resolve() if getattr(args, "runs_dir", None)
-                else workspace.default_root())
-        return _dispatch(args, root, cli)
+        return _dispatch(args, _root(args), cli)
     except outcome.UltraSearchError as e:
         print(json.dumps(e.payload(), ensure_ascii=False))
         return e.exit_code
@@ -476,6 +474,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(err.payload(), ensure_ascii=False))
         return err.exit_code
+
+
+def _root(args: argparse.Namespace) -> pathlib.Path:
+    """Where runs and saved pages go: --runs-dir, or .ultra-search/ in the working directory."""
+    if not getattr(args, "runs_dir", None):
+        return workspace.default_root()
+    try:
+        return pathlib.Path(args.runs_dir).expanduser().resolve()
+    except RuntimeError as e:  # a symlink loop, on the Pythons that raise rather than OSError
+        raise outcome.ArgumentError(f"--runs-dir {args.runs_dir!r} cannot be resolved: {e}",
+                                    fix="Pass a directory that is not a symlink loop.") from e
 
 
 def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> int:

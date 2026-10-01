@@ -200,3 +200,8 @@ def calling(*calls: tuple[str, object], text: str = "") -> dict:
 
 def tool(name: str, content: str, **details: object) -> dict:
     return {"role": "toolResult", "toolName": name, "content": content, "details": details, "timestamp": 3}
+
+
+def turn(event: str) -> dict:
+    """A `turn-lifecycle` record: the daemon frames every turn with started, final-started, finished."""
+    return {"role": "turn-lifecycle", "event": event, "turnId": "t1", "timestamp": 1}

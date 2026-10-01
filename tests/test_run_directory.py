@@ -14,13 +14,14 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from ultra_search.aside import sessions
 from ultra_search.runs import registry, supervisor
-from conftest import SCRIPTS, aside_session, answer, calling, tool, user
+from conftest import SCRIPTS, aside_session, answer, calling, tool, turn, user
 
 SESSIONS = Path(__file__).parent / "fixtures" / "sessions"
 
@@ -62,6 +63,49 @@ def test_a_run_whose_session_is_never_found_still_produces_an_answer(
     assert result["answer"] == "The answer, visible only in stdout."
     assert [s["url"] for s in result["sources"]] == ["https://example.org/only-in-stdout"]
     assert "stdout only" in result["note"]
+
+
+RECORDED_STDOUT = Path(__file__).parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "stdout.log"
+
+
+def test_without_a_session_the_answer_is_the_whole_final_message_from_stdout(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """Recorded from the real binary: tool calls in colour, their output dimmed, and the
+    final message after the last dimmed block. Without its line the answer is whatever came
+    after the last blank line -- here the tail of a subagent's report -- with colour codes."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "no_session")
+    monkeypatch.setenv("FAKE_ASIDE_STDOUT", str(RECORDED_STDOUT))
+    run = start(runs_dir)
+
+    supervise(run, discovery_deadline=0.5, settle=0.1)
+
+    result = result_of(run)
+    assert result["answer"] == ("The latest stable Python 3 release is **Python 3.14.8**, according to "
+                                "[python.org](https://www.python.org/downloads/).")
+    assert "https://www.python.org/downloads/" in [s["url"] for s in result["sources"]]
+    assert not any("\x1b" in s["url"] for s in result["sources"])
+
+
+def test_a_final_message_with_paragraphs_is_not_cut_at_its_last_blank_line(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """A real run's report -- headings, a table, a list of what it could not confirm -- came
+    back as its last paragraph alone, 386 of 10,080 characters."""
+    final = "## 결론\n\n첫 문단.\n\n| 날짜 | 출처 |\n|---|---|\n| 9/7 | https://e.test/a |\n\n### 확인하지 못한 항목\n\n- 하나"
+    stdout = tmp_path / "stdout.log"
+    stdout.write_text(
+        "조사하겠습니다.\x1b[0m\n\n\x1b[32mwebfetch\x1b[0m(url: \x1b[32m'https://e.test/a'\x1b[39m)\n\n"
+        "\x1b[2m > page text\n\nwith a blank line\x1b[0m\n" + final + "\x1b[0m\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "no_session")
+    monkeypatch.setenv("FAKE_ASIDE_STDOUT", str(stdout))
+    run = start(runs_dir)
+
+    supervise(run, discovery_deadline=0.5, settle=0.1)
+
+    assert result_of(run)["answer"] == final
 
 
 def test_a_child_still_running_at_parent_exit_is_named_not_hidden(
@@ -110,6 +154,45 @@ def test_a_child_is_finished_only_when_its_last_turn_stopped(
 
     assert meta["state"] == "completed_with_orphans"
     assert meta["orphan_children"] == ["MidToolChild0001", "NewTurnChild0001"]
+
+
+@pytest.mark.parametrize("between", [[], [{"role": "system-message", "content": "Relevant skill docs are available."}]],
+                         ids=["adjacent", "system-message-between"])
+def test_a_child_that_reported_mid_turn_is_still_running(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, between: list
+) -> None:
+    """Recorded from a real child: it messages its parent and stops with `stop` well before
+    its turn's `final-started` and final answer. Its turn is only over at `finished` -- read
+    from the prompt it got in this run, which is where its transcript is cut, and real turns
+    can carry a system message between `started` and that prompt."""
+    now = int(time.time() * 1000) + 60_000
+    aside_session(aside_home, "ReportingChild01",
+                  {**turn("started"), "timestamp": now}, *between, {**user("조사해"), "timestamp": now},
+                  {**calling(("webfetch", {"url": "https://x.test"})), "timestamp": now},
+                  {**tool("webfetch", "page"), "timestamp": now}, {**answer("중간 보고"), "timestamp": now})
+    replay([tool("subagent", "spawned", taskId="ReportingChild01"), answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed_with_orphans"
+    assert meta["orphan_children"] == ["ReportingChild01"]
+
+
+def test_the_parents_turn_is_waited_for_until_it_has_finished(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The process can exit before the daemon's last writes land. A message that stopped
+    earlier in the turn is not its end; `finished` is."""
+    replay([turn("started"), user("recorded prompt"), calling(("webfetch", {"url": "https://x.test"})),
+            tool("webfetch", "page"), answer("중간 보고"), {"__after_exit__": 1.0},
+            turn("final-started"), answer("최종 답"), turn("finished")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=5.0)
+
+    assert meta["state"] == "completed"
+    assert result_of(run)["answer"] == "최종 답"
 
 
 def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(

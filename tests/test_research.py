@@ -32,11 +32,16 @@ from conftest import (
     exec_calls,
     run_cli,
     tool,
+    turn,
     user,
 )
 
 SESSIONS = FIXTURES / "sessions"
 RECORDED_RUN = FIXTURES / "runs" / "260829-235523-subagents"
+#: A run recorded on 2026-10-02 against daemon 1.26.1001.14: every turn framed by lifecycle
+#: records, and one subagent given a second task after its first came back empty.
+LIFECYCLE_RUN = FIXTURES / "runs" / "261002-lifecycle-subagent"
+LIFECYCLE_CHILD = "ZFgNUcNIKq1MWMz4"
 
 
 def first_run(payload: dict) -> dict:
@@ -81,7 +86,7 @@ def poll(check, timeout: float = 10.0, every: float = 0.2):
 
 
 def start_isolated(base: Path, records, *, children: dict | None = None, prompt: str = "질문",
-                   label: str = "run", wait: str = "60") -> tuple[Path, dict]:
+                   label: str = "run", wait: str = "60", fmt: str = "lifecycle") -> tuple[Path, dict]:
     home = base / "aside-home"
     (home / "u" / "0" / "sessions").mkdir(parents=True)
     for sid, source in (children or {}).items():
@@ -103,6 +108,7 @@ def start_isolated(base: Path, records, *, children: dict | None = None, prompt:
         ULTRA_SEARCH_ASIDE_BIN=str(Path(__file__).parent / "fake_aside" / "aside"),
         FAKE_ASIDE_SCENARIO="simple",
         FAKE_ASIDE_REPLAY=str(replay),
+        FAKE_ASIDE_FORMAT=fmt,
     )
     p = subprocess.run(
         [sys.executable, str(SCRIPTS / "cli.py"), "search", prompt, "--label", label,
@@ -114,7 +120,8 @@ def start_isolated(base: Path, records, *, children: dict | None = None, prompt:
 
 @pytest.fixture(scope="module")
 def recorded(tmp_path_factory) -> tuple[Path, str]:
-    """A run recorded on 2026-08-29: a parent that spawned three subagents, one of them kept."""
+    """A run recorded on 2026-08-29, before lifecycle records: a parent that spawned three
+    subagents, one of them kept."""
     parent = RECORDED_RUN / "session" / "messages.jsonl"
     opening = json.loads(parent.read_text(encoding="utf-8").splitlines()[0])
     prompt = opening["content"][0]["text"].split("\n\n(ultra-search:")[0]
@@ -122,15 +129,16 @@ def recorded(tmp_path_factory) -> tuple[Path, str]:
     runs, payload = start_isolated(
         tmp_path_factory.mktemp("recorded"), parent,
         children={kid: RECORDED_RUN / "session" / "children" / f"{kid}.jsonl"},
-        prompt=prompt, label="subagents",
+        prompt=prompt, label="subagents", fmt="legacy",
     )
     return runs, first_run(payload)["run_id"]
 
 
 @pytest.fixture(scope="module")
 def simple_search(tmp_path_factory) -> tuple[Path, str]:
-    """The recorded session of a real search: one websearch, one cited answer."""
-    runs, payload = start_isolated(tmp_path_factory.mktemp("simple"), SESSIONS / "2026-08-29_SimpleSearch00001" / "messages.jsonl")
+    """The recorded session of a real search, before lifecycle records: one websearch, one cited answer."""
+    runs, payload = start_isolated(tmp_path_factory.mktemp("simple"), SESSIONS / "2026-08-29_SimpleSearch00001" / "messages.jsonl",
+                                   fmt="legacy")
     return runs, first_run(payload)["run_id"]
 
 
@@ -1517,3 +1525,132 @@ def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None
     assert len(prompts) == 2 and all(scope in p for p in prompts)
     for command in ("search", "resume"):
         assert "Read-only research" in cli(command, "--help")[2]
+
+
+# --- the transcript format the daemon writes now ------------------------------------------
+#
+# Since mid-September 2026 every turn is framed by `turn-lifecycle` records: `started` comes
+# before the prompt, `final-started` before the last message, `finished` after it. A
+# session's first line is no longer its prompt, and its last record is no longer the answer.
+
+
+@pytest.mark.parametrize("fmt", ["lifecycle", "legacy"])
+def test_a_search_finds_its_own_session_in_either_format(cli, monkeypatch, fmt: str) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_FORMAT", fmt)
+
+    code, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    assert code == 0
+    assert run["state"] == "completed", run.get("note")
+    assert run["session_id"]
+    assert run["answer"] == "Answer Example A (https://example.org/a)"
+
+
+@pytest.mark.parametrize("fmt", ["lifecycle", "legacy"])
+def test_children_that_finished_are_not_orphans_in_either_format(cli, monkeypatch, fmt: str) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_FORMAT", fmt)
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "subagent")
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    assert run["state"] == "completed"
+    assert not run.get("orphan_children")
+    assert "child 2 done." in run["answer"]
+
+
+def test_a_recorded_run_goes_from_search_through_its_child_to_result_and_resume(
+    cli, replay, aside_home: Path, monkeypatch
+) -> None:
+    """The whole path on what the daemon actually wrote: the parent is found by its marker
+    behind the opening lifecycle record, the child -- whose transcript ends in `finished`,
+    after a second task -- counts as done, and the session that ended takes a follow-up."""
+    kid = aside_home / "u" / "0" / "sessions" / f"2026-10-02_{LIFECYCLE_CHILD}"
+    kid.mkdir()
+    shutil.copy(LIFECYCLE_RUN / "session" / "children" / f"{LIFECYCLE_CHILD}.jsonl", kid / "messages.jsonl")
+    replay(LIFECYCLE_RUN / "session" / "messages.jsonl")
+
+    code, payload, _ = search(cli, "What is the latest stable Python 3 release according to python.org?")
+    run = first_run(payload)
+    _, result, _ = cli("result", "--run", run["run_id"])
+    _, status, _ = cli("status", "--run", run["run_id"])
+    monkeypatch.delenv("FAKE_ASIDE_REPLAY")
+    resumed_code, resumed, _ = cli("resume", run["run_id"], "Which page did the child read?", "--wait", "30")
+
+    assert code == 0
+    assert run["state"] == "completed", run.get("note")
+    assert first_run(status)["child_ids"] == [LIFECYCLE_CHILD]
+    answer = first_run(result)["answer"]
+    assert answer.startswith("The latest stable Python 3 release is **Python 3.14.8**")
+    # The child's answer to its second task, not the empty-handed first one.
+    assert f"--- child {LIFECYCLE_CHILD} ---\nLatest stable version shown: **Python 3.14.8**" in answer
+    assert "[blocked]" not in answer
+    assert [(s["url"], s["opened"]) for s in first_run(result)["sources"]] == [("https://www.python.org/downloads/", True)]
+    assert resumed_code == 0
+    assert first_run(resumed)["state"] == "completed"
+    assert first_run(resumed)["answer"] == "이어서 답합니다."
+
+
+def test_lifecycle_records_are_not_progress_lines(cli, replay, aside_home: Path) -> None:
+    """They frame a turn; they are not something the run did. Printed as raw JSON they would
+    bury the lines a supervisor reads, three per turn."""
+    replay(LIFECYCLE_RUN / "session" / "messages.jsonl")
+    run_id = finished_run_id(cli)
+
+    _, _, progress = cli("log", "--run", run_id)
+    _, _, steps = cli("log", "--run", run_id, "--level", "steps")
+
+    assert "turn-lifecycle" not in progress and "raw" not in rendered(progress)
+    assert "turn final-started" in steps and "turn finished" in steps
+    assert "turn-lifecycle" not in steps
+
+
+def test_sessions_shows_the_opening_prompt_behind_whatever_comes_first(cli, aside_home: Path) -> None:
+    """A transcript can open with a lifecycle record, or with a system message listing skill
+    docs, before the user's prompt. The prompt is what identifies a session to a person."""
+    aside_session(aside_home, "FramedSession001", turn("started"), user("framed question"), turn("final-started"),
+                  answer("a"), turn("finished"))
+    aside_session(aside_home, "SystemFirst00001", {"role": "system-message", "content": "Relevant skill docs are available."},
+                  user("question after skill docs"), answer("a"))
+
+    _, payload, _ = cli("sessions")
+
+    listed = {s["session_id"]: s["prompt"] for s in payload["sessions"]}
+    assert listed["FramedSession001"] == "framed question"
+    assert listed["SystemFirst00001"] == "question after skill docs"
+
+
+def test_a_marker_is_found_however_the_transcript_encodes_it(cli, aside_home: Path) -> None:
+    """JSON may store a non-ASCII prompt as \\u escapes. The marker is read from the decoded
+    prompt, not from the bytes of the line."""
+    d = aside_home / "u" / "0" / "sessions" / "2026-10-02_EscapedSession01"
+    d.mkdir(parents=True)
+    records = [turn("started"), user("질문\n\n(ultra-search:261002-101500-파이썬 — ignore this line)"), answer("a")]
+    (d / "messages.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    _, payload, _ = cli("sessions", "--mine")
+
+    assert [s["run_id"] for s in payload["sessions"]] == ["261002-101500-파이썬"]
+
+
+@pytest.mark.parametrize("records,refused", [
+    ([turn("started"), user("q"), turn("final-started"), answer("a"), turn("finished")], False),
+    ([turn("started"), user("q"), calling(("webfetch", {"url": "https://x.test"}))], True),
+    ([turn("started"), user("q"), turn("final-started"), answer("a")], True),
+    ([turn("started"), user("q"), answer("a"), turn("finished"), turn("started"), user("more")], True),
+    ([turn("started"), user("q"), answer("a"), turn("finished"), {"role": "system-message", "content": "Subagent x is done"}], False),
+], ids=["finished", "mid-tool", "final-message-not-closed", "new-turn-started", "note-after-finish"])
+def test_a_session_is_busy_until_its_last_turn_has_finished(cli, aside_home: Path, records, refused: bool) -> None:
+    """The last lifecycle record decides: `finished` closes a turn and a later `started` opens
+    the next. A record after `finished` that starts nothing -- a subagent's late report -- does
+    not reopen it."""
+    aside_session(aside_home, "FramedSession002", *records)
+
+    code, payload, _ = cli("resume", "FramedSession002", "후속", "--wait", "30")
+
+    assert (code == 2) is refused, payload
+    if refused:
+        assert "in flight" in payload["message"]
+    else:
+        assert first_run(payload)["state"] == "completed"

@@ -22,6 +22,10 @@ from pathlib import Path
 
 DEFAULT_ASIDE_HOME = "~/.aside"
 ACCOUNT = "u/0"
+#: How far into a transcript the opening prompt is looked for. Records come before it -- a
+#: turn's lifecycle record, attachment metadata, a system message listing skill docs -- but
+#: only a few, and a session with none of its prompt this far in is not one to match.
+OPENING_SCAN_LINES = 20
 
 
 @dataclass
@@ -67,22 +71,44 @@ def session_dir(home: str | os.PathLike[str] | None, session_id: str) -> Path | 
     return None
 
 
-def find_session_by_marker(home: str | os.PathLike[str] | None, marker: str) -> SessionRef | None:
-    """The session whose opening user message contains ``marker``.
+def opening_prompt(transcript: str | os.PathLike[str]) -> str | None:
+    """The text of the first user record, or None when there is none yet.
 
-    Only the first record is read, and only from sessions that have one: a directory
-    Aside has created but not yet written to is a session in progress, not a mismatch.
+    Decoded rather than searched as bytes: JSON may store the prompt's non-ASCII characters
+    as escapes, and a marker carrying a non-ASCII label would then never match the line.
+    """
+    try:
+        with Path(transcript).open("r", encoding="utf-8", errors="replace") as f:
+            for _ in range(OPENING_SCAN_LINES):
+                line = f.readline()
+                if not line:
+                    return None
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("role") == "user":
+                    return _text_of(rec.get("content"))
+    except OSError:
+        return None
+    return None
+
+
+def _text_of(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return " ".join(str(b.get("text") or "") for b in (content or []) if isinstance(b, dict))
+
+
+def find_session_by_marker(home: str | os.PathLike[str] | None, marker: str) -> SessionRef | None:
+    """The session whose opening prompt contains ``marker``.
+
+    A session whose prompt has not been written yet is a session in progress, not a
+    mismatch, and is passed over until it has one.
     """
     for ref in iter_sessions(home):
-        t = ref.transcript
-        try:
-            with t.open("r", encoding="utf-8", errors="replace") as f:
-                first = f.readline()
-        except OSError:
-            continue
-        if not first.strip():
-            continue
-        if marker in first:
+        prompt = opening_prompt(ref.transcript)
+        if prompt and marker in prompt:
             return ref
     return None
 
@@ -204,8 +230,6 @@ def session_summaries(home: str | os.PathLike[str] | None = None, limit: int = 3
     session id is not something anyone can recall -- so the opening prompt is what makes
     the list usable, and the marker is what says whether ultra-search started it.
     """
-    import json as _json
-
     out: list[dict] = []
     # Filtered before limited, not after: repl calls leave behind session directories with
     # no transcript at all, and they are the newest ones, so slicing first returns a page
@@ -213,26 +237,10 @@ def session_summaries(home: str | os.PathLike[str] | None = None, limit: int = 3
     for ref in iter_sessions(home):
         if len(out) >= limit:
             break
-        first = ""
-        try:
-            with ref.transcript.open("r", encoding="utf-8", errors="replace") as f:
-                first = f.readline()
-        except OSError:
+        prompt = opening_prompt(ref.transcript)
+        if prompt is None:
             continue
-        if not first.strip():
-            continue
-        prompt = ""
-        try:
-            rec = _json.loads(first)
-            content = rec.get("content")
-            if isinstance(content, str):
-                prompt = content
-            else:
-                prompt = " ".join(
-                    str(b.get("text") or "") for b in (content or []) if isinstance(b, dict)
-                )
-        except ValueError:
-            prompt = first[:200]
+        # The marker is read before the prompt is shortened for display: it sits at the end.
         marker = ""
         if "ultra-search:" in prompt:
             marker = prompt.split("ultra-search:", 1)[1].split(" ", 1)[0].strip(")\n")

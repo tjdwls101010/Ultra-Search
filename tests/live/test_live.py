@@ -35,18 +35,23 @@ def test_doctor_reports_a_working_environment() -> None:
 
 
 def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
+    """`completed`, a session id and token usage are the correlation working: when the run's
+    own session is not found, the run still ends, as `completed_unstructured`, with an answer
+    cut from stdout and no usage. Which tool opens the page is the agent's choice, and a page
+    read through `repl` lists no source, so the sources are not asserted here."""
     code, payload = cli(
         "search",
-        "현재 Python 3의 최신 안정 버전은 무엇인가? 공식 출처를 들어 한 줄로 답해라.",
+        "현재 Python 3의 최신 안정 버전은 무엇인가? python.org 다운로드 페이지를 직접 열어 확인하고 한 줄로 답해라.",
+        "--effort", "low",
         "--wait", "120",
         "--runs-dir", str(tmp_path),
     )
 
     assert code == 0
     run = payload["runs"][0]
-    assert run["state"] == "completed"
+    assert run["state"] == "completed", run.get("note")
+    assert run["session_id"]
     assert run["answer"].strip()
-    assert run["sources"]
     assert run["usage"]["total_tokens"] > 0
 
 
@@ -118,7 +123,7 @@ def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) ->
     import subprocess as sp
 
     sp.run(
-        ["aside", "exec", "내 이름은 성진이야. 기억해 두고 알겠다고만 답해."],
+        ["aside", "exec", "--effort", "low", "내 이름은 성진이야. 기억해 두고 알겠다고만 답해."],
         capture_output=True, text=True, timeout=180,
     )
 
@@ -129,7 +134,7 @@ def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) ->
 
     code, payload = cli(
         "resume", external["session_id"], "내 이름이 뭐라고 했지? 이름만 답해.",
-        "--wait", "120", "--runs-dir", str(tmp_path),
+        "--effort", "low", "--wait", "120", "--runs-dir", str(tmp_path),
     )
 
     assert code == 0

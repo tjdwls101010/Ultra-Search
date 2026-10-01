@@ -9,9 +9,16 @@ the only way to test them repeatedly.
 Behaviour is chosen by FAKE_ASIDE_SCENARIO. Every invocation appends its argv to
 $FAKE_ASIDE_CALLS/calls.jsonl so a contract test can assert what was actually run.
 
+Transcripts are written in the format the real daemon has written since mid-September 2026: every
+turn opens with a `turn-lifecycle` `started` record before its prompt, announces its last
+message with `final-started`, and closes with `finished`. FAKE_ASIDE_FORMAT=legacy writes
+the earlier format, which has none of these records.
+
 FAKE_ASIDE_REPLAY names a JSONL file of transcript records to write after the prompt,
 for `exec` and for a resumed `exec --session` alike; a `{"__sleep__": SEC}` line pauses
-the writer, so a run can be held open at any point of its transcript, and a record
+the writer, so a run can be held open at any point of its transcript, a
+`{"__after_exit__": SEC}` line lets the process exit and has the rest written SEC later,
+the way the daemon's last writes can land after `aside exec` has returned, and a record
 carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains TEXT, so
 the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
 resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
@@ -41,6 +48,7 @@ import time
 from pathlib import Path
 
 SCENARIO = os.environ.get("FAKE_ASIDE_SCENARIO", "simple")
+LIFECYCLE = os.environ.get("FAKE_ASIDE_FORMAT", "lifecycle") != "legacy"
 HOME = Path(os.environ.get("ULTRA_SEARCH_ASIDE_HOME", "~/.aside")).expanduser()
 SESSIONS = HOME / "u" / "0" / "sessions"
 
@@ -63,9 +71,27 @@ def make_session(prompt: str, session_id: str | None = None) -> tuple[str, Path]
     sid = session_id or new_session_id()
     d = SESSIONS / f"{time.strftime('%Y-%m-%d')}_{sid}"
     d.mkdir(parents=True, exist_ok=True)
-    rec = {"role": "user", "content": [{"type": "text", "text": prompt}], "timestamp": int(time.time() * 1000)}
-    append(d, rec)
+    lifecycle(d, "started")
+    append(d, opening_prompt(prompt))
     return sid, d
+
+
+def opening_prompt(prompt: str) -> dict:
+    return {"role": "user", "content": [{"type": "text", "text": prompt}], "timestamp": int(time.time() * 1000)}
+
+
+def lifecycle(d: Path, event: str) -> None:
+    """One `turn-lifecycle` record, in the format that writes them."""
+    if LIFECYCLE:
+        append(d, {"role": "turn-lifecycle", "event": event, "turnId": f"turn-{d.name}",
+                   "timestamp": int(time.time() * 1000)})
+
+
+def finish(d: Path, text: str, stop: str = "stop") -> None:
+    """A turn's last message, framed the way the daemon frames it."""
+    lifecycle(d, "final-started")
+    append(d, assistant(texts=[text], stop=stop))
+    lifecycle(d, "finished")
 
 
 def append(d: Path, rec: dict) -> None:
@@ -106,10 +132,12 @@ SEARCH_SOURCES = {"sources": [
 def replay(d: Path, prompt: str) -> bool:
     """Write the records from FAKE_ASIDE_REPLAY after the prompt already in ``d``.
 
-    A recorded session's own opening prompt is skipped: the prompt this run was given, with
-    its marker, is already there, exactly as the real binary writes it. A recording that
-    ends without a newline ends the same way here -- half a record, as a transcript looks
-    while its writer is mid-line.
+    A recorded session's own opening prompt is skipped, with the `started` record before it:
+    the prompt this run was given, with its marker, is already there, exactly as the real
+    binary writes it. A recording made before the lifecycle records existed gets its turn
+    closed with `finished` when it ends on a finished answer, as the daemon would close it
+    now; one that ends mid-work stays open. A recording that ends without a newline ends the
+    same way here -- half a record, as a transcript looks while its writer is mid-line.
     """
     source = os.environ.get("FAKE_ASIDE_REPLAY")
     if not source:
@@ -117,6 +145,8 @@ def replay(d: Path, prompt: str) -> bool:
     text = Path(source).read_text(encoding="utf-8")
     lines = text.splitlines()
     opening = True
+    recorded_lifecycle = False
+    answered = False
     for i, line in enumerate(lines):
         if not line.strip():
             continue
@@ -128,10 +158,19 @@ def replay(d: Path, prompt: str) -> bool:
         if isinstance(rec, dict) and "__sleep__" in rec:
             time.sleep(float(rec["__sleep__"]))
             continue
+        if isinstance(rec, dict) and "__after_exit__" in rec:
+            if os.fork() != 0:
+                return True
+            time.sleep(float(rec["__after_exit__"]))
+            continue
         if isinstance(rec, dict) and "__if_prompt__" in rec:
             if str(rec.pop("__if_prompt__")) not in prompt:
                 continue
             line = json.dumps(rec, ensure_ascii=False)
+        if role == "turn-lifecycle":
+            recorded_lifecycle = True
+            if opening:
+                continue
         if opening and role == "user":
             opening = False
             continue
@@ -140,6 +179,9 @@ def replay(d: Path, prompt: str) -> bool:
         torn = i == len(lines) - 1 and not text.endswith("\n")
         with (d / "messages.jsonl").open("a", encoding="utf-8") as f:
             f.write(line if torn else line + "\n")
+        answered = role == "assistant" and rec.get("stopReason") not in (None, "", "toolUse") and not torn
+    if not recorded_lifecycle and answered:
+        lifecycle(d, "finished")
     return True
 
 
@@ -157,12 +199,12 @@ def do_exec(prompt: str, session: str | None = None) -> int:
             print(f"no such session {session}", file=sys.stderr)
             return 1
         time.sleep(float(os.environ.get("FAKE_ASIDE_PROMPT_DELAY", "0")))
-        opening = {"role": "user", "content": [{"type": "text", "text": prompt}],
-                   "timestamp": int(time.time() * 1000)}
+        opening = opening_prompt(prompt)
         # FAKE_ASIDE_RESUME_LATE=1 lands the whole turn, prompt included, after this process
         # has exited: the transcript then shows only earlier turns for a while.
         late = os.environ.get("FAKE_ASIDE_RESUME_LATE") == "1"
         if not late:
+            lifecycle(d, "started")
             append(d, opening)
             if replay(d, prompt):
                 return 0
@@ -174,11 +216,12 @@ def do_exec(prompt: str, session: str | None = None) -> int:
             if os.fork() == 0:
                 time.sleep(delay)
                 if late:
+                    lifecycle(d, "started")
                     append(d, opening)
-                append(d, assistant(texts=[answer]))
+                finish(d, answer)
                 os._exit(0)
         else:
-            append(d, assistant(texts=[answer]))
+            finish(d, answer)
         print(answer)
         return 0
 
@@ -188,12 +231,19 @@ def do_exec(prompt: str, session: str | None = None) -> int:
 
     if SCENARIO == "no_session":
         # The session never appears on disk: the supervisor has to fall back to stdout
-        # alone rather than waiting forever for a correlation that will not happen.
-        print("Thinking: working…")
-        print("websearch(objective: 'x', search_queries: ['x'], mode: 'basic')")
-        print(" > {\"session_id\":\"unknowable\",\"results\":[{\"url\":\"https://example.org/only-in-stdout\"}]}")
+        # alone rather than waiting forever for a correlation that will not happen. What is
+        # printed is shaped like the real binary's stdout -- a tool call in colour, its
+        # output dimmed, then the final message -- or is a recording of it, given as
+        # FAKE_ASIDE_STDOUT.
+        recorded = os.environ.get("FAKE_ASIDE_STDOUT")
+        if recorded:
+            sys.stdout.write(Path(recorded).read_text(encoding="utf-8"))
+            return 0
+        print("\x1b[32mwebsearch\x1b[0m(objective: \x1b[32m'x'\x1b[39m)\n")
+        print("\x1b[2m > {\"session_id\":\"unknowable\",\"results\":[{\"url\":\"https://example.org/only-in-stdout\"}]}\x1b[0m")
+        sys.stdout.flush()
         time.sleep(float(os.environ.get("FAKE_ASIDE_DELAY", "0.3")))
-        print("The answer, visible only in stdout.")
+        print("The answer, visible only in stdout.\x1b[0m")
         return 0
 
     sid, d = make_session(prompt)
@@ -208,7 +258,7 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         append(d, assistant(calls=[("websearch", {"objective": "slow", "search_queries": ["q"]})], stop="toolUse"))
         time.sleep(delay)
         append(d, tool_result("websearch", "results…", SEARCH_SOURCES))
-        append(d, assistant(texts=["느린 답."]))
+        finish(d, "느린 답.")
         print("느린 답.")
         return 0
 
@@ -223,34 +273,34 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         # One child finishes promptly; in the orphan scenario the other is still writing
         # when the parent process exits, which is exactly the case that must not be
         # reported as a clean completion.
-        append(children[0][1], assistant(texts=["child 1 done."]))
+        finish(children[0][1], "child 1 done.")
         if SCENARIO == "subagent":
-            append(children[1][1], assistant(texts=["child 2 done."]))
-            append(d, assistant(texts=["부모 답: 자식 둘 완료."]))
+            finish(children[1][1], "child 2 done.")
+            finish(d, "부모 답: 자식 둘 완료.")
             print("부모 답: 자식 둘 완료.")
             return 0
         os.environ["FAKE_ASIDE_ORPHAN_DIR"] = str(children[1][1])
         pid = os.fork()
         if pid == 0:
             time.sleep(float(os.environ.get("FAKE_ASIDE_ORPHAN_DELAY", "2")))
-            append(children[1][1], assistant(texts=["child 2 finished late."]))
+            finish(children[1][1], "child 2 finished late.")
             os._exit(0)
-        append(d, assistant(texts=["부모 답: 자식 하나가 아직."]))
+        finish(d, "부모 답: 자식 하나가 아직.")
         print("부모 답: 자식 하나가 아직.")
         return 0
 
     if SCENARIO == "fail":
-        append(d, assistant(texts=[""], stop="error"))
+        finish(d, "", stop="error")
         print("something went wrong", file=sys.stderr)
         return 1
 
     if SCENARIO == "empty":
-        append(d, assistant(texts=[""]))
+        finish(d, "")
         return 0
 
     if SCENARIO == "negative":
         answer = "관련 사례를 찾지 못했습니다."
-        append(d, assistant(texts=[answer]))
+        finish(d, answer)
         print(answer)
         return 0
 
@@ -258,7 +308,7 @@ def do_exec(prompt: str, session: str | None = None) -> int:
     append(d, assistant(calls=[("websearch", {"objective": "o", "search_queries": ["q"]})], stop="toolUse"))
     append(d, tool_result("websearch", "results…", SEARCH_SOURCES))
     answer = 'Answer <citation refs="src1">Example A</citation>'
-    append(d, assistant(texts=[answer]))
+    finish(d, answer)
     print(answer)
     return 0
 

@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,41 @@ def test_the_fakes_transcript_reads_like_a_real_one(cli) -> None:
     _, _, text = cli("log", "--run", run_id, "--level", "raw")
 
     roles = [json.loads(line)["role"] for line in text.splitlines()[:-1] if line.startswith("{")]
-    assert roles == ["user", "assistant", "toolResult", "assistant"]
+    assert roles == ["turn-lifecycle", "user", "assistant", "toolResult", "turn-lifecycle", "assistant", "turn-lifecycle"]
     run = payload["runs"][0]
     assert run["answer"] and run["sources"] and run["usage"]["total_tokens"] > 0
+
+
+RECORDED = Path(__file__).resolve().parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "session"
+
+
+def lifecycle_frame(path: Path) -> list[str]:
+    """Where the lifecycle records sit among the others: what a turn's boundaries look like."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        out.append(rec["event"] if rec["role"] == "turn-lifecycle" else rec["role"])
+    return out
+
+
+def test_the_fake_frames_a_turn_the_way_the_recorded_daemon_does(tmp_path: Path) -> None:
+    """The recording is daemon 1.26.1001.14's. A turn opens with `started` before its prompt
+    and closes with `final-started`, the last message, then `finished`."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    run_fake(["exec", "질문"], home, calls)
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+
+    for frame in (lifecycle_frame(RECORDED / "messages.jsonl"), lifecycle_frame(session / "messages.jsonl")):
+        assert frame[:2] == ["started", "user"]
+        assert frame[-3:] == ["final-started", "assistant", "finished"]
+
+
+def test_the_fake_can_still_write_the_format_before_lifecycle_records(tmp_path: Path) -> None:
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    run_fake(["exec", "질문"], home, calls, FAKE_ASIDE_FORMAT="legacy")
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+
+    assert "turn-lifecycle" not in (session / "messages.jsonl").read_text(encoding="utf-8")
 
 
 def test_the_fake_records_the_argv_it_was_given(tmp_path: Path) -> None:
@@ -104,9 +137,23 @@ def test_a_replay_follows_the_prompt_and_keeps_a_torn_tail_torn(tmp_path: Path) 
     (session,) = (home / "u" / "0" / "sessions").iterdir()
     written = (session / "messages.jsonl").read_text()
     assert "recorded prompt" not in written, "the recording's own prompt is replaced by this run's"
-    assert json.loads(written.splitlines()[0])["content"][0]["text"] == "새 질문"
-    assert json.loads(written.splitlines()[1])["toolName"] == "websearch"
+    assert json.loads(written.splitlines()[1])["content"][0]["text"] == "새 질문"
+    assert json.loads(written.splitlines()[2])["toolName"] == "websearch"
     assert written.endswith('"content":"half')
+
+
+def test_a_replay_that_stops_mid_work_leaves_the_turn_open(tmp_path: Path) -> None:
+    """Only a recording that ends on a finished answer gets the `finished` record the daemon
+    would write; one that ends mid-tool is a turn still going, or cut off."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({"role": "assistant", "content": [{"type": "toolCall", "name": "webfetch", "arguments": {}}],
+                                  "stopReason": "toolUse"}) + "\n" + json.dumps(tool("webfetch", "r")) + "\n")
+
+    run_fake(["exec", "질문"], home, calls, FAKE_ASIDE_REPLAY=str(replay))
+
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+    assert lifecycle_frame(session / "messages.jsonl") == ["started", "user", "assistant", "toolResult"]
 
 
 def test_a_signed_out_fake_has_an_empty_roster(tmp_path: Path) -> None:
@@ -188,16 +235,18 @@ def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path) -> Non
 
 @pytest.mark.live
 def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) -> None:
-    """If this fails and the fake's equivalent passes, the fake has drifted."""
-    marker = "ultra-search:contract-live"
+    """If this fails and the fake's equivalent passes, the fake has drifted. The marker is new
+    each time: Aside keeps sessions for weeks, so an earlier run's would match as well."""
+    run_id = f"contract-live-{os.getpid()}-{int(time.time())}"
+    marker = f"ultra-search:{run_id}"
     prompt = f"Reply with the single word OK.\n\n({marker} — ignore this line)"
-    subprocess.run(["aside", "exec", prompt], capture_output=True, text=True, timeout=180)
+    subprocess.run(["aside", "exec", "--effort", "low", prompt], capture_output=True, text=True, timeout=180)
 
     p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "sessions", "--mine", "--search", marker,
                         "--runs-dir", str(tmp_path)], capture_output=True, text=True, timeout=60)
 
     found = json.loads(p.stdout)["sessions"]
-    assert [s["run_id"] for s in found] == ["contract-live"], "the real transcript must be findable by its prompt marker"
+    assert [s["run_id"] for s in found] == [run_id], "the real transcript must be findable by its prompt marker"
 
 
 @pytest.mark.live

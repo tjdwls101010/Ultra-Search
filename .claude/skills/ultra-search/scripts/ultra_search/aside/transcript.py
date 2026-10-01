@@ -1,44 +1,81 @@
-"""The session transcript, as events a caller can act on.
+"""The session transcript, as events in this skill's terms.
 
 Aside writes one JSON object per line to a session's ``messages.jsonl`` while the run is
 still going, so this module reads by byte cursor and stops at the last newline: a line
 being written is half a line, and parsing it would either crash or invent a record.
 
-Nothing here drops a record it does not recognise. This file is a private surface of
-another product -- when it changes, an unfamiliar shape arriving as ``raw`` degrades a
-report, while a dropped one silently shortens it and nobody finds out.
+Everything that depends on how Aside spells a record -- its roles, its stop reasons, where a
+tool result keeps its sources and a subagent's id, its usage keys, its tool names -- is read
+here and handed on as an `Event`. Nothing here drops a record it does not recognise: this
+file is a private surface of another product, and when it changes an unfamiliar shape
+arriving as ``raw`` degrades a report, while a dropped one silently shortens it and nobody
+finds out.
 """
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+#: Tools whose result means the agent read a page, rather than being shown it in a list.
+_OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
+#: Arguments that name something outside the session -- the thing a call reached for. A local
+#: path or an offset says how the worker asked, not what it went after.
+_TARGET_KEYS = ("url", "objective", "description", "title")
+_HOST_RE = re.compile(r"^https?://([^/]+)")
+_USAGE_KEYS = {"input": "input", "output": "output", "cacheRead": "cache_read", "cacheWrite": "cache_write",
+               "reasoning": "reasoning", "totalTokens": "total_tokens"}
+
 
 @dataclass
 class ToolCall:
     name: str
-    arguments: dict
-    raw: dict = field(repr=False, default_factory=dict)
+    #: The call's arguments as the worker wrote them.
+    arguments: object
+    #: What the call reached for, on one line: a URL's host, an objective, a description; "" when none.
+    target: str = ""
+
+
+@dataclass
+class SourceRef:
+    """A page a tool result named: listed by a search, or opened by a tool that reads pages."""
+
+    url: str
+    title: str = ""
+    id: str = ""
+    excerpt: str = ""
+    published: str = ""
+    #: Whether a page-opening tool returned it -- an inference that it was read, not a check of what it said.
+    opened: bool = False
 
 
 @dataclass
 class Event:
+    """One transcript record: user, assistant, tool_result, system, lifecycle, or raw (anything unfamiliar)."""
+
     kind: str
     index: int
-    raw: dict = field(repr=False, default_factory=dict)
+    timestamp: int = 0
     text: str = ""
-    thinking: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_name: str = ""
     content: str = ""
-    details: dict = field(default_factory=dict)
     is_error: bool = False
-    usage: dict = field(default_factory=dict)
-    stop_reason: str = ""
-    timestamp: int = 0
-    unknown_blocks: list[dict] = field(default_factory=list)
+    #: Why an assistant message stopped: "tool" to call one, "end" for anything else, "" when not recorded.
+    stop: str = ""
     #: For a `lifecycle` event, which boundary of a turn it marks: started, final-started, finished.
     lifecycle: str = ""
+    sources: list[SourceRef] = field(default_factory=list)
+    #: Sessions a tool result says were spawned or continued as subagents, as Aside named them.
+    child_ids: list[str] = field(default_factory=list)
+    #: input, output, cache_read, cache_write, reasoning, total_tokens and cost, as numbers; {} when not recorded.
+    usage: dict = field(default_factory=dict)
+    unknown_blocks: list = field(default_factory=list)
+    #: A tool result's own structured detail, unread here: handed out whole on request.
+    details: dict = field(default_factory=dict)
+    #: The record as stored, for a reader who asked for it unchanged.
+    raw: dict = field(repr=False, default_factory=dict)
 
 
 def read_events(path: str | Path, since: int = 0) -> tuple[list[Event], int]:
@@ -98,16 +135,7 @@ def parse_record(line: str, index: int = 0) -> Event:
     if role == "assistant":
         return _assistant(obj, index, ts)
     if role == "toolResult":
-        return Event(
-            kind="tool_result",
-            index=index,
-            raw=obj,
-            tool_name=str(obj.get("toolName") or ""),
-            content=_as_text(obj.get("content")),
-            details=obj.get("details") or {},
-            is_error=bool(obj.get("isError")),
-            timestamp=ts,
-        )
+        return _tool_result(obj, index, ts)
     if role == "turn-lifecycle":
         return Event(kind="lifecycle", index=index, raw=obj, lifecycle=str(obj.get("event") or ""), timestamp=ts)
     if role == "system-message":
@@ -139,16 +167,15 @@ def turn_finished(events: list[Event]) -> bool:
     last = events[-1]
     if last.kind != "assistant":
         return False
-    if last.stop_reason:
-        return last.stop_reason != "toolUse"
+    if last.stop:
+        return last.stop == "end"
     return bool(last.text.strip())
 
 
 def _assistant(obj: dict, index: int, ts: int) -> Event:
     texts: list[str] = []
-    thinking: list[str] = []
     calls: list[ToolCall] = []
-    unknown: list[dict] = []
+    unknown: list = []
     blocks = obj.get("content")
     if isinstance(blocks, str):
         texts.append(blocks)
@@ -161,25 +188,109 @@ def _assistant(obj: dict, index: int, ts: int) -> Event:
         if kind == "text":
             texts.append(str(block.get("text") or ""))
         elif kind == "thinking":
-            thinking.append(str(block.get("text") or block.get("thinking") or ""))
+            continue
         elif kind == "toolCall":
-            calls.append(ToolCall(name=str(block.get("name") or ""), arguments=block.get("arguments") or {}, raw=block))
+            arguments = block.get("arguments") or {}
+            calls.append(ToolCall(name=str(block.get("name") or ""), arguments=arguments, target=_target(arguments)))
         else:
             # An unfamiliar block type keeps its siblings: the text next to it is still
             # the answer, and losing the whole turn over one new block would hide it.
             unknown.append(block)
+    reason = str(obj.get("stopReason") or "")
     return Event(
         kind="assistant",
         index=index,
         raw=obj,
         text="\n".join(t for t in texts if t),
-        thinking="\n".join(t for t in thinking if t),
         tool_calls=calls,
-        usage=obj.get("usage") or {},
-        stop_reason=str(obj.get("stopReason") or ""),
+        usage=_usage(obj.get("usage")),
+        stop="" if not reason else ("tool" if reason == "toolUse" else "end"),
         timestamp=ts,
         unknown_blocks=unknown,
     )
+
+
+def _tool_result(obj: dict, index: int, ts: int) -> Event:
+    name = str(obj.get("toolName") or "")
+    details = obj.get("details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    opened = name in _OPENING_TOOLS
+    sources = []
+    for raw in details.get("sources") or []:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or "").strip()
+        if not url:
+            continue
+        sources.append(SourceRef(
+            url=url,
+            title=str(raw.get("title") or ""),
+            id=str(raw.get("id") or ""),
+            excerpt=str(raw.get("excerpt") or ""),
+            published=str(raw.get("publishDate") or raw.get("published") or ""),
+            opened=opened,
+        ))
+    return Event(
+        kind="tool_result",
+        index=index,
+        raw=obj,
+        tool_name=name,
+        content=_as_text(obj.get("content")),
+        details=details,
+        is_error=bool(obj.get("isError")),
+        sources=sources,
+        child_ids=_child_ids(name, details),
+        timestamp=ts,
+    )
+
+
+def _child_ids(tool: str, details: dict) -> list[str]:
+    """Sessions a subagent tool started or continued, in the order its result names them."""
+    if not tool.startswith("subagent"):
+        return []
+    out: list[str] = []
+    for key in ("taskId", "task_id", "sessionId", "session_id"):
+        val = details.get(key)
+        if isinstance(val, str) and val and val not in out:
+            out.append(val)
+    for r in details.get("results") or []:
+        if isinstance(r, dict):
+            val = r.get("taskId") or r.get("task_id")
+            if isinstance(val, str) and val and val not in out:
+                out.append(val)
+    return out
+
+
+def _usage(raw: object) -> dict:
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out = {}
+    for theirs, ours in _USAGE_KEYS.items():
+        try:
+            out[ours] = int(raw.get(theirs) or 0)
+        except (TypeError, ValueError):
+            out[ours] = 0
+    cost = raw.get("cost")
+    try:
+        out["cost"] = float(cost.get("total") or 0) if isinstance(cost, dict) else float(cost or 0)
+    except (TypeError, ValueError):
+        out["cost"] = 0.0
+    return out
+
+
+def _target(arguments: object) -> str:
+    if not isinstance(arguments, dict):
+        return ""
+    for key in _TARGET_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            # One physical line: a target carrying a newline would end a log line early, and
+            # could forge a terminal line such as `run.completed`.
+            flat = " ".join(value.split())
+            m = _HOST_RE.match(flat)
+            return m.group(1) if m else flat
+    return ""
 
 
 def _flatten_text(content: object) -> str:
@@ -200,3 +311,29 @@ def _as_text(content: object) -> str:
     if content is None:
         return ""
     return json.dumps(content, ensure_ascii=False)
+
+
+_CITATION_RE = re.compile(r'<citation\s+refs="([^"]*)"\s*>(.*?)</citation>', re.DOTALL)
+
+
+def resolve_answer_tags(text: str, id_to_url: dict[str, str]) -> str:
+    """An answer with Aside's citation tags replaced by the URLs they cite, as `label (url, ...)`.
+
+    A tag whose ids name no known source keeps its label: the claim stays, without a URL to
+    vouch for it. An id may arrive longer than the one a source was listed under, so a
+    listed id that the cited one starts with matches too.
+    """
+
+    def sub(m: re.Match[str]) -> str:
+        refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
+        label = m.group(2).strip()
+        urls = []
+        for ref in refs:
+            url = id_to_url.get(ref) or next((u for i, u in id_to_url.items() if ref.startswith(i)), None)
+            if url and url not in urls:
+                urls.append(url)
+        if not urls:
+            return label
+        return f"{label} ({', '.join(urls)})" if label else f"({', '.join(urls)})"
+
+    return _CITATION_RE.sub(sub, text)

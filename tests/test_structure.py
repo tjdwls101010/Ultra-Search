@@ -261,6 +261,31 @@ def path_edits(source: str, where: str) -> list[str]:
     return out
 
 
+#: Spellings only Aside's own records, programs and output use. Outside `aside/` they mean its format leaked.
+ASIDE_NAMES = ("stopReason", "toolUse", "taskId", "task_id", "cacheRead", "cacheWrite", "publishDate", "toolResult",
+               "turn-lifecycle", "system-message", "<citation", "<quote", "runningSessionCount", "semaphore",
+               "webfetch", "websearch", "read_file", "openTab", "closeTab", "\\x1b[")
+#: The same for the Node converter, outside `converter/`.
+CONVERTER_NAMES = ("node_modules", "anydoc", "to_markdown.mjs", "npm")
+#: An event's stored record and a tool result's own detail are handed out whole, never read: the
+#: raw log level prints the one, `show --item` returns the other.
+OPAQUE_READS = {("ultra_search.research.render", "raw"), ("ultra_search.research.commands", "details")}
+#: The units that hold transcript events.
+EVENT_READERS = ("research", "runs")
+
+
+def opaque_reads(source: str, module: str) -> list[str]:
+    """Reads of an event's stored record or detail outside the places that hand them out whole."""
+    if unit_of(module) not in EVENT_READERS:
+        return []
+    return [f"{module}:{node.lineno} reads .{node.attr}" for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Attribute) and node.attr in ("raw", "details") and (module, node.attr) not in OPAQUE_READS]
+
+
+def foreign_names(source: str, where: str, names: tuple[str, ...]) -> list[str]:
+    return [f"{where}: {name}" for name in names if name in source]
+
+
 def main_guard(source: str) -> bool:
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and isinstance(node.test.left, ast.Name) \
@@ -332,6 +357,15 @@ def test_the_entry_point_checker_and_the_test_path_checker_catch_their_cases() -
     assert not package_paths_in_tests('assert row["started_by_ultra_search"]\n', "t")
 
 
+def test_the_format_checkers_catch_a_leak() -> None:
+    assert opaque_reads("x = event.details['sources']\n", "ultra_search.research.evidence")
+    assert opaque_reads("x = event.raw\n", "ultra_search.research.follow")
+    assert not opaque_reads("x = event.raw\n", "ultra_search.research.render")
+    assert not opaque_reads("x = doc.raw\n", "ultra_search.fetch.acquire")
+    assert foreign_names('if e.stop_reason != "toolUse":\n', "x", ASIDE_NAMES)
+    assert foreign_names('help="Runs `npm ci`"\n', "x", CONVERTER_NAMES)
+
+
 # --- the tree ---------------------------------------------------------------------------------------
 
 
@@ -389,3 +423,24 @@ def test_cli_py_is_the_only_entry_point() -> None:
 
 def test_state_lives_in_the_working_directory_not_the_skill_folder() -> None:
     assert not (SKILL / "data").exists()
+
+
+def test_only_the_aside_unit_reads_asides_records() -> None:
+    violations = []
+    for path in package_modules():
+        violations += opaque_reads(path.read_text(encoding="utf-8"), module_name(path))
+    assert violations == []
+
+
+def test_asides_and_the_converters_names_stay_in_their_units() -> None:
+    """The primary guard is the reads above; this catches a name copied into feature code, help
+    text included, which a change to the other program would then silently break."""
+    violations = []
+    for path in [*package_modules(), SCRIPTS / "cli.py"]:
+        text = path.read_text(encoding="utf-8")
+        where = str(path.relative_to(SCRIPTS))
+        if not path.is_relative_to(PACKAGE / "aside"):
+            violations += foreign_names(text, where, ASIDE_NAMES)
+        if not path.is_relative_to(PACKAGE / "converter"):
+            violations += foreign_names(text, where, CONVERTER_NAMES)
+    assert violations == []

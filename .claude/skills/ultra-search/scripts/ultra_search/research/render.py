@@ -16,17 +16,10 @@ result with its size but not its bytes. ``full`` adds each result's first 2000 b
 from __future__ import annotations
 
 import json
-import re
 
 from ultra_search.aside import Event
 
 LEVELS = ("progress", "steps", "full", "raw")
-
-#: Arguments that name something outside the session -- the thing a call reached for.
-#: A local path or an offset says how the worker asked, not what it went after, so it is
-#: not here; a tool with none of these is reported by name and count alone.
-_TARGET_KEYS = ("url", "objective", "description", "title")
-_HOST_RE = re.compile(r"^https?://([^/]+)")
 
 
 def render(event: Event, level: str = "progress", ordinal: int | None = None) -> str:
@@ -61,7 +54,7 @@ def _progress(event: Event) -> str:
             # A turn that stopped is the answer; text in a turn that stopped to call a
             # tool is the worker saying what it is about to do. The stop reason decides,
             # not whether a call was parsed -- an unfamiliar tool block parses as no call.
-            label = "says" if event.stop_reason == "toolUse" or event.tool_calls else "answer"
+            label = "says" if event.stop == "tool" or event.tool_calls else "answer"
             parts.append(f"{label}: {_first_line(event.text, 160)}")
         if event.unknown_blocks:
             parts.append(f"[{len(event.unknown_blocks)} unrecognised block(s)]")
@@ -77,33 +70,18 @@ def _progress(event: Event) -> str:
 
 
 def _reached_for(event: Event) -> str:
-    """``webfetch×4[nodejs.org] read_file×2`` -- tools in first-use order, each with the
-    distinct targets it pointed at."""
+    """``search×1[python release] open×4[nodejs.org] read×2`` -- tools in first-use order, each
+    with the distinct targets it pointed at; a tool with none is reported by name and count."""
     by_tool: dict[str, list[str]] = {}
     for c in event.tool_calls:
         targets = by_tool.setdefault(c.name, [])
-        target = _target(c.arguments)
-        if target and target not in targets:
-            targets.append(target)
+        if c.target and c.target not in targets:
+            targets.append(c.target)
     out = []
     for name, targets in by_tool.items():
         n = sum(1 for c in event.tool_calls if c.name == name)
         out.append(f"{name}×{n}" + (f"[{_clip(', '.join(targets), 80)}]" if targets else ""))
     return " ".join(out)
-
-
-def _target(arguments: object) -> str:
-    if not isinstance(arguments, dict):
-        return ""
-    for key in _TARGET_KEYS:
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            # One physical line: a target carrying a newline would end the line early,
-            # and could forge a terminal line such as `run.completed`.
-            flat = " ".join(value.split())
-            m = _HOST_RE.match(flat)
-            return m.group(1) if m else flat
-    return ""
 
 
 # --- steps and full ---------------------------------------------------------------------
@@ -118,7 +96,7 @@ def _assistant(event: Event, level: str) -> str:
         parts.append(_clip(event.text, 400 if level == "steps" else 100000))
     if event.unknown_blocks:
         parts.append(f"[{len(event.unknown_blocks)} unrecognised block(s)]")
-    return "\n".join(parts) if parts else f"assistant[{event.stop_reason}]"
+    return "\n".join(parts) if parts else f"assistant[{event.stop}]"
 
 
 def _tool_result(event: Event, level: str, ordinal: int | None) -> str:
@@ -127,9 +105,8 @@ def _tool_result(event: Event, level: str, ordinal: int | None) -> str:
     if ordinal is not None:
         # The N of `show --item N`, so the result's full text is one call away.
         head = f"#{ordinal} {head}"
-    srcs = (event.details or {}).get("sources") or []
-    if srcs:
-        head += f" sources={len(srcs)}"
+    if event.sources:
+        head += f" sources={len(event.sources)}"
     if level == "steps":
         # The size, not the bytes: a tool that printed a whole page would otherwise put
         # that page into the reader's context as a byproduct of watching progress.

@@ -22,7 +22,7 @@ from ultra_search.aside.sessions import (
     sessions_root,
     suspension,
 )
-from ultra_search.aside.transcript import Event, ToolCall, read_events, turn_finished
+from ultra_search.aside.transcript import Event, SourceRef, ToolCall, read_events, resolve_answer_tags, turn_finished
 
 __all__ = [
     "EFFORTS",
@@ -32,6 +32,7 @@ __all__ = [
     "VERIFIED_VERSION",
     "Event",
     "ReplTimeout",
+    "SourceRef",
     "ToolCall",
     "account_status",
     "aside_bin",
@@ -47,6 +48,7 @@ __all__ = [
     "read_links",
     "read_sitemaps",
     "repl_probe",
+    "resolve_answer_tags",
     "run_code",
     "session_busy",
     "session_summaries",

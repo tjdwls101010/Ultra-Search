@@ -80,6 +80,54 @@ def test_a_page_opened_in_a_browser_tab_is_a_source_it_opened() -> None:
     assert read == [("https://www.python.org/downloads/", "Download Python | Python.org", True)]
 
 
+def repl_result(text: str, *, error: bool = False) -> str:
+    return json.dumps({"role": "toolResult", "toolName": "repl", "content": [{"type": "text", "text": text}],
+                       "details": {"elapsedMs": 1}, "isError": error})
+
+
+def sources_of(line: str) -> list[tuple[str, str]]:
+    return [(s.url, s.title) for s in aside.read_events(_write(line))[0][0].sources]
+
+
+def _write(line: str) -> Path:
+    import tempfile
+    f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+    f.write(line + "\n")
+    f.close()
+    return Path(f.name)
+
+
+def test_browser_pages_come_in_the_order_they_were_printed() -> None:
+    printed = ('- title: "A" [url=https://e.test/a]\n  - link "x"\n'
+               "✔︎ Opened a new tab and set it active: tabs[1], page → B (https://e.test/b)")
+
+    assert sources_of(repl_result(printed)) == [("https://e.test/a", "A"), ("https://e.test/b", "B")]
+
+
+def test_a_url_with_parentheses_is_kept_whole() -> None:
+    printed = "✔︎ Opened a new tab and set it active: tabs[0], page → Function (https://en.wikipedia.org/wiki/Function_(mathematics))"
+
+    assert sources_of(repl_result(printed)) == [("https://en.wikipedia.org/wiki/Function_(mathematics)", "Function")]
+
+
+def test_a_page_opened_before_the_call_failed_is_still_opened() -> None:
+    printed = "✔︎ Opened a new tab and set it active: tabs[0], page → A (https://e.test/a)\nTypeError: x is not a function"
+
+    assert sources_of(repl_result(printed, error=True)) == [("https://e.test/a", "A")]
+
+
+def test_page_text_that_mentions_a_page_is_not_an_opened_page() -> None:
+    printed = '- title: "A" [url=https://e.test/a]\n  The docs say page → Other (https://e.test/other)'
+
+    assert sources_of(repl_result(printed)) == [("https://e.test/a", "A")]
+
+
+def test_an_assistant_message_that_stopped_on_an_error_says_so() -> None:
+    event = aside.read_events(_write(json.dumps({"role": "assistant", "content": [], "stopReason": "error"})))[0][0]
+
+    assert event.stop == "error" and event.stopped
+
+
 def test_a_search_listing_is_a_source_not_opened() -> None:
     listed = [s for e in events(LEGACY / "2026-08-29_SimpleSearch00001" / "messages.jsonl") for s in e.sources]
 
@@ -176,6 +224,14 @@ def test_a_quote_becomes_its_text_and_the_url_its_id_names(tag: str) -> None:
     text = f"그는 {tag}“그렇다”</quote>고 했다. <quote>출처 없는 인용</quote>."
 
     assert aside.resolve_answer_tags(text, {"s1": "https://e.test/1"}) == "그는 “그렇다” (https://e.test/1)고 했다. 출처 없는 인용."
+
+
+def test_a_quote_inside_a_citation_cites_once() -> None:
+    text = '<citation refs="s1"><quote ref="s1">words</quote></citation> and <citation refs="s1"><quote ref="s2">more</quote></citation>'
+
+    resolved = aside.resolve_answer_tags(text, {"s1": "https://e.test/1", "s2": "https://e.test/2"})
+
+    assert resolved == "words (https://e.test/1) and more (https://e.test/2) (https://e.test/1)"
 
 
 def test_a_citation_becomes_the_urls_its_ids_name() -> None:

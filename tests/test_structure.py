@@ -275,11 +275,17 @@ EVENT_READERS = ("research", "runs")
 
 
 def opaque_reads(source: str, module: str) -> list[str]:
-    """Reads of an event's stored record or detail outside the places that hand them out whole."""
+    """Reads of an event's stored record or detail, except handing one out whole where that is its job."""
     if unit_of(module) not in EVENT_READERS:
         return []
-    return [f"{module}:{node.lineno} reads .{node.attr}" for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Attribute) and node.attr in ("raw", "details") and (module, node.attr) not in OPAQUE_READS]
+    tree = ast.parse(source)
+    looked_into = set()  # `.raw[...]`, `.details.get(...)`: something read out of it
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Subscript, ast.Attribute)) and isinstance(node.value, ast.Attribute):
+            looked_into.add(id(node.value))
+    return [f"{module}:{node.lineno} reads .{node.attr}" for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr in ("raw", "details")
+            and ((module, node.attr) not in OPAQUE_READS or id(node) in looked_into)]
 
 
 def foreign_names(source: str, where: str, names: tuple[str, ...]) -> list[str]:
@@ -360,7 +366,10 @@ def test_the_entry_point_checker_and_the_test_path_checker_catch_their_cases() -
 def test_the_format_checkers_catch_a_leak() -> None:
     assert opaque_reads("x = event.details['sources']\n", "ultra_search.research.evidence")
     assert opaque_reads("x = event.raw\n", "ultra_search.research.follow")
-    assert not opaque_reads("x = event.raw\n", "ultra_search.research.render")
+    assert not opaque_reads("x = json.dumps(event.raw)\n", "ultra_search.research.render")
+    assert not opaque_reads('payload = {"details": e.details}\n', "ultra_search.research.commands")
+    assert opaque_reads('x = event.raw["content"]\n', "ultra_search.research.render")
+    assert opaque_reads('x = e.details.get("sources")\n', "ultra_search.research.commands")
     assert not opaque_reads("x = doc.raw\n", "ultra_search.fetch.acquire")
     assert foreign_names('if e.stop_reason != "toolUse":\n', "x", ASIDE_NAMES)
     assert foreign_names('help="Runs `npm ci`"\n', "x", CONVERTER_NAMES)

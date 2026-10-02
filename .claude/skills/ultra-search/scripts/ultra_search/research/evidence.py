@@ -46,7 +46,7 @@ def final_answer(events: list[aside.Event], sources: list[Source] | None = None)
     last_prompt = max((i for i, e in enumerate(events) if e.kind == "user"), default=0)
     text = ""
     for e in events[last_prompt:]:
-        if e.kind == "assistant" and e.stop == "end":
+        if e.kind == "assistant" and e.stopped:
             text = e.text
     if not text.strip():
         return ""
@@ -127,7 +127,7 @@ def has_terminal_answer(events: list[aside.Event]) -> bool:
     """
     if any(e.kind == "lifecycle" for e in events):
         return aside.turn_finished(events)
-    return any(e.kind == "assistant" and e.stop == "end" for e in events)
+    return any(e.kind == "assistant" and e.stopped for e in events)
 
 
 def child_session_ids(events: list[aside.Event]) -> list[str]:
@@ -206,22 +206,23 @@ class Turn:
         return [e for e in self.events if e.kind == "tool_result"]
 
     def source_text(self, url: str) -> str:
-        """What the turn already read of a URL: the page a tool opened, else a listing's excerpt.
+        """What the turn already read of a URL: the fullest result of a tool that opened it,
+        else a listing's excerpt.
 
-        A URL usually appears twice -- once as a search result, once as the page a later
-        fetch actually read -- and the read page is the one worth returning, whichever
-        stream and whichever order it came in.
+        A URL usually appears more than once -- as a search result, as a tab being opened, as
+        the page then read -- and the read page is the one worth returning, whichever stream
+        and whichever order it came in.
         """
-        fallback = ""
+        read, listed = "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
                 named = [s for s in e.sources if s.url == url]
                 if not named:
                     continue
-                if any(s.opened for s in named) and e.content:
-                    return e.content
-                fallback = fallback or e.content
-        return fallback
+                if any(s.opened for s in named):
+                    read = max(read, e.content, key=len)
+                listed = listed or e.content
+        return read or listed
 
 
 def turn_of(run: runs.Run) -> Turn:

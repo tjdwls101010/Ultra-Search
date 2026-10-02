@@ -20,10 +20,15 @@ from pathlib import Path
 
 #: Tools whose result means the agent read a page, rather than being shown it in a list.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
-#: The browser REPL lists no sources; it prints the pages it touched. Opening a tab says
-#: "page → <title> (<url>)", and a snapshot of a page starts `- title: "<title>" [url=<url>]`.
-_TAB_OPENED = re.compile(r"page → (.*) \((https?://[^\s)]+)\)\s*$", re.M)
-_SNAPSHOT_OF = re.compile(r'^- title: "(.*)" \[url=(https?://[^\]\s]+)\]', re.M)
+#: The browser REPL lists no sources; it prints the pages it touched, each on a line of its
+#: own: opening a tab says "...Opened a new tab ..., page → <title> (<url>)", and a snapshot of
+#: a page starts `- title: "<title>" [url=<url>]`. Anchored to those lines, so page text that
+#: happens to mention a page is not taken for one.
+_PAGE_PRINTED = re.compile(
+    r'^\S*\s*Opened a new tab\b.*?, page → (?P<tab_title>.*?) \((?P<tab_url>https?://.+)\)[ \t]*$'
+    r'|^- title: "(?P<snap_title>.*)" \[url=(?P<snap_url>https?://[^\]\s]+)\]',
+    re.M,
+)
 #: Arguments that name something outside the session -- the thing a call reached for. A local
 #: path or an offset says how the worker asked, not what it went after.
 _TARGET_KEYS = ("url", "objective", "description", "title")
@@ -66,7 +71,7 @@ class Event:
     tool_name: str = ""
     content: str = ""
     is_error: bool = False
-    #: Why an assistant message stopped: "tool" to call one, "end" for anything else, "" when not recorded.
+    #: Why an assistant message stopped: "tool" to call one, "error", "end" for anything else, "" when not recorded.
     stop: str = ""
     #: For a `lifecycle` event, which boundary of a turn it marks: started, final-started, finished.
     lifecycle: str = ""
@@ -80,6 +85,11 @@ class Event:
     details: dict = field(default_factory=dict)
     #: The record as stored, for a reader who asked for it unchanged.
     raw: dict = field(repr=False, default_factory=dict)
+
+    @property
+    def stopped(self) -> bool:
+        """An assistant message that ended its turn's work rather than pausing to call a tool."""
+        return self.stop in ("end", "error")
 
 
 def read_events(path: str | Path, since: int = 0) -> tuple[list[Event], int]:
@@ -172,7 +182,7 @@ def turn_finished(events: list[Event]) -> bool:
     if last.kind != "assistant":
         return False
     if last.stop:
-        return last.stop == "end"
+        return last.stopped
     return bool(last.text.strip())
 
 
@@ -208,7 +218,7 @@ def _assistant(obj: dict, index: int, ts: int) -> Event:
         text="\n".join(t for t in texts if t),
         tool_calls=calls,
         usage=_usage(obj.get("usage")),
-        stop="" if not reason else ("tool" if reason == "toolUse" else "end"),
+        stop={"": "", "toolUse": "tool", "error": "error"}.get(reason, "end"),
         timestamp=ts,
         unknown_blocks=unknown,
     )
@@ -238,13 +248,16 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
             published=str(raw.get("publishDate") or raw.get("published") or ""),
             opened=opened,
         ))
-    if name == "repl" and opened:
+    if name == "repl":
+        # Each printed page is evidence on its own: a call that opened a tab and then failed on
+        # its next statement still opened that page.
         listed = {s.url for s in sources}
-        printed = _flatten_text(obj.get("content"))
-        for title, url in [*_TAB_OPENED.findall(printed), *_SNAPSHOT_OF.findall(printed)]:
+        for m in _PAGE_PRINTED.finditer(_flatten_text(obj.get("content"))):
+            url = m.group("tab_url") or m.group("snap_url")
             if url not in listed:
                 listed.add(url)
-                sources.append(SourceRef(url=url, title=title.strip(), opened=True))
+                sources.append(SourceRef(url=url, title=(m.group("tab_title") or m.group("snap_title") or "").strip(),
+                                         opened=True))
     return Event(
         kind="tool_result",
         index=index,
@@ -338,20 +351,30 @@ def resolve_answer_tags(text: str, id_to_url: dict[str, str]) -> str:
 
     A tag whose ids name no known source keeps its text: the claim stays, without a URL to
     vouch for it. An id may arrive longer than the one a source was listed under, so a
-    listed id that the cited one starts with matches too. Quotes go first: a citation can
-    wrap one.
+    listed id that the cited one starts with matches too. A citation can wrap a quote; a URL
+    the citation gives is not repeated for the quote inside it.
     """
 
-    def sub(m: re.Match[str]) -> str:
-        refs = [r.strip() for r in (m.group(1) or "").split(",") if r.strip()]
-        label = m.group(2).strip()
-        urls = []
-        for ref in refs:
+    def urls_of(ids: str | None) -> list[str]:
+        urls: list[str] = []
+        for ref in (r.strip() for r in (ids or "").split(",")):
+            if not ref:
+                continue
             url = id_to_url.get(ref) or next((u for i, u in id_to_url.items() if ref.startswith(i)), None)
             if url and url not in urls:
                 urls.append(url)
+        return urls
+
+    def tagged(label: str, urls: list[str]) -> str:
         if not urls:
             return label
         return f"{label} ({', '.join(urls)})" if label else f"({', '.join(urls)})"
 
-    return _CITATION_RE.sub(sub, _QUOTE_RE.sub(sub, text))
+    def quote(m: re.Match[str], given: list[str] = ()) -> str:
+        return tagged(m.group(2).strip(), [u for u in urls_of(m.group(1)) if u not in given])
+
+    def citation(m: re.Match[str]) -> str:
+        urls = urls_of(m.group(1))
+        return tagged(_QUOTE_RE.sub(lambda q: quote(q, urls), m.group(2)).strip(), urls)
+
+    return _QUOTE_RE.sub(quote, _CITATION_RE.sub(citation, text))

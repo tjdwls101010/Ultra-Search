@@ -888,6 +888,20 @@ def test_a_page_read_through_a_browser_tab_counts_as_opened(cli, replay) -> None
     assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [("https://www.python.org/downloads/", True)]
 
 
+def test_show_returns_the_fullest_read_of_a_page(cli, replay) -> None:
+    """A tab opening prints one line naming the page; the snapshot read after it is the page.
+    `show` exists to return what was read."""
+    opened = "✔︎ Opened a new tab and set it active: tabs[0], page → A (https://e.test/a)"
+    snapshot = '- title: "A" [url=https://e.test/a]\n' + "  - text: 본문\n" * 20
+    replay([{"role": "toolResult", "toolName": "repl", "content": [{"type": "text", "text": t}], "details": {}}
+            for t in (opened, snapshot)] + [answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert "본문" in shown["content"]
+
+
 def test_a_citation_to_an_unknown_source_keeps_its_label(cli, replay) -> None:
     replay([answer('See <citation refs="nosuchref">the release notes</citation> for detail.')])
 

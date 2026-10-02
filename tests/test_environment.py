@@ -147,6 +147,14 @@ def test_doctor_fails_on_an_unwritable_runs_directory(aside_home: Path, fake_asi
     assert list(blocked.iterdir()) == []
 
 
+def test_doctor_checks_the_default_store_without_creating_it(aside_home: Path, fake_aside: Path, daemon) -> None:
+    """Checking is not writing: a doctor run in a project leaves nothing behind in it."""
+    code, payload, _ = run_cli("doctor")
+
+    assert check(payload, "runs dir")["ok"] is True
+    assert not (Path.cwd() / ".ultra-search").exists()
+
+
 def test_doctor_reports_a_signed_out_browser_as_a_failure(
     runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
 ) -> None:

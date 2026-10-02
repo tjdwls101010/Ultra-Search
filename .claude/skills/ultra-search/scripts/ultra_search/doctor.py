@@ -123,13 +123,17 @@ def _check(name: str, ok: bool, detail: str, fix: str | None = None) -> dict:
 
 
 def _writable(path: Path) -> tuple[bool, str]:
+    """Whether the runs dir can be written, tried in it -- or, before it exists, in the nearest
+    directory it would be made in, so checking leaves nothing behind."""
     import tempfile
 
     try:
-        Path(path).mkdir(parents=True, exist_ok=True)
+        here = Path(path)
+        while not here.exists() and here != here.parent:
+            here = here.parent
         # A fresh name each time: a fixed one can collide with something already there and
         # report a writable directory as unwritable.
-        fd, probe = tempfile.mkstemp(prefix=".write-probe-", dir=path)
+        fd, probe = tempfile.mkstemp(prefix=".write-probe-", dir=here)
         os.close(fd)
         os.unlink(probe)
         return True, str(path)

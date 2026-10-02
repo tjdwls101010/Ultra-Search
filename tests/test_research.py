@@ -70,6 +70,20 @@ def rendered(text: str) -> str:
     return "\n".join(lines_of(text))
 
 
+def every_source(cli, run_id: str) -> list[dict]:
+    """All the sources of a run, as `result --sources` lists them."""
+    return first_run(cli("result", "--run", run_id, "--sources")[1])["sources"]
+
+
+def status_of(cli, run_id: str) -> dict:
+    return first_run(cli("status", "--run", run_id)[1])
+
+
+def saved(entry: dict) -> dict:
+    """The whole result a reply points at."""
+    return json.loads(Path(entry["result_path"]).read_text(encoding="utf-8"))
+
+
 def poll(check, timeout: float = 10.0, every: float = 0.2):
     deadline = time.time() + timeout
     while True:
@@ -185,8 +199,9 @@ def test_a_search_that_finishes_in_time_returns_its_answer_inline(cli) -> None:
     assert run["state"] == "completed"
     # The citation tag resolved to the URL of the source it names.
     assert run["answer"] == "Answer Example A (https://example.org/a)"
-    assert [s["url"] for s in run["sources"]] == ["https://example.org/a", "https://example.org/b"]
-    assert run["usage"]["total_tokens"] > 0
+    assert (run["sources_total"], run["sources_opened"], run["opened_sources"]) == (2, 0, [])
+    assert [s["url"] for s in every_source(cli, run["run_id"])] == ["https://example.org/a", "https://example.org/b"]
+    assert status_of(cli, run["run_id"])["usage"]["total_tokens"] > 0
 
 
 def test_a_finished_search_does_not_hand_back_a_next_step(cli) -> None:
@@ -245,7 +260,7 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     assert finished["next"]["run_in_background"] is False
     collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
     assert collected.returncode == 0
-    assert json.loads(collected.stdout.splitlines()[-1])["runs"][0]["answer"] == "느린 답."
+    assert json.loads(collected.stdout)["runs"][0]["answer"] == "느린 답."
 
 
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(cli, monkeypatch) -> None:
@@ -273,7 +288,7 @@ def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch)
     result = result["runs"][0]
     assert code == 0
     assert result["answer"] == "느린 답."
-    assert result["sources"]
+    assert result["sources_total"] > 0
 
 
 def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
@@ -285,7 +300,7 @@ def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
 
     assert code == 4
     assert first_run(payload)["state"] == "failed"
-    assert result["exit_code"] == 1, "aside's own exit status is kept for diagnosis"
+    assert saved(result)["exit_code"] == 1, "aside's own exit status is kept for diagnosis"
 
 
 def test_a_run_without_answer_or_sources_exits_five(cli, monkeypatch) -> None:
@@ -305,7 +320,7 @@ def test_a_negative_finding_is_an_answer_not_empty_output(cli, monkeypatch) -> N
 
     assert code == 0
     assert first_run(payload)["answer"] == "관련 사례를 찾지 못했습니다."
-    assert first_run(payload)["sources"] == []
+    assert first_run(payload)["sources_total"] == 0
     assert first_run(payload)["empty"] is False
 
 
@@ -483,9 +498,7 @@ def test_a_child_still_running_when_the_parent_exits_is_named(cli, replay) -> No
     assert run["state"] == "completed_with_orphans"
     assert run["orphan_children"] == ["xtXKs5dqLhtZ9sCN"]
     assert "not collected" in run["note"]
-    _, result, _ = cli("result", "--run", run["run_id"])
-    result = result["runs"][0]
-    assert result["children"] == ["WvAjHmOMXm36S58Y", "jYjSOAaKKm79uXXI", "xtXKs5dqLhtZ9sCN"]
+    assert status_of(cli, run["run_id"])["child_ids"] == ["WvAjHmOMXm36S58Y", "jYjSOAaKKm79uXXI", "xtXKs5dqLhtZ9sCN"]
 
 
 def test_a_child_that_stops_with_nothing_to_say_is_finished_not_orphaned(cli, replay, aside_home: Path) -> None:
@@ -840,21 +853,21 @@ def test_a_recorded_answer_has_its_citations_resolved(simple_search) -> None:
 def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
     """This run only ran websearch -- it listed results and never opened one."""
     runs, run_id = simple_search
-    _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
-    result = result["runs"][0]
+    _, result, _ = run_cli("result", "--run", run_id, "--sources", "--runs-dir", str(runs))
+    listed = result["runs"][0]["sources"]
 
-    assert result["sources"]
-    assert all(s["url"] for s in result["sources"])
-    assert all(s["opened"] is False for s in result["sources"])
+    assert listed
+    assert all(s["url"] for s in listed)
+    assert all(s["opened"] is False for s in listed)
 
 
 def test_usage_totals_across_every_assistant_turn(simple_search) -> None:
     runs, run_id = simple_search
-    _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
-    result = result["runs"][0]
+    _, status, _ = run_cli("status", "--run", run_id, "--runs-dir", str(runs))
+    usage = status["runs"][0]["usage"]
 
-    assert result["usage"]["total_tokens"] == 10813 + 18580
-    assert result["usage"]["cost"] > 0
+    assert usage["total_tokens"] == 10813 + 18580
+    assert usage["cost"] > 0
 
 
 def test_a_fetched_page_counts_as_opened(cli, replay) -> None:
@@ -863,7 +876,7 @@ def test_a_fetched_page_counts_as_opened(cli, replay) -> None:
 
     _, payload, _ = search(cli, "질문")
 
-    assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [(src["url"], True)]
+    assert [(s["url"], s["opened"]) for s in every_source(cli, first_run(payload)["run_id"])] == [(src["url"], True)]
 
 
 def test_a_quote_in_the_answer_is_resolved_like_a_citation(cli, replay) -> None:
@@ -886,7 +899,7 @@ def test_a_page_whose_fetch_failed_is_not_opened(cli, replay) -> None:
 
     _, payload, _ = search(cli, "질문")
 
-    assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [(src["url"], False)]
+    assert [(s["url"], s["opened"]) for s in every_source(cli, first_run(payload)["run_id"])] == [(src["url"], False)]
 
 
 def test_a_page_read_through_a_browser_tab_counts_as_opened(cli, replay) -> None:
@@ -899,7 +912,8 @@ def test_a_page_read_through_a_browser_tab_counts_as_opened(cli, replay) -> None
 
     _, payload, _ = search(cli, "질문")
 
-    assert [(s["url"], s["opened"]) for s in first_run(payload)["sources"]] == [("https://www.python.org/downloads/", True)]
+    assert [(s["url"], s["opened"]) for s in every_source(cli, first_run(payload)["run_id"])] == [
+        ("https://www.python.org/downloads/", True)]
 
 
 def test_show_returns_the_fullest_read_of_a_page(cli, replay) -> None:
@@ -949,10 +963,11 @@ def test_resume_continues_a_finished_run_in_its_own_session(cli, fake_aside: Pat
     code, payload, _ = cli("resume", run_id, "후속 질문", "--wait", "30")
 
     run = first_run(payload)
+    status = status_of(cli, run["run_id"])
     assert code == 0
-    assert run["resumed_from"] == run_id
+    assert status["resumed_from"] == run_id
     assert run["state"] == "completed"
-    assert run["session_id"] == first_run(first)["session_id"]
+    assert status["session_id"] == first_run(first)["session_id"]
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
     assert argv[argv.index("--session") + 1] == first_run(first)["session_id"]
@@ -976,8 +991,9 @@ def test_a_resumed_run_does_not_inherit_the_previous_turns_usage_and_sources(cli
 
     _, payload, _ = cli("resume", first_run(first)["run_id"], "후속 질문", "--wait", "30")
 
-    assert first_run(payload)["sources"] == [], "the earlier turn's sources belong to the earlier run"
-    assert first_run(payload)["usage"]["total_tokens"] < first_run(first)["usage"]["total_tokens"]
+    assert first_run(payload)["sources_total"] == 0, "the earlier turn's sources belong to the earlier run"
+    assert (status_of(cli, first_run(payload)["run_id"])["usage"]["total_tokens"]
+            < status_of(cli, first_run(first)["run_id"])["usage"]["total_tokens"])
 
 
 def test_resume_is_refused_while_the_run_is_still_going(cli, monkeypatch) -> None:
@@ -1035,7 +1051,7 @@ def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path,
 
     run = first_run(payload)
     assert code == 0
-    assert run["resumed_from"] == "SimpleSearch00001"
+    assert status_of(cli, run["run_id"])["resumed_from"] == "SimpleSearch00001"
     assert run["state"] == "completed"
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
@@ -1112,7 +1128,6 @@ def test_status_reports_activity_rather_than_guessing_at_health(cli) -> None:
     run = first_run(status)
     assert code == 0
     assert run["state"] == "completed"
-    assert run["last_activity_at"] > 0
     assert 0 <= run["idle_seconds"] < 60
     assert run["possibly_stalled"] is False
 
@@ -1148,7 +1163,7 @@ def test_a_quiet_run_is_flagged_but_left_alone_until_a_child_writes(cli, replay,
     assert first_run(quiet)["state"] == "running", "flagged only: nothing is stopped"
     assert "Nothing was stopped" in first_run(quiet)["note"]
     assert busy, "a child's write has to count as the run's activity"
-    assert first_run(busy)["children"] == 1
+    assert first_run(busy)["child_ids"] == ["BusyChild0000001"] and first_run(busy)["live_children"] == 1
     assert first_run(busy)["idle_seconds"] < 3
     cli("stop", "--run", run_id)
 
@@ -1209,10 +1224,10 @@ def test_terminal_log_and_result_preserve_failure_and_incompleteness(cli, monkey
             assert "credits" in entry["note"]
 
 
-def test_sources_only_omits_the_answer(cli) -> None:
+def test_sources_replaces_the_answer_with_every_source(cli) -> None:
     run_id = finished_run_id(cli)
 
-    _, result, _ = cli("result", "--run", run_id, "--sources-only")
+    _, result, _ = cli("result", "--run", run_id, "--sources")
     result = result["runs"][0]
 
     assert "answer" not in result
@@ -1364,9 +1379,7 @@ def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
 
     run = first_run(payload)
     assert run["state"] == "completed"
-    _, result, _ = cli("result", "--run", run["run_id"])
-    result = result["runs"][0]
-    assert result["children"] == []
+    assert status_of(cli, run["run_id"])["child_ids"] == []
 
 
 def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, monkeypatch, fake_aside: Path) -> None:
@@ -1436,7 +1449,7 @@ def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> No
     code, item, _ = cli("show", "--run", run_id, "--item", "0")
     _, source, _ = cli("show", "--run", run_id, "--source", "0")
 
-    assert first_run(status)["usage"] == result["usage"]
+    assert first_run(status)["usage"] == saved(result)["usage"]
     assert code == 0 and item["content"] == "새 페이지"
     assert source["source"]["url"] == new["url"]
 
@@ -1454,7 +1467,7 @@ def test_a_resumed_run_does_not_count_the_earlier_turns_children(cli, monkeypatc
     _, finished, _ = cli("status", "--run", run_id)
 
     for status in (running, finished):
-        assert first_run(status)["children"] == 0
+        assert first_run(status)["live_children"] == 0
         assert first_run(status)["child_ids"] == []
     assert first_run(running)["state"] == "running"
 
@@ -1476,7 +1489,7 @@ def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path)
     run = first_run(payload)
     code, by_child_id, _ = cli("show", "--run", run["run_id"], "--source", "c2")
 
-    merged = {s["url"]: s for s in run["sources"]}
+    merged = {s["url"]: s for s in saved(run)["sources"]}
     assert merged[listed["url"]]["opened"] is True
     assert set(merged[listed["url"]]["ids"]) == {"p1", "c1"}
     assert run["answer"].startswith(f"정리 page ({listed['url']}) other ({only_child['url']})")
@@ -1537,8 +1550,8 @@ def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, a
 
     _, _, logged = cli("log", "--run", run_id)
 
-    assert [s["url"] for s in result["sources"]] == [new_src["url"]]
-    assert result["usage"]["input"] == first_run(status)["usage"]["input"] == 10
+    assert [s["url"] for s in every_source(cli, run_id)] == [new_src["url"]]
+    assert saved(result)["usage"]["input"] == first_run(status)["usage"]["input"] == 10
     assert "old child answer" not in result["answer"]
     assert "new child answer" in logged and "old child answer" not in logged
 
@@ -1607,7 +1620,7 @@ def test_a_search_finds_its_own_session_in_either_format(cli, monkeypatch, fmt: 
     run = first_run(payload)
     assert code == 0
     assert run["state"] == "completed", run.get("note")
-    assert run["session_id"]
+    assert status_of(cli, run["run_id"])["session_id"]
     assert run["answer"] == "Answer Example A (https://example.org/a)"
 
 
@@ -1650,7 +1663,7 @@ def test_a_recorded_run_goes_from_search_through_its_child_to_result_and_resume(
     # The child's answer to its second task, not the empty-handed first one.
     assert f"--- child {LIFECYCLE_CHILD} ---\nLatest stable version shown: **Python 3.14.8**" in answer
     assert "[blocked]" not in answer
-    assert [(s["url"], s["opened"]) for s in first_run(result)["sources"]] == [("https://www.python.org/downloads/", True)]
+    assert [(s["url"], s["opened"]) for s in every_source(cli, run["run_id"])] == [("https://www.python.org/downloads/", True)]
     assert resumed_code == 0
     assert first_run(resumed)["state"] == "completed"
     assert first_run(resumed)["answer"] == "이어서 답합니다."
@@ -1718,3 +1731,112 @@ def test_a_session_is_busy_until_its_last_turn_has_finished(cli, aside_home: Pat
         assert "in flight" in payload["message"]
     else:
         assert first_run(payload)["state"] == "completed"
+
+
+# --- replies sized for the caller ---------------------------------------------------------
+#
+# A search, resume or result reply leads with what decides the next step -- state, whether
+# anything came back, how many sources and how many were opened -- then the answer and the
+# sources the run opened, then where the whole result is. Every source is one call away
+# (`result --sources`), numbered the way `show --source` counts them.
+
+RUN_KEYS = ["run_id", "state", "empty", "sources_total", "sources_opened", "answer", "opened_sources", "result_path"]
+
+
+def listing_of(n: int, opened: set[int]) -> list[dict]:
+    """A transcript in which a search lists ``n`` pages and the run fetches the ``opened`` ones."""
+    listed = [{"id": f"s{i}", "url": f"https://e.test/{i}", "title": f"T{i}"} for i in range(n)]
+    records = [tool("websearch", "results", sources=listed)]
+    records += [tool("webfetch", f"page {i}", sources=[listed[i]]) for i in sorted(opened)]
+    return records + [answer('답 <citation refs="s3">셋</citation>')]
+
+
+@pytest.mark.parametrize("n", [5, 300])
+def test_a_reply_leads_with_its_summary_and_carries_only_the_opened_sources(cli, replay, n: int) -> None:
+    """A real run listed 1,051 sources and its reply ran to 244 KB, which the caller then cut
+    down with a script of its own. The size of what the run listed is not the reply's size."""
+    replay(listing_of(n, {1, 3}))
+
+    code, payload, text = search(cli, "질문")
+
+    run = first_run(payload)
+    assert code == 0
+    assert list(run) == RUN_KEYS
+    assert (run["sources_total"], run["sources_opened"]) == (n, 2)
+    assert run["opened_sources"] == [{"n": 1, "url": "https://e.test/1", "title": "T1"},
+                                     {"n": 3, "url": "https://e.test/3", "title": "T3"}]
+    assert len(text) < 1500
+    assert json.loads(Path(run["result_path"]).read_text(encoding="utf-8"))["answer"] == run["answer"]
+
+
+def test_every_source_is_one_call_away_numbered_as_show_counts_them(cli, replay) -> None:
+    replay(listing_of(6, {1, 3}))
+    run_id = finished_run_id(cli)
+
+    code, payload, _ = cli("result", "--run", run_id, "--sources")
+
+    run = first_run(payload)
+    assert code == 0
+    assert "answer" not in run and "opened_sources" not in run
+    assert [(s["n"], s["url"], s["opened"]) for s in run["sources"]] == [
+        (i, f"https://e.test/{i}", i in (1, 3)) for i in range(6)]
+    for s in run["sources"]:
+        _, shown, _ = cli("show", "--run", run_id, "--source", str(s["n"]))
+        assert shown["source"]["url"] == s["url"]
+    assert cli("show", "--run", run_id, "--source", "3")[1]["content"] == "page 3"
+
+
+def test_a_run_still_going_or_stopped_shows_what_it_has_read_so_far(cli, replay) -> None:
+    """Before the result is written -- still running, or abandoned by `stop` -- the sources come
+    from the run's own copy of its transcript."""
+    replay([tool("webfetch", "읽은 본문", sources=[{"id": "a", "url": "https://e.test/a", "title": "A"}]),
+            {"__sleep__": 30}])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+
+    running = poll(lambda: (lambda r: r if r[0] == 0 else None)(cli("show", "--run", run_id, "--source", "0")), timeout=15)
+    cli("stop", "--run", run_id)
+    code, stopped, _ = cli("show", "--run", run_id, "--source", "0")
+
+    assert running and running[1]["content"] == "읽은 본문"
+    assert code == 0 and stopped["content"] == "읽은 본문"
+
+
+def test_a_run_answered_from_stdout_says_it_has_no_page_text(runs_dir: Path, aside_home: Path, fake_aside: Path,
+                                                             monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "no_session")
+    from ultra_search import research, runs
+
+    run = runs.create_run(runs_dir, label="t", prompt="질문")
+    research.supervise(run, poll=0.05, discovery_deadline=0.5, settle=0.1)
+
+    code, shown, _ = run_cli("show", "--run", run.run_id, "--source", "0", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert shown["source"]["url"] == "https://example.org/only-in-stdout"
+    assert shown["content"] == "" and "stdout" in shown["note"]
+
+
+def test_status_leads_with_whether_the_run_is_alive(cli) -> None:
+    run_id = finished_run_id(cli)
+
+    _, status, _ = cli("status", "--run", run_id)
+
+    run = first_run(status)
+    assert list(run)[:5] == ["run_id", "state", "idle_seconds", "possibly_stalled", "live_children"]
+    assert {"label", "session_id", "child_ids", "usage"} <= set(run)
+    assert run["usage"]["total_tokens"] > 0
+
+
+def test_result_of_a_run_still_going_hands_back_the_watch(cli, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+
+    code, result, _ = cli("result", "--run", run_id)
+
+    assert code == 4
+    assert result["next"]["run_in_background"] is True
+    assert first_run(result)["note"] == "no result yet"
+    cli("stop", "--run", run_id)

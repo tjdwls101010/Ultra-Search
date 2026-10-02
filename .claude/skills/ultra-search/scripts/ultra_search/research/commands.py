@@ -100,37 +100,38 @@ def _status_entry(run: runs.Run, now: float, stall_after: float) -> dict:
     # This run's turn and its children: a resumed run's transcript also holds earlier turns,
     # whose children and tokens belong to the runs that asked for them.
     turn = evidence.turn_of(run)
-    children = turn.children
     # The supervisor records activity as it syncs, but a status call between two syncs
     # would read a stale number -- so the files themselves get the last word.
     last = max(float(meta.get("last_activity_at") or 0), run.last_write())
     idle = round(now - last, 1) if last else None
-    state = meta.get("state") or "unknown"
-    live = state not in TERMINAL_STATES
+    summary = run_summary(run)
+    live = summary["state"] not in TERMINAL_STATES
     entry = {
-        **run_summary(run),
-        "label": meta.get("label"),
-        "session_id": meta.get("session_id"),
-        "children": len(children),
-        "child_ids": children,
-        "last_activity_at": last or None,
+        "run_id": run.run_id,
+        "state": summary["state"],
         "idle_seconds": idle,
         "possibly_stalled": bool(live and idle is not None and idle > stall_after),
-        "usage": turn.usage(),
+        "live_children": sum(1 for cid in turn.children if not evidence.child_is_terminal(turn.child_events[cid])),
     }
+    entry.update({k: v for k, v in summary.items() if k not in entry})
+    if entry["possibly_stalled"]:
+        entry["note"] = " ".join(filter(None, (entry.get("note"), (
+            "idle beyond --stall-after. Nothing was stopped: a long investigation looks like this too. "
+            "Check `log`, and cancel in the Aside app if it really is stuck."))))
+    entry["label"] = meta.get("label")
     if meta.get("group"):
         entry["group"] = meta["group"]
+    entry["session_id"] = meta.get("session_id")
+    if meta.get("resumed_from"):
+        entry["resumed_from"] = meta["resumed_from"]
+    entry["child_ids"] = turn.children
+    entry["usage"] = turn.usage()
     if meta.get("session_id"):
         # Aside documents a run pausing for an approval or MFA prompt. It has never been
         # observed here, so it is surfaced rather than interpreted.
         susp = aside.suspension(meta["session_id"])
         if susp:
             entry["suspension"] = susp
-    if entry["possibly_stalled"]:
-        entry["note"] = (
-            "idle beyond --stall-after. Nothing was stopped: a long investigation looks like this too. "
-            "Check `log`, and cancel in the Aside app if it really is stuck."
-        )
     return entry
 
 
@@ -192,39 +193,78 @@ def log(root: Path, *, run: str | None, group: str | None, since: str, level: st
 # --- result ---------------------------------------------------------------------------
 
 
-def result(root: Path, *, run: str | None, group: str | None, sources_only: bool) -> Reply:
+def result(root: Path, *, run: str | None, group: str | None, sources: bool, cli: str) -> Reply:
     targets = _targets(root, run, group)
-    entries = [_result_entry(r, sources_only) for r in targets]
-    payload = {"ok": True, "command": "result", "runs": entries}
-    states = [e["state"] for e in entries]
+    group = None if run else (group or targets[0].meta().get("group"))
+    payload = _envelope("result", targets, [_run_entry(r, sources=sources) for r in targets], group, root, cli)
+    states = [e["state"] for e in payload["runs"]]
     if any(s in FAILED_STATES for s in states) or any(s not in TERMINAL_STATES for s in states):
         return Reply(payload, outcome.FAILED)
-    if all(e.get("empty") for e in entries):
+    if all(e.get("empty") for e in payload["runs"]):
         return Reply(payload, outcome.EMPTY)
     return Reply(payload)
 
 
-def _result_entry(run: runs.Run, sources_only: bool) -> dict:
-    meta = run.meta()
-    state = meta.get("state") or "unknown"
+def _envelope(command: str, targets: list, entries: list[dict], group: str | None, root: Path, cli: str) -> dict:
+    """What a search, resume or result reply opens with: the group, and while any run is still
+    going, the one action that watches it."""
+    payload = {"ok": True, "command": command}
+    if group:
+        payload["group"] = group
+    if any(e["state"] not in TERMINAL_STATES for e in entries):
+        payload["note"] = ("Still running. Execute next, then follow its response; a watcher exiting does not mean "
+                           "the investigation finished.")
+        payload["next"] = next_step(targets, group, root, cli)
+    payload["runs"] = entries
+    return payload
+
+
+def _saved_result(run: runs.Run) -> dict | None:
     path = run.path / "result.json"
     if not path.exists():
-        return {
-            "run_id": run.run_id,
-            "state": state,
-            "sources": [],
-            "empty": True,
-            "note": "no result yet" if state not in TERMINAL_STATES else "the run ended without writing a result",
-            **run_summary(run),
-        }
+        return None
     try:
-        result = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise RunFailed(f"run {run.run_id} has an unreadable result.json: {e}") from e
-    result.update(run_summary(run))
-    if sources_only:
-        result.pop("answer", None)
-    return result
+
+
+def _run_entry(run: runs.Run, *, sources: bool = False) -> dict:
+    """One run as search, resume and result report it: the summary that decides what to do
+    next, then the answer and the sources it opened -- or, with ``sources``, every source --
+    then where the whole result is saved.
+
+    Sources are numbered by their place in the saved result, the numbering `show --source`
+    uses, so an opened source keeps its number among all of them.
+    """
+    summary = run_summary(run)
+    saved = _saved_result(run)
+    entry = {"run_id": run.run_id, "state": summary["state"]}
+    notes = [summary.get("note")]
+    if saved is None:
+        entry["empty"] = True
+        notes.append("no result yet" if summary["state"] not in TERMINAL_STATES else "the run ended without writing a result")
+    else:
+        listed = saved.get("sources") or []
+        entry["empty"] = bool(saved.get("empty"))
+        entry["sources_total"] = len(listed)
+        entry["sources_opened"] = sum(1 for s in listed if s.get("opened"))
+        notes.append(saved.get("note"))
+    entry.update({k: v for k, v in summary.items() if k not in ("run_id", "state", "note")})
+    if any(notes):
+        entry["note"] = " ".join(filter(None, notes))
+    if saved is None:
+        return entry
+    numbered = list(enumerate(saved.get("sources") or []))
+    if sources:
+        entry["sources"] = [{"n": n, "url": s.get("url"), "title": s.get("title") or "", "opened": bool(s.get("opened"))}
+                            for n, s in numbered]
+    else:
+        entry["answer"] = saved.get("answer", "")
+        entry["opened_sources"] = [{"n": n, "url": s.get("url"), "title": s.get("title") or ""}
+                                   for n, s in numbered if s.get("opened")]
+    entry["result_path"] = str(run.path / "result.json")
+    return entry
 
 
 # --- show -----------------------------------------------------------------------------
@@ -246,25 +286,32 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
                    "tool": e.tool_name, "content": e.content, "details": e.details}
         return Reply(payload)
 
-    sources = turn.sources()
+    # A finished run's sources are the saved ones, numbered as `result` numbers them. Before the
+    # result is written -- still running, or abandoned -- they come from its transcript copy.
+    saved = _saved_result(target)
+    listed = ([{"url": s.get("url"), "title": s.get("title") or "", "id": s.get("id") or "", "ids": s.get("ids") or [],
+                "opened": bool(s.get("opened"))} for s in saved.get("sources") or []] if saved is not None else
+              [{"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened} for s in turn.sources()])
     hit = None
     if str(source).isdigit():
         i = int(source)
-        if 0 <= i < len(sources):
-            hit = sources[i]
+        if 0 <= i < len(listed):
+            hit = listed[i]
     else:
-        hit = next((s for s in sources if source in s.ids or s.url == source), None)
+        hit = next((s for s in listed if source in s["ids"] or s["url"] == source), None)
     if hit is None:
         raise ArgumentError(
             f"run {target.run_id} has no source {source!r}",
-            fix="List them with `result --sources-only`.",
-            source_count=len(sources),
+            fix="List them with `result --sources`.",
+            source_count=len(listed),
         )
     # The text Aside already fetched, not a fresh request: re-fetching would cost a round
     # trip and could return something different from what the answer was based on.
-    payload = {"ok": True, "command": "show", "run_id": target.run_id,
-               "source": {"url": hit.url, "title": hit.title, "id": hit.id, "ids": hit.ids, "opened": hit.opened},
-               "content": turn.source_text(hit.url)}
+    payload = {"ok": True, "command": "show", "run_id": target.run_id, "source": hit,
+               "content": turn.source_text(hit["url"]) if turn.observed else ""}
+    if not turn.observed:
+        payload["note"] = ("no page text: this run's session transcript was never read, so all it has is what "
+                           "`aside exec` printed on stdout")
     return Reply(payload)
 
 
@@ -434,41 +481,8 @@ def _await_and_report(started: list, command: str, root: Path, group: str | None
             break
         time.sleep(0.1)
 
-    entries = [_entry(r) for r in started]
-    payload = {"ok": True, "command": command, "runs": entries}
-    if group:
-        payload["group"] = group
-
-    pending = [r for r, e in zip(started, entries) if e["state"] not in TERMINAL_STATES]
-    if pending:
-        payload["next"] = next_step(started, group, root, cli)
-        payload["note"] = "Still running. Execute next, then follow its response; a watcher exiting does not mean the investigation finished."
-    return Reply(payload, _outcome(entries))
-
-
-def _entry(run: runs.Run) -> dict:
-    meta = run.meta()
-    entry = {**run_summary(run), "label": meta.get("label")}
-    for key in ("resumed_from", "session_id", "orphan_children"):
-        if meta.get(key):
-            entry[key] = meta[key]
-    result_path = run.path / "result.json"
-    if result_path.exists():
-        try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return entry
-        entry.update(
-            {
-                "answer": result.get("answer", ""),
-                "sources": result.get("sources", []),
-                "usage": result.get("usage", {}),
-                "empty": result.get("empty", False),
-            }
-        )
-        if result.get("note"):
-            entry["note"] = " ".join(filter(None, (entry.get("note"), result["note"])))
-    return entry
+    entries = [_run_entry(r) for r in started]
+    return Reply(_envelope(command, started, entries, group, root, cli), _outcome(entries))
 
 
 def _outcome(entries: list[dict]) -> str:

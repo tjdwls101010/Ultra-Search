@@ -73,6 +73,17 @@ def test_a_page_is_saved_as_markdown_and_reported(cli, routes, tmp_path: Path) -
     assert "단어" in saved(item)
 
 
+def test_a_fetch_reply_leads_with_its_statuses(cli, routes) -> None:
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE),
+                            "https://example.org/x": page("<p>no</p>", status=403)}})
+
+    _, payload, _ = cli("fetch", "https://example.org/a", "https://example.org/x", "--via", "fetch")
+
+    assert list(payload)[:3] == ["ok", "command", "statuses"]
+    assert payload["statuses"] == {"ok": 1, "blocked": 1}
+    assert list(payload["items"][0])[:5] == ["status", "url", "path", "words", "title"]
+
+
 def test_saved_pages_default_to_the_registry_beside_the_runs(cli, routes, runs_dir: Path) -> None:
     routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
 

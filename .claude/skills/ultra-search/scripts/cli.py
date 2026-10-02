@@ -226,9 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
         "search",
         help="Run an autonomous web investigation (Aside's in-browser agent).",
         description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
-        "as one group. Synchronous by default: if the work finishes within --wait you get the answer, "
-        "sources and usage inline; if it does not, the run is left alive and you get a handle plus a "
-        "`next` action for watching it. Finished entries include their state; a partial snapshot is not a complete investigation. "
+        "as one group. Synchronous by default: if the work finishes within --wait its entry carries the answer; "
+        "if it does not, the run is left alive and the reply carries a `next` action for watching it. "
+        "A partial snapshot is not a complete investigation.\n"
+        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
+        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
@@ -262,10 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
     # --- status -------------------------------------------------------------
     st = sub.add_parser(
         "status",
-        help="Snapshot of a run: state, children, last activity.",
+        help="Snapshot of a run: state, idleness, children, usage.",
         description="One snapshot and exit -- there is no --follow here; `log --follow` is the only watcher. "
-        "Reports last_activity_at and idle_seconds across the run's own output and every child session, so a "
-        "parent that has gone quiet while its children work is visibly not stalled.",
+        "Each entry leads with run_id, state, idle_seconds, possibly_stalled and live_children, then label, group, "
+        "session_id, child_ids and usage. idle_seconds counts from the newest write across the run's own output and "
+        "every child session, so a parent that has gone quiet while its children work is visibly not stalled.",
     )
     _add_target(st)
     st.add_argument(
@@ -328,11 +332,14 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser(
         "result",
         help="A finished run's answer and sources.",
-        description="Each run's answer with its citation tags resolved to URL footnotes, and every source the run and its "
-        "children touched -- always as a runs list, one entry per run. Results are saved in the runs directory and "
+        description="Each run's answer and the sources it opened -- always as a runs list, one entry per run; while a run "
+        "is still going, the reply carries a `next` action for watching it. Results are saved in the runs directory and "
         "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
-        "`opened` means a tool that opens pages returned that URL: an inference that the "
+        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
+        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`.\n"
+        "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
         "completed: the process exited, its session was read, and every child finished.\n"
@@ -344,7 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
         "abandoned: watching stopped -- the daemon's work and its credit use did not.",
     )
     _add_target(rs)
-    rs.add_argument("--sources-only", action="store_true", help="Omit the answer text.")
+    rs.add_argument("--sources", action="store_true",
+                    help="Every source each run touched -- n, url, title, opened -- in place of the answer and the opened ones.")
     _add_runs_dir(rs)
 
     # --- show ---------------------------------------------------------------
@@ -352,11 +360,12 @@ def build_parser() -> argparse.ArgumentParser:
         "show",
         help="Full text of one source or one tool result.",
         description="The third layer under `result`: the page text Aside already fetched, returned without "
-        "fetching anything again.",
+        "fetching anything again. A source is found by its n from `result` or `result --sources`, or by any of its ids; "
+        "a run still going, or stopped, is read from its transcript so far.",
     )
     sh.add_argument("--run", metavar="ID", help="Run id. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
-    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0, or any of its source ids.")
+    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0 -- the n it lists -- or any of its source ids.")
     g.add_argument(
         "--item",
         type=_count(0),
@@ -554,7 +563,7 @@ def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome
         return research.log(root, run=args.run, group=args.group, since=args.since, level=args.level,
                             follow_=args.follow, follow_timeout=args.follow_timeout, heartbeat=args.heartbeat, cli=cli)
     if c == "result":
-        return research.result(root, run=args.run, group=args.group, sources_only=args.sources_only)
+        return research.result(root, run=args.run, group=args.group, sources=args.sources, cli=cli)
     if c == "show":
         return research.show(root, run=args.run, source=args.source, item=args.item)
     if c == "stop":

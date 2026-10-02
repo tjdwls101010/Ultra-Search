@@ -26,7 +26,16 @@ def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, c
         max_chars=max_chars,
         concurrency=concurrency,
     )
-    return Reply(envelope, outcome_for(envelope["items"]))
+    # Counts first, then each page led by what it turned out to be and where it went.
+    items = [{**{k: i[k] for k in _LEAD if k in i}, **{k: v for k, v in i.items() if k not in _LEAD}}
+             for i in envelope["items"]]
+    statuses: dict[str, int] = {}
+    for i in items:
+        statuses[i["status"]] = statuses.get(i["status"], 0) + 1
+    return Reply({"ok": True, "command": "fetch", "statuses": statuses, "items": items}, outcome_for(items))
+
+
+_LEAD = ("status", "url", "path", "words", "title")
 
 
 def _destinations(urls: list[str], out: str | None, root: Path) -> tuple[Path | None, Path]:

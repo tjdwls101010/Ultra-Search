@@ -1,5 +1,5 @@
 """Reading known pages through the user's browser into files: `fetch`, and the page acquisition `crawl` is built from."""
 from ultra_search.fetch.acquire import fetch_urls
-from ultra_search.fetch.commands import exit_code_for, fetch
+from ultra_search.fetch.commands import fetch, outcome_for
 
-__all__ = ["exit_code_for", "fetch", "fetch_urls"]
+__all__ = ["fetch", "fetch_urls", "outcome_for"]

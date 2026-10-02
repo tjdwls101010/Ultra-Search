@@ -319,6 +319,28 @@ def test_every_help_stands_on_its_own(command: str) -> None:
     assert "As for" not in help_of(command)
 
 
+#: What each command can end in, from the CLI contract: 0 handled (read the states), 2 bad
+#: arguments, 3 Aside unavailable, 4 a run failed or was abandoned or nothing was saved or a
+#: file could not be read or written, 5 no result data.
+EXIT_CODES = {
+    "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "status": {0, 2, 4}, "log": {0, 2, 4},
+    "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "stop": {0, 2, 4}, "sessions": {0, 2, 5},
+    "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4},
+    "doctor": {0, 2, 3}, "setup": {0, 2, 3}, "repl-api": {0, 2, 3},
+}
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_every_help_names_the_exit_codes_it_can_return(command: str) -> None:
+    """argparse shows the top-level epilog only at the top, and a caller reads the help of the
+    command it is about to run -- so each one says its own exit codes, one per line."""
+    text = help_of(command)
+
+    section = text.split("Exit codes:\n", 1)[1].splitlines()
+    codes = {int(line.split()[0]) for line in section if line[:1].isdigit()}
+    assert codes == EXIT_CODES[command]
+
+
 @pytest.mark.parametrize("command", ["search", "resume", "log"])
 def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
     text = help_of(command)

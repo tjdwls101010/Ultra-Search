@@ -536,7 +536,7 @@ def test_follow_exits_on_the_terminal_line(cli) -> None:
 
     assert code == 0
     assert f"run.completed {run_id}" in lines_of(text)
-    assert payload["next"]["command"].split()[2] == "result"
+    assert shlex.split(payload["next"]["command"])[3] == "result"
 
 
 def test_a_follow_that_runs_out_of_time_says_the_run_is_still_going(cli, monkeypatch) -> None:

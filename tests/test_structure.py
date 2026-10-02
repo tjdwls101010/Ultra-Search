@@ -481,3 +481,13 @@ def test_the_skill_text_calls_the_cli_one_way() -> None:
     blocks = text.split("```")[1::2]
     calls = [line for block in blocks for line in block.splitlines() if "cli.py" in line]
     assert calls and all(line.startswith(INVOCATION) for line in calls), calls
+
+
+def test_exit_code_numbers_live_in_cli_py_alone() -> None:
+    """Commands say how they ended; which number that is belongs to the one file that owns the
+    command line, so a command's help and its exit can never disagree."""
+    found = [f"{module_name(p)}:{n.lineno}" for p in package_modules()
+             for n in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
+             if isinstance(n, ast.Name) and n.id.startswith("EXIT_")
+             or isinstance(n, ast.Attribute) and n.attr.startswith("EXIT_")]
+    assert found == []

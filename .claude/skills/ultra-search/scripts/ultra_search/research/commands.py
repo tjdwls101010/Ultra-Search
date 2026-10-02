@@ -28,13 +28,13 @@ from pathlib import Path
 
 from ultra_search import aside, outcome, runs
 from ultra_search.ids import is_safe_id
-from ultra_search.outcome import ArgumentError, RunFailed
+from ultra_search.outcome import ArgumentError, Reply, RunFailed
 from ultra_search.research import evidence, follow, supervisor
 from ultra_search.research.marker import marker_for, run_id_in
 from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
 
 
-def sessions(*, limit: int, mine: bool, search: str | None) -> int:
+def sessions(*, limit: int, mine: bool, search: str | None) -> Reply:
     # A filter searches everything and then takes the first N matches. Reading a page first
     # and filtering it afterwards reports "no match" for a session that is simply further
     # down the list, which is indistinguishable from its not existing.
@@ -46,16 +46,15 @@ def sessions(*, limit: int, mine: bool, search: str | None) -> int:
         needle = search.lower()
         rows = [r for r in rows if needle in (r["prompt"] or "").lower()]
     rows = rows[:limit]
-    print(json.dumps(
+    return Reply(
         {
             "ok": True,
             "command": "sessions",
             "sessions": rows,
             "note": "resume any of these by session_id. Aside deletes sessions within about a day.",
         },
-        ensure_ascii=False,
-    ))
-    return 0 if rows else outcome.EXIT_EMPTY
+        outcome.OK if rows else outcome.EMPTY,
+    )
 
 
 def _session_row(summary: dict) -> dict:
@@ -88,12 +87,12 @@ def _targets(root: Path, run: str | None, group: str | None, every: bool = False
 # --- status ---------------------------------------------------------------------------
 
 
-def status(root: Path, *, run: str | None, group: str | None, stall_after: float) -> int:
+def status(root: Path, *, run: str | None, group: str | None, stall_after: float) -> Reply:
     now = time.time()
     targets = _targets(root, run, group)
     entries = [_status_entry(r, now, stall_after) for r in targets]
-    print(json.dumps({"ok": True, "command": "status", "runs": entries}, ensure_ascii=False))
-    return outcome.EXIT_RUN_FAILED if any(e["state"] in FAILED_STATES for e in entries) else 0
+    return Reply({"ok": True, "command": "status", "runs": entries},
+                 outcome.FAILED if any(e["state"] in FAILED_STATES for e in entries) else outcome.OK)
 
 
 def _status_entry(run: runs.Run, now: float, stall_after: float) -> dict:
@@ -170,7 +169,7 @@ def next_step(targets: list, group: str | None, root: Path, cli: str, *, since=N
 
 
 def log(root: Path, *, run: str | None, group: str | None, since: str, level: str, follow_: bool,
-        follow_timeout: float, heartbeat: float | None, cli: str) -> int:
+        follow_timeout: float, heartbeat: float | None, cli: str) -> Reply:
     targets = _targets(root, run, group)
     cursor = follow.follow(
         targets,
@@ -181,32 +180,28 @@ def log(root: Path, *, run: str | None, group: str | None, since: str, level: st
         heartbeat=heartbeat,
     )
     group = None if run else (group or targets[0].meta().get("group"))
-    print(json.dumps({
+    return Reply({
         "ok": True,
         "command": "log",
         "runs": [run_summary(r) for r in targets],
         "cursor": cursor,
         "next": next_step(targets, group, root, cli, since=cursor),
-    }, ensure_ascii=False))
-    return 0
+    })
 
 
 # --- result ---------------------------------------------------------------------------
 
 
-def result(root: Path, *, run: str | None, group: str | None, sources_only: bool) -> int:
+def result(root: Path, *, run: str | None, group: str | None, sources_only: bool) -> Reply:
     targets = _targets(root, run, group)
     entries = [_result_entry(r, sources_only) for r in targets]
-    print(json.dumps({"ok": True, "command": "result", "runs": entries}, ensure_ascii=False))
-
+    payload = {"ok": True, "command": "result", "runs": entries}
     states = [e["state"] for e in entries]
-    if any(s in FAILED_STATES for s in states):
-        return outcome.EXIT_RUN_FAILED
-    if any(s not in TERMINAL_STATES for s in states):
-        return outcome.EXIT_RUN_FAILED
+    if any(s in FAILED_STATES for s in states) or any(s not in TERMINAL_STATES for s in states):
+        return Reply(payload, outcome.FAILED)
     if all(e.get("empty") for e in entries):
-        return outcome.EXIT_EMPTY
-    return 0
+        return Reply(payload, outcome.EMPTY)
+    return Reply(payload)
 
 
 def _result_entry(run: runs.Run, sources_only: bool) -> dict:
@@ -235,7 +230,7 @@ def _result_entry(run: runs.Run, sources_only: bool) -> dict:
 # --- show -----------------------------------------------------------------------------
 
 
-def show(root: Path, *, run: str | None, source: str | None, item: int | None) -> int:
+def show(root: Path, *, run: str | None, source: str | None, item: int | None) -> Reply:
     target = runs.resolve_run(root, run) if run else runs.latest_run(root)
     turn = evidence.turn_of(target)
 
@@ -249,8 +244,7 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
         e = results[item]
         payload = {"ok": True, "command": "show", "run_id": target.run_id, "item": item,
                    "tool": e.tool_name, "content": e.content, "details": e.details}
-        print(json.dumps(payload, ensure_ascii=False))
-        return 0
+        return Reply(payload)
 
     sources = turn.sources()
     hit = None
@@ -271,14 +265,13 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
     payload = {"ok": True, "command": "show", "run_id": target.run_id,
                "source": {"url": hit.url, "title": hit.title, "id": hit.id, "ids": hit.ids, "opened": hit.opened},
                "content": turn.source_text(hit.url)}
-    print(json.dumps(payload, ensure_ascii=False))
-    return 0
+    return Reply(payload)
 
 
 # --- stop -----------------------------------------------------------------------------
 
 
-def stop(root: Path, *, run: str | None, group: str | None, every: bool) -> int:
+def stop(root: Path, *, run: str | None, group: str | None, every: bool) -> Reply:
     targets = _targets(root, run, group, every)
     stopped = []
     for run in targets:
@@ -308,8 +301,7 @@ def stop(root: Path, *, run: str | None, group: str | None, every: bool) -> int:
         "note": "This stopped the watching, not the run. Aside keeps working and keeps spending "
         "credits; cancel it in the Aside app UI.",
     }
-    print(json.dumps(payload, ensure_ascii=False))
-    return 0
+    return Reply(payload)
 
 
 def _await_terminal(run: runs.Run, timeout: float) -> bool:
@@ -337,7 +329,7 @@ def _terminate(pid: object) -> None:
 
 
 def search(root: Path, prompts: list[str], *, wait: float, background: bool, label: str | None,
-           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> int:
+           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> Reply:
     group = runs.new_group_name() if len(prompts) > 1 else None
     started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout,
                           group=group) for p in prompts]
@@ -345,7 +337,7 @@ def search(root: Path, prompts: list[str], *, wait: float, background: bool, lab
 
 
 def resume(root: Path, target: str, prompt: str, *, wait: float, background: bool, label: str | None,
-           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> int:
+           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> Reply:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
@@ -435,7 +427,7 @@ def _slug(prompt: str) -> str:
     return "-".join(words[:4])[:40] or "run"
 
 
-def _await_and_report(started: list, command: str, root: Path, group: str | None, *, wait: float, cli: str) -> int:
+def _await_and_report(started: list, command: str, root: Path, group: str | None, *, wait: float, cli: str) -> Reply:
     deadline = time.time() + wait
     while time.time() < deadline:
         if all((r.meta().get("state") or "") in TERMINAL_STATES for r in started):
@@ -451,8 +443,7 @@ def _await_and_report(started: list, command: str, root: Path, group: str | None
     if pending:
         payload["next"] = next_step(started, group, root, cli)
         payload["note"] = "Still running. Execute next, then follow its response; a watcher exiting does not mean the investigation finished."
-    print(json.dumps(payload, ensure_ascii=False))
-    return _exit_code(entries)
+    return Reply(payload, _outcome(entries))
 
 
 def _entry(run: runs.Run) -> dict:
@@ -480,11 +471,11 @@ def _entry(run: runs.Run) -> dict:
     return entry
 
 
-def _exit_code(entries: list[dict]) -> int:
+def _outcome(entries: list[dict]) -> str:
     states = [e["state"] for e in entries]
     if any(s in FAILED_STATES for s in states):
-        return outcome.EXIT_RUN_FAILED
+        return outcome.FAILED
     finished = [e for e in entries if e["state"] in TERMINAL_STATES]
     if finished and all(e.get("empty") for e in finished) and len(finished) == len(entries):
-        return outcome.EXIT_EMPTY
-    return 0
+        return outcome.EMPTY
+    return outcome.OK

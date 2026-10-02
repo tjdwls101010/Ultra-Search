@@ -10,18 +10,17 @@ installed on this machine that decides what the snippets may use.
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from ultra_search import aside, converter, outcome
-from ultra_search.outcome import AsideUnavailable
+from ultra_search.outcome import AsideUnavailable, Reply
 
 
 # --- doctor ------------------------------------------------------------------------------
 
 
-def doctor(root: Path) -> int:
+def doctor(root: Path) -> Reply:
     checks: list[dict] = []
     ok = True
 
@@ -113,8 +112,7 @@ def doctor(root: Path) -> int:
             "`stop` ends the watching, not the run -- the daemon keeps working and keeps spending credits",
         ],
     }
-    print(json.dumps(payload, ensure_ascii=False))
-    return 0 if ok else outcome.EXIT_ASIDE
+    return Reply(payload, outcome.OK if ok else outcome.ASIDE_UNAVAILABLE)
 
 
 def _check(name: str, ok: bool, detail: str, fix: str | None = None) -> dict:
@@ -142,31 +140,28 @@ def _writable(path: Path) -> tuple[bool, str]:
 # --- setup --------------------------------------------------------------------------------
 
 
-def setup() -> int:
+def setup() -> Reply:
     installed = converter.install()
-    print(json.dumps({"ok": installed["ok"], "command": "setup", **{k: installed[k] for k in ("dir", "detail")}},
-                     ensure_ascii=False))
-    return 0 if installed["ok"] else outcome.EXIT_ASIDE
+    return Reply({"ok": installed["ok"], "command": "setup", **{k: installed[k] for k in ("dir", "detail")}},
+                 outcome.OK if installed["ok"] else outcome.ASIDE_UNAVAILABLE)
 
 
 # --- repl-api -----------------------------------------------------------------------------
 
 
-def repl_api(*, every: bool) -> int:
+def repl_api(*, every: bool) -> Reply:
     """What the daemon's repl tool accepts, asked of the daemon over MCP."""
     tools = aside.mcp_tools()
     if every:
-        print(json.dumps({"ok": True, "command": "repl-api", "tools": tools}, ensure_ascii=False))
-        return 0
+        return Reply({"ok": True, "command": "repl-api", "tools": tools})
     repl_tool = next((t for t in tools if isinstance(t, dict) and t.get("name") == "repl"), None)
     if repl_tool is None:
         raise AsideUnavailable("the daemon lists no repl tool", fix="Run `repl-api --all` to see what it does list.",
                                tools=[t.get("name") for t in tools if isinstance(t, dict)])
-    print(json.dumps({
+    return Reply({
         "ok": True,
         "command": "repl-api",
         "tool": repl_tool,
         "run": "Run code with `aside repl '<code>'`. This skill's permission rule covers only its own CLI, "
                "so expect an approval prompt for it.",
-    }, ensure_ascii=False))
-    return 0
+    })

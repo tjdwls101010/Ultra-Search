@@ -28,7 +28,6 @@ from pathlib import Path
 from ultra_search import aside, runs
 from ultra_search.research import evidence
 from ultra_search.research.marker import decorate_prompt, marker_for
-from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
 
 POLL = 2.0
 #: How long to keep looking for the session before giving up and using stdout alone.
@@ -60,16 +59,15 @@ def spawn(cli: str, run_path: str | os.PathLike[str]) -> int:
     return proc.pid
 
 
-def run_detached(run_path: str | os.PathLike[str]) -> int:
+def run_detached(run_path: str | os.PathLike[str]) -> None:
     """The supervisor process's whole life: watch the run, and record why if watching dies."""
     path = Path(run_path)
     run = runs.Run(run_id=path.name, path=path)
     try:
-        meta = supervise(run)
+        supervise(run)
     except Exception as e:  # noqa: BLE001 - a detached process must record why it died
         run.update_meta(state="failed", reason=f"{type(e).__name__}: {e}", finished_at=time.time())
         raise
-    return 0 if meta.get("state") in TERMINAL_STATES - FAILED_STATES else 1
 
 
 def supervise(

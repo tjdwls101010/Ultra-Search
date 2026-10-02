@@ -4,13 +4,7 @@
 # ///
 """ultra-search — search, read, map and save the web through the user's logged-in Aside browser.
 
-Every command prints one JSON response on stdout; ``log`` prints events and its cursor before the response. Exit codes describe the command, not the quality or completeness of an investigation:
-
-    0  success
-    2  bad arguments
-    3  aside unavailable (binary missing, daemon unreachable)
-    4  run failed or abandoned
-    5  no result data
+The whole command line lives here: the parser, every command's help, dispatch to the units that do the work, and the one table that turns how a command ended into its exit code. Every command prints one JSON document on stdout; progress and diagnostics go to stderr.
 """
 from __future__ import annotations
 
@@ -27,6 +21,54 @@ from ultra_search import __version__, aside, doctor, fetch, outcome, research, s
 
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
+#: Which exit code each way a command can end is. Exit codes describe the command, not the
+#: quality or completeness of an investigation; the payload's states say that.
+EXIT = {outcome.OK: 0, outcome.BAD_ARGUMENTS: 2, outcome.ASIDE_UNAVAILABLE: 3, outcome.FAILED: 4, outcome.EMPTY: 5}
+
+_REFUSED = "the arguments were refused before any work; the reply says what to change"
+_NO_ASIDE = "the aside binary is missing or its daemon does not answer; the reply says how to fix it"
+_UNWRITABLE = "a file under the runs dir or --out could not be read or written"
+#: What each ending means for each command -- the Exit lines of its --help.
+ENDINGS = {
+    "search": {outcome.OK: "every run was started and reported; read each run's state",
+               outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
+               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}",
+               outcome.EMPTY: "every run finished with no answer and no sources"},
+    "status": {outcome.OK: "the runs were reported; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}"},
+    "log": {outcome.OK: "the log was read -- not that the research finished or succeeded",
+            outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "result": {outcome.OK: "every run has a result; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.FAILED: f"a run failed, was abandoned or is still running, or {_UNWRITABLE}",
+               outcome.EMPTY: "every run ended with no answer and no sources"},
+    "show": {outcome.OK: "the text was returned", outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "stop": {outcome.OK: "watching stopped where it was going; the daemon's runs continue",
+             outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "sessions": {outcome.OK: "sessions were listed", outcome.BAD_ARGUMENTS: _REFUSED,
+                 outcome.EMPTY: "no session matched"},
+    "fetch": {outcome.OK: "at least one file was written; read each item's status", outcome.BAD_ARGUMENTS: _REFUSED,
+              outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: f"nothing was saved, or {_UNWRITABLE}"},
+    "map": {outcome.OK: "URLs were found and the manifest written", outcome.BAD_ARGUMENTS: _REFUSED,
+            outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: _UNWRITABLE,
+            outcome.EMPTY: "no sitemap and no page could be read"},
+    "crawl": {outcome.OK: "at least one page was saved; the manifest has every page's status",
+              outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
+              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE}"},
+    "doctor": {outcome.OK: "nothing it can see would stop a command", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.ASIDE_UNAVAILABLE: "a check failed; each failed check has its fix"},
+    "setup": {outcome.OK: "the packages were installed", outcome.BAD_ARGUMENTS: _REFUSED,
+              outcome.ASIDE_UNAVAILABLE: "Node is missing or the install failed; the reply says which"},
+    "repl-api": {outcome.OK: "the daemon's tool description was returned", outcome.BAD_ARGUMENTS: _REFUSED,
+                 outcome.ASIDE_UNAVAILABLE: _NO_ASIDE},
+}
+ENDINGS["resume"] = ENDINGS["search"]
+
+
+def _exit_lines(command: str) -> str:
+    return "Exit codes:\n" + "\n".join(f"{EXIT[o]}  {meaning}" for o, meaning in
+                                       sorted(ENDINGS[command].items(), key=lambda kv: EXIT[kv[0]]))
+
+
 NEXT_HELP = (
     "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout it needs, "
     "and run_in_background says whether to run it in the background. Background is for when something will "
@@ -43,7 +85,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # type: ignore[override]
         print(json.dumps({"ok": False, "error": "bad_arguments", "message": message, "fix": f"{self.prog} --help"},
                          ensure_ascii=False))
-        raise SystemExit(outcome.EXIT_ARGS)
+        raise SystemExit(EXIT[outcome.BAD_ARGUMENTS])
 
 
 def _count(minimum: int):
@@ -168,7 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = JsonArgumentParser(
         prog="cli.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
-        epilog="Exit codes: 0 command handled (inspect run/item states) | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 no result data.",
+        epilog="Exit codes describe the command, not the investigation: 0 handled (read the states in the reply) | "
+        "2 bad arguments | 3 Aside unavailable | 4 a run failed or was abandoned, nothing was saved, or a file could not "
+        "be written | 5 no result data. Each command's --help lists its own.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"ultra-search {__version__}")
@@ -448,6 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
         "after updating this skill.",
     )
 
+    for name, command in sub.choices.items():
+        command.epilog = f"{command.epilog}\n\n{_exit_lines(name)}" if command.epilog else _exit_lines(name)
     return p
 
 
@@ -456,18 +502,21 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["_supervise"]:
         # Internal: the detached supervisor a `search` or `resume` starts, through the same
         # entry point the caller used. Not a command, so not in --help.
-        return research.run_detached(argv[1])
+        research.run_detached(argv[1])
+        return 0
     args = build_parser().parse_args(argv)
     # The path as the caller reached it, not resolved: a `next` command built from it keeps
     # the installed location, symlink included.
     cli = str(pathlib.Path(__file__).absolute())
     try:
-        return _dispatch(args, _root(args), cli)
+        reply = _dispatch(args, _root(args), cli)
+        print(json.dumps(reply.payload, ensure_ascii=False))
+        return EXIT[reply.outcome]
     except outcome.UltraSearchError as e:
         print(json.dumps(e.payload(), ensure_ascii=False))
-        return e.exit_code
+        return EXIT[e.outcome]
     except BrokenPipeError:
-        return outcome.EXIT_OK
+        return EXIT[outcome.OK]
     except OSError as e:
         # Storage the caller pointed at -- an unwritable --out or --runs-dir, a full disk --
         # still answers in the one shape every command promises.
@@ -476,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
             fix="Check the path exists and is writable, or choose another with --out or --runs-dir.",
         )
         print(json.dumps(err.payload(), ensure_ascii=False))
-        return err.exit_code
+        return EXIT[err.outcome]
 
 
 def _root(args: argparse.Namespace) -> pathlib.Path:
@@ -490,7 +539,7 @@ def _root(args: argparse.Namespace) -> pathlib.Path:
                                     fix="Pass a directory that is not a symlink loop.") from e
 
 
-def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> int:
+def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome.Reply:
     c = args.command
     if c in ("search", "resume"):
         common = dict(wait=args.wait, background=args.background, label=args.label, effort=args.effort,

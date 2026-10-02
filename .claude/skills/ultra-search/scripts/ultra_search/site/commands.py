@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ultra_search import aside, fetch, outcome, saved
-from ultra_search.outcome import ArgumentError
+from ultra_search.outcome import ArgumentError, Reply
 from ultra_search.site import discover
 
 
@@ -34,7 +34,7 @@ def _providers(no_sitemap: bool) -> dict:
 
 
 def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, include: list[str] | None,
-             exclude: list[str] | None, no_sitemap: bool, out: str | None, list_all: bool) -> int:
+             exclude: list[str] | None, no_sitemap: bool, out: str | None, list_all: bool) -> Reply:
     urls, coverage = discover.discover(
         url,
         **_discovery(depth, max_urls),
@@ -52,16 +52,15 @@ def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, i
              "sample": urls[:SAMPLE], "manifest_path": str(path)}
     if list_all:
         reply["urls"] = urls
-    print(json.dumps(reply, ensure_ascii=False))
     # Nothing read -- no sitemap and not one page's links -- is no map at all, even when the
     # root itself is listed.
     saw_site = coverage["sitemap"] or coverage["pages_read"] > 0
-    return 0 if urls and saw_site else outcome.EXIT_EMPTY
+    return Reply(reply, outcome.OK if urls and saw_site else outcome.EMPTY)
 
 
 def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: int, depth: int | None,
           max_urls: int | None, include: list[str] | None, exclude: list[str] | None, no_sitemap: bool,
-          via: str, concurrency: int, frontmatter: bool, out: str | None) -> int:
+          via: str, concurrency: int, frontmatter: bool, out: str | None) -> Reply:
     if out:
         saved.refuse_used_folder(Path(out).expanduser())
     if from_manifest:
@@ -124,7 +123,7 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
     statuses: dict[str, int] = {}
     for i in items:
         statuses[i["status"]] = statuses.get(i["status"], 0) + 1
-    print(json.dumps(
+    return Reply(
         {
             "ok": True,
             "command": "crawl",
@@ -139,9 +138,8 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
                        for i in not_ok[:SAMPLE]],
             **({"coverage": _brief(coverage)} if coverage is not None else {}),
         },
-        ensure_ascii=False,
-    ))
-    return fetch.exit_code_for(items)
+        fetch.outcome_for(items),
+    )
 
 
 #: How many URLs a map's reply shows before pointing at its manifest.

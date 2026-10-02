@@ -5,16 +5,15 @@ side effect of being told where they are.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from ultra_search import outcome, saved
 from ultra_search.fetch import acquire
-from ultra_search.outcome import ArgumentError
+from ultra_search.outcome import ArgumentError, Reply
 
 
 def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, concurrency: int,
-          frontmatter: bool, print_content: bool, max_chars: int) -> int:
+          frontmatter: bool, print_content: bool, max_chars: int) -> Reply:
     out_file, out_dir = _destinations(urls, out, root)
     envelope = acquire.fetch_urls(
         urls,
@@ -27,8 +26,7 @@ def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, c
         max_chars=max_chars,
         concurrency=concurrency,
     )
-    print(json.dumps(envelope, ensure_ascii=False))
-    return exit_code_for(envelope["items"])
+    return Reply(envelope, outcome_for(envelope["items"]))
 
 
 def _destinations(urls: list[str], out: str | None, root: Path) -> tuple[Path | None, Path]:
@@ -55,11 +53,11 @@ def _destinations(urls: list[str], out: str | None, root: Path) -> tuple[Path | 
     return None, p
 
 
-def exit_code_for(items: list[dict]) -> int:
-    """0 when anything was saved. The status still says what each page turned out to be:
+def outcome_for(items: list[dict]) -> str:
+    """OK when anything was saved. The status still says what each page turned out to be:
     `--format html` writes a client-rendered document that has no article in it."""
     if not items:
-        return outcome.EXIT_EMPTY
+        return outcome.EMPTY
     if any(i["status"] == "ok" or i.get("path") for i in items):
-        return 0
-    return outcome.EXIT_RUN_FAILED
+        return outcome.OK
+    return outcome.FAILED

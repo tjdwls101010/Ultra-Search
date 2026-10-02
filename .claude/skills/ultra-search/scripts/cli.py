@@ -282,9 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
     lg = sub.add_parser(
         "log",
         help="Stream a run's events; the only watcher.",
-        description="Print this run's events, then a cursor and a final JSON response with runs (per-run state), "
-        "cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires. "
-        "Exit 0 means the log was read, not that research finished or succeeded. A resumed run excludes earlier turns and their children.",
+        description="Print this run's events on stderr as they come, one line each, then one JSON reply on stdout: runs "
+        "(per-run state), cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires; "
+        "the last stderr lines then say run.<state> for each run that ended, run.still-running for one that has not. "
+        "A resumed run excludes earlier turns and their children.",
         epilog=NEXT_HELP,
     )
     _add_target(lg)
@@ -292,8 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--since",
         default="0",
         metavar="CURSOR",
-        help="Resume from a previous call's `# cursor=` value. A run with no children prints a byte offset; "
-        "one with children, or a group, prints a JSON object, since its streams advance independently.",
+        help="Resume from a previous reply's `cursor`. A run with no children has a byte offset; one with "
+        "children, or a group, a JSON object, since its streams advance independently.",
     )
     lg.add_argument(
         "--level",

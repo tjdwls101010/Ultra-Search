@@ -31,6 +31,7 @@ from conftest import (
     calling,
     exec_calls,
     run_cli,
+    run_cli_streams,
     tool,
     turn,
     user,
@@ -65,8 +66,8 @@ def lines_of(text: str) -> list[str]:
 
 
 def rendered(text: str) -> str:
-    """Only the event lines of a log: no response, no cursor."""
-    return "\n".join(line for line in lines_of(text) if not line.startswith("# cursor="))
+    """Only the event lines of a log, without its response."""
+    return "\n".join(lines_of(text))
 
 
 def poll(check, timeout: float = 10.0, every: float = 0.2):
@@ -236,9 +237,9 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     waited = time.time() - started
 
     assert done.returncode == 0
-    assert f"run.completed {first_run(payload)['run_id']}" in done.stdout
+    assert f"run.completed {first_run(payload)['run_id']}" in done.stderr
     assert waited > 1.0, "the follower has to wait for the run, not return on a run already over"
-    finished = json.loads(done.stdout.splitlines()[-1])
+    finished = json.loads(done.stdout)
     assert finished["command"] == "log"
     assert first_run(finished)["state"] == "completed"
     assert finished["next"]["run_in_background"] is False
@@ -523,10 +524,22 @@ def test_log_prints_events_and_a_cursor_that_repeats_nothing(cli) -> None:
     _, first, text = cli("log", "--run", run_id)
     _, second, again = cli("log", "--run", run_id, "--since", str(first["cursor"]))
 
-    assert f"# cursor={first['cursor']}" in text
     assert "prompt: 질문" in text
-    assert lines_of(again) == [f"# cursor={first['cursor']}"]
+    assert lines_of(again) == []
     assert second["cursor"] == first["cursor"]
+
+
+def test_log_answers_in_one_json_document_and_streams_events_on_stderr(cli, runs_dir: Path) -> None:
+    """The reply is read with one parse; the events are progress, read as they come -- and in a
+    background call's output file, which holds both streams in order, they come first."""
+    run_id = finished_run_id(cli)
+
+    code, out, err = run_cli_streams("log", "--run", run_id, "--follow", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert json.loads(out)["cursor"]
+    assert "prompt: 질문" in err and f"run.completed {run_id}" in err
+    assert "cursor=" not in err
 
 
 def test_follow_exits_on_the_terminal_line(cli) -> None:
@@ -669,16 +682,16 @@ def test_a_timed_out_follow_continues_from_each_stream_and_collects_every_run(
     assert set(waiting["next"]) == {"command", "bash_timeout_ms", "run_in_background"}
     assert waiting["next"]["run_in_background"] is True
     assert followed.returncode == 0
-    assert "seen-" not in rendered(followed.stdout)
+    assert "seen-" not in followed.stderr
     for run_id, prompt in runs.items():
         prefix = f"[{run_id}]" if group else ""
-        lines = lines_of(followed.stdout)
+        lines = followed.stderr.splitlines()
         if group and run_id == ended:
             assert not any(line.startswith(prefix) and "new-" in line for line in lines)
             continue
         assert (f"{prefix} " if prefix else "") + "answer: new-parent" in lines
         assert f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}" in lines
-    finished = json.loads(followed.stdout.splitlines()[-1])
+    finished = json.loads(followed.stdout)
     collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=20)
     result = json.loads(collected.stdout)
     entries = result["runs"]
@@ -769,7 +782,6 @@ def test_progress_level_shows_what_the_run_reached_for_not_how_it_asked(recorded
     assert "system: Subagent VC4gmB8dlfU4SE5d is done (status: idle, 1/3 completed)" in text
     assert "[child 4kgZvArU4ipY0eIn] webfetch×2[docs.python.org, www.python.org]" in text
     assert "[child 4kgZvArU4ipY0eIn] answer: 공식 **What’s New in Python 3.14**만 확인해 정리했습니다. 중요도순입니다. …(+" in text
-    assert "# cursor=" in text
 
 
 def test_steps_level_is_the_view_that_was_compact_before(recorded) -> None:
@@ -779,7 +791,7 @@ def test_steps_level_is_the_view_that_was_compact_before(recorded) -> None:
     record. The recording's run id is the only thing that differs."""
     _, _, text = log_of(recorded, "--level", "steps")
 
-    body = [line for line in text.splitlines() if not line.startswith("# cursor=")]
+    body = text.splitlines()
     golden = (RECORDED_RUN / "steps.golden.txt").read_text(encoding="utf-8").rstrip("\n").splitlines()
     # The prompt block is the prompt the run was given, decorated by this version; everything
     # after it is the recording.
@@ -795,7 +807,7 @@ def test_a_recorded_search_is_logged_record_for_record(simple_search) -> None:
     recorded = [json.loads(line) for line in (SESSIONS / "2026-08-29_SimpleSearch00001" / "messages.jsonl").read_text().splitlines()]
     _, _, text = log_of(simple_search, "--level", "raw")
 
-    logged = [json.loads(line) for line in lines_of(text) if not line.startswith("# cursor=")]
+    logged = [json.loads(line) for line in text.splitlines()]
     assert [r["role"] for r in logged] == ["user", "assistant", "toolResult", "assistant"]
     # Round-tripped, not spot-checked: "unchanged" means every field survives.
     assert logged[1:] == recorded[1:]

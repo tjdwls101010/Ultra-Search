@@ -89,19 +89,25 @@ def fake_aside(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 # --- the CLI seam ------------------------------------------------------------------------
 
 
-def run_cli(*argv: str) -> tuple[int, dict, str]:
-    """argv in; the exit code, the last JSON line on stdout, and all of stdout out."""
+def run_cli_streams(*argv: str) -> tuple[int, str, str]:
+    """argv in; the exit code, stdout and stderr out, kept apart."""
     import cli
 
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = cli.main(list(argv))
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 2
-    text = buf.getvalue()
-    last = [line for line in text.splitlines() if line.startswith("{")]
-    return code, (json.loads(last[-1]) if last else {}), text
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_cli(*argv: str) -> tuple[int, dict, str]:
+    """argv in; the exit code, the JSON document on stdout, and everything printed -- stderr's
+    progress lines, then stdout -- out, the way a background Bash call's output file reads."""
+    code, out, err = run_cli_streams(*argv)
+    last = [line for line in out.splitlines() if line.startswith("{")]
+    return code, (json.loads(last[-1]) if last else {}), err + out
 
 
 @pytest.fixture

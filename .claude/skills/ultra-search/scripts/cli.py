@@ -1,4 +1,7 @@
-#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """ultra-search — search, read, map and save the web through the user's logged-in Aside browser.
 
 Every command prints one JSON response on stdout; ``log`` prints events and its cursor before the response. Exit codes describe the command, not the quality or completeness of an investigation:

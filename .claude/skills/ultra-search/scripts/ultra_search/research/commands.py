@@ -163,7 +163,7 @@ def next_step(targets: list, group: str | None, root: Path, cli: str, *, since=N
             argv += ["--since", str(since)]
     quoted_script = cli.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
     return {
-        "command": f'python3 "{quoted_script}" {shlex.join(argv)}',
+        "command": f'uv run "{quoted_script}" {shlex.join(argv)}',
         "bash_timeout_ms": 600_000 if pending else 120_000,
         "run_in_background": pending,
     }

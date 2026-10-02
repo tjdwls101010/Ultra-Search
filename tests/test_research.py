@@ -343,9 +343,11 @@ def test_next_commands_preserve_the_installed_path_and_run_store(
     for command in ("log", "result"):
         nxt = payload["next"]
         args = shlex.split(nxt["command"])
-        assert args[0] == "python3" and args[2] == command
-        assert args[1].startswith(str(installed.parent / "installed "))
-        assert nxt["command"].startswith('python3 "')
+        # The form the skill's permission rule pre-approves: uv runs the script with the Python
+        # its header asks for, whatever `python3` is on PATH.
+        assert args[:2] == ["uv", "run"] and args[3] == command
+        assert args[2].startswith(str(installed.parent / "installed "))
+        assert nxt["command"].startswith('uv run "')
         root = Path(args[args.index("--runs-dir") + 1])
         assert root == started_in / (runs_arg or ".ultra-search")
         called = subprocess.run(nxt["command"], shell=True, cwd=collected_in, capture_output=True, text=True, timeout=15)

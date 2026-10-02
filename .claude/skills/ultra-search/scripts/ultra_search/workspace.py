@@ -45,10 +45,11 @@ def ensure(root: Path) -> None:
 def mark_written(root: Path) -> None:
     """Called where something is written into an existing store, so a default store an earlier
     version made gets its .gitignore at its next write."""
-    ignore = Path(root) / ".gitignore"
-    if _in_use is None or Path(root) != _in_use or ignore.exists():
+    if _in_use is None or Path(root) != _in_use:
         return
+    ignore = Path(root) / ".gitignore"
     try:
-        ignore.write_text("*\n", encoding="utf-8")
+        if not ignore.exists():
+            ignore.write_text("*\n", encoding="utf-8")
     except OSError:
         pass

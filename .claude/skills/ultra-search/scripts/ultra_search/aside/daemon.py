@@ -10,21 +10,21 @@ from ultra_search.aside.process import aside_bin
 from ultra_search.outcome import AsideUnavailable
 
 DAEMON_URL = "http://127.0.0.1:21420/"
-CANARY_DAEMON_URL = "http://127.0.0.1:21421/"
 
 
 def daemon_url() -> str:
     """The health endpoint of the daemon `aside exec` will use.
 
-    The aside CLI takes DAEMON_BASE_URL when it is set, else the canary port for the canary
-    build, else the stable one; checking any other daemon would refuse work the real one can
-    do, or pass work it cannot. ULTRA_SEARCH_DAEMON_URL overrides all of it, for tests.
+    The aside CLI takes DAEMON_BASE_URL when it is set, else the stable daemon's port (the
+    installed build fixes its own variant, whatever the environment says); checking any other
+    daemon would refuse work the real one can do, or pass work it cannot.
+    ULTRA_SEARCH_DAEMON_URL overrides both, for tests.
     """
     if os.environ.get("ULTRA_SEARCH_DAEMON_URL"):
         return os.environ["ULTRA_SEARCH_DAEMON_URL"]
     if os.environ.get("DAEMON_BASE_URL"):
         return os.environ["DAEMON_BASE_URL"].rstrip("/") + "/"
-    return CANARY_DAEMON_URL if os.environ.get("ASIDE_PRODUCT_VARIANT") == "canary" else DAEMON_URL
+    return DAEMON_URL
 
 
 def daemon_status() -> dict:

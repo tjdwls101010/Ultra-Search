@@ -51,7 +51,7 @@ def sessions(*, limit: int, mine: bool, search: str | None) -> Reply:
             "ok": True,
             "command": "sessions",
             "sessions": rows,
-            "note": "resume any of these by session_id. Aside deletes sessions within about a day.",
+            "note": "resume any of these by session_id. Aside removes old sessions on its own schedule.",
         },
         outcome.OK if rows else outcome.EMPTY,
     )
@@ -428,7 +428,7 @@ def _resumable_session(session_id: str) -> str:
     if not is_safe_id(session_id) or aside.session_transcript(session_id) is None:
         raise ArgumentError(
             f"no run and no Aside session called {session_id!r}",
-            fix="List what exists with `sessions`. Aside deletes sessions within about a day.",
+            fix="List what exists with `sessions`; Aside removes old sessions on its own schedule.",
         )
     busy = aside.session_busy(session_id)
     if busy == "database":

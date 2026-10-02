@@ -14,3 +14,21 @@ DEFAULT_DIRNAME = ".ultra-search"
 
 def default_root() -> Path:
     return Path.cwd() / DEFAULT_DIRNAME
+
+
+def ensure(root: Path) -> None:
+    """Create ``root``; when it is the default store, also a .gitignore that keeps it out of git.
+
+    The default store lands in whatever project the caller happens to be in, and its runs and
+    pages are the user's, not that project's. A place the caller chose is left as it is, and
+    a .gitignore already there is the user's to keep.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        default = root.resolve() == default_root().resolve()
+    except OSError:
+        default = False
+    ignore = root / ".gitignore"
+    if default and not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")

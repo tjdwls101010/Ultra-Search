@@ -427,8 +427,8 @@ def test_two_runs_of_the_same_prompt_keep_their_own_sessions(cli, monkeypatch) -
 
 
 def test_the_transcript_outlives_asides_own_copy(cli, aside_home: Path) -> None:
-    """Aside deletes CLI sessions within about a day. A run whose evidence lives only in the
-    session directory has no evidence next week."""
+    """Aside removes old sessions on its own schedule. A run whose evidence lived only in the
+    session directory would have none once Aside removes it."""
     run_id = finished_run_id(cli)
 
     shutil.rmtree(aside_home / "u" / "0" / "sessions")
@@ -1913,3 +1913,12 @@ def test_resuming_a_prefix_several_runs_share_names_them_instead(cli, fake_aside
 
     assert code == 2 and len(err["candidates"]) == 2
     assert len(exec_calls(fake_aside)) == started
+
+
+def test_runs_in_the_default_store_are_kept_out_of_git(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+
+    code, payload, _ = run_cli("search", "질문", "--wait", "30")
+
+    assert code == 0
+    assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"

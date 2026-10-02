@@ -27,7 +27,8 @@ EXIT = {outcome.OK: 0, outcome.BAD_ARGUMENTS: 2, outcome.ASIDE_UNAVAILABLE: 3, o
 
 _REFUSED = "the arguments were refused before any work; the reply says what to change"
 _NO_ASIDE = "the aside binary is missing or its daemon does not answer; the reply says how to fix it"
-_UNWRITABLE = "a file under the runs dir or --out could not be read or written"
+_UNWRITABLE = "a file under the runs dir could not be read or written"
+_UNWRITABLE_OUT = "a file under the runs dir or --out could not be read or written"
 #: What each ending means for each command -- the Exit lines of its --help.
 ENDINGS = {
     "search": {outcome.OK: "every run was started and reported; read each run's state",
@@ -47,13 +48,13 @@ ENDINGS = {
     "sessions": {outcome.OK: "sessions were listed", outcome.BAD_ARGUMENTS: _REFUSED,
                  outcome.EMPTY: "no session matched"},
     "fetch": {outcome.OK: "at least one file was written; read each item's status", outcome.BAD_ARGUMENTS: _REFUSED,
-              outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: f"nothing was saved, or {_UNWRITABLE}"},
+              outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}"},
     "map": {outcome.OK: "URLs were found and the manifest written", outcome.BAD_ARGUMENTS: _REFUSED,
-            outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: _UNWRITABLE,
+            outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: _UNWRITABLE_OUT,
             outcome.EMPTY: "no sitemap and no page could be read"},
     "crawl": {outcome.OK: "at least one page was saved; the manifest has every page's status",
               outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
-              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE}"},
+              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}"},
     "doctor": {outcome.OK: "nothing it can see would stop a command", outcome.BAD_ARGUMENTS: _REFUSED,
                outcome.ASIDE_UNAVAILABLE: "a check failed; each failed check has its fix"},
     "setup": {outcome.OK: "the packages were installed", outcome.BAD_ARGUMENTS: _REFUSED,
@@ -149,7 +150,7 @@ def _add_runs_dir(p: argparse.ArgumentParser) -> None:
 
 def _add_target(p: argparse.ArgumentParser, *, all_flag: bool = False) -> None:
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--run", metavar="ID", help="A single run id, as returned by `search`.")
+    g.add_argument("--run", metavar="ID", help="A run id as returned by `search`, or any beginning of one that only that run has.")
     g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`.")
     if all_flag:
         g.add_argument("--all", action="store_true", help="Every run still being watched.")
@@ -255,8 +256,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "target",
         metavar="RUN_OR_SESSION",
-        help="A run id from `search`, or an Aside session id from `sessions` -- including a "
-        "session started in the Aside app or by a bare `aside exec`, which this did not create.",
+        help="A run id from `search` -- or any beginning of one that only that run has -- or an Aside session id "
+        "from `sessions`, including a session started in the Aside app or by a bare `aside exec`, which this did "
+        "not create.",
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
     _add_wait_opts(r)
@@ -363,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
         "fetching anything again. A source is found by its n from `result` or `result --sources`, or by any of its ids; "
         "a run still going, or stopped, is read from its transcript so far.",
     )
-    sh.add_argument("--run", metavar="ID", help="Run id. Defaults to the most recent run.")
+    sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
     g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0 -- the n it lists -- or any of its source ids.")
     g.add_argument(
@@ -391,7 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one or more URLs into clean markdown files.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
         "(PDF, docx, pptx, xlsx, epub...) are converted too. Full text always goes to a file; use --print "
-        "to also get it inline. Exit 0 means at least one file was written.\n"
+        "to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         "ok: the text was extracted and saved.\n"
         "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
@@ -468,8 +470,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="List Aside sessions that exist right now, so one can be resumed.",
         description="Every conversation Aside still has on disk, newest first -- ones this tool started and "
         "ones started in the Aside app or by a bare `aside exec` alike. The opening prompt is shown because "
-        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside deletes these "
-        "within about a day, so a session listed here may not be listed tomorrow.",
+        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside removes old sessions "
+        "on its own schedule, so a session listed here may not be listed later.",
     )
     se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default 20.")
     se.add_argument(
@@ -491,8 +493,8 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser(
         "doctor",
         help="Check the aside binary, daemon, account and conversion toolchain.",
-        description="Reports everything that has to be working before a command can succeed, and exits 3 "
-        "when something it can see would stop one.",
+        description="Reports everything that has to be working before a command can succeed, each failed check with "
+        "its fix.",
     )
     _add_runs_dir(d)
     sub.add_parser(

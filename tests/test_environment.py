@@ -200,6 +200,9 @@ def test_repl_api_answers_with_the_repl_tool_and_how_to_run_it(aside_home: Path,
     assert "aside repl '<code>'" in payload["run"]
     assert "approval" in payload["run"]
     assert "tools" not in payload
+    # The daemon reports its own 120-second kill as if it had gone away; a caller writing a
+    # snippet needs to know both that, and to print results as they land.
+    assert "120" in payload["run"] and "daemon is not reachable" in payload["run"] and "as" in payload["run"]
 
 
 def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> None:

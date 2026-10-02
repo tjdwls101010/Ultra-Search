@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from ultra_search import workspace
 from ultra_search.outcome import ArgumentError
 
 PAGES_SUBDIR = "pages"
@@ -16,6 +17,7 @@ CRAWLS_SUBDIR = "crawls"
 
 
 def pages_dir(root: Path) -> Path:
+    workspace.ensure(root)
     d = Path(root) / PAGES_SUBDIR
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -23,6 +25,7 @@ def pages_dir(root: Path) -> Path:
 
 def new_map_file(root: Path, host: str) -> Path:
     """A file name nobody holds yet, reserved by creating it: maps/<host>-<timestamp>.json."""
+    workspace.ensure(root)
     folder = Path(root) / MAPS_SUBDIR
     folder.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%y%m%d-%H%M%S")
@@ -38,6 +41,7 @@ def new_map_file(root: Path, host: str) -> Path:
 
 def new_crawl_dir(root: Path, host: str) -> Path:
     """A new folder per crawl under crawls/<host>/, reserved before anything is written."""
+    workspace.ensure(root)
     base = Path(root) / CRAWLS_SUBDIR / host
     base.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%y%m%d-%H%M%S")

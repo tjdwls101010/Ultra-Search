@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ultra_search import workspace
 from ultra_search.ids import is_safe_id, label_for, normal
 from ultra_search.outcome import AmbiguousRun, ArgumentError, RunNotFound
 
@@ -109,6 +110,7 @@ def create_run(
     group: str | None = None,
     **meta: object,
 ) -> Run:
+    workspace.ensure(Path(runs_root))
     root = Path(runs_root) / RUNS_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%y%m%d-%H%M%S")

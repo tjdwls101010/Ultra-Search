@@ -108,7 +108,7 @@ def doctor(root: Path) -> Reply:
         "checks": checks,
         "notes": [
             # Two things a caller will otherwise learn the expensive way.
-            "aside deletes CLI sessions within about a day; a run's own copy under the runs dir outlives that",
+            "aside removes old sessions on its own schedule; a run's own copy under the runs dir outlives that",
             "`stop` ends the watching, not the run -- the daemon keeps working and keeps spending credits",
         ],
     }
@@ -163,5 +163,7 @@ def repl_api(*, every: bool) -> Reply:
         "command": "repl-api",
         "tool": repl_tool,
         "run": "Run code with `aside repl '<code>'`. This skill's permission rule covers only its own CLI, "
-               "so expect an approval prompt for it.",
+               "so expect an approval prompt for it. The daemon kills a snippet still running at 120 seconds and reports "
+               "that as \"fetch failed: other side closed / daemon is not reachable\" although the daemon is fine: "
+               "keep each snippet under that, and print each result as it is produced so what finished survives.",
     })

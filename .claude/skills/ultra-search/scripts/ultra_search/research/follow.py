@@ -10,10 +10,14 @@ Three endings are printed differently on purpose. `run.<state>` means the run fi
 and there is a result to collect. `run.still-running` means only that we stopped looking.
 `heartbeat` means a silence has been checked and is alive. Collapsing any two of those
 would make a caller either collect nothing or wait forever.
+
+Every line here is progress, so it goes to stderr as it happens, each flushed: stdout is
+kept for the one JSON reply the command ends with.
 """
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -26,7 +30,7 @@ POLL = 1.0
 
 
 def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]]:
-    """Cursors from the `# cursor=` line of a previous call.
+    """Cursors from the `cursor` of a previous call's reply.
 
     A single run's cursor is a plain integer so the common case stays readable; a group's
     is the JSON object printed for it, because one number cannot describe several streams
@@ -156,7 +160,7 @@ def follow(
     last_beat = started
 
     def emit(line: str) -> None:
-        print(line, flush=True)
+        print(line, file=sys.stderr, flush=True)
 
     while True:
         for run in runs:
@@ -178,8 +182,11 @@ def follow(
 
         now = time.time()
         if now - started >= follow_timeout:
+            # Every member, ended or not: the caller collects the one and keeps watching the other.
             for run in runs:
-                if states[run.run_id] not in TERMINAL_STATES:
+                if states[run.run_id] in TERMINAL_STATES:
+                    emit(f"run.{states[run.run_id]} {run.run_id}")
+                else:
                     emit(f"run.still-running {run.run_id} watched={round(now - started, 1)}s")
             break
 
@@ -191,6 +198,4 @@ def follow(
 
         time.sleep(POLL)
 
-    cursor = format_cursor(cursors, runs)
-    emit(f"# cursor={cursor}")
-    return cursor
+    return format_cursor(cursors, runs)

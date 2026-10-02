@@ -1,13 +1,10 @@
-#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """ultra-search — search, read, map and save the web through the user's logged-in Aside browser.
 
-Every command prints one JSON response on stdout; ``log`` prints events and its cursor before the response. Exit codes describe the command, not the quality or completeness of an investigation:
-
-    0  success
-    2  bad arguments
-    3  aside unavailable (binary missing, daemon unreachable)
-    4  run failed or abandoned
-    5  no result data
+The whole command line lives here: the parser, every command's help, dispatch to the units that do the work, and the one table that turns how a command ended into its exit code. Every command prints one JSON document on stdout; progress and diagnostics go to stderr.
 """
 from __future__ import annotations
 
@@ -24,6 +21,56 @@ from ultra_search import __version__, aside, doctor, fetch, outcome, research, s
 
 FORMAT_CHOICES = ("md", "html")
 VIA_CHOICES = ("auto", "fetch", "tab")
+#: Which exit code each way a command can end is. Exit codes describe the command, not the
+#: quality or completeness of an investigation; the payload's states say that.
+EXIT = {outcome.OK: 0, outcome.BAD_ARGUMENTS: 2, outcome.ASIDE_UNAVAILABLE: 3, outcome.FAILED: 4, outcome.EMPTY: 5}
+
+_REFUSED = "the arguments were refused before any work; the reply says what to change"
+_NO_ASIDE = "the aside binary is missing or its daemon does not answer; the reply says how to fix it"
+_UNWRITABLE = "a file under the runs dir could not be read or written"
+_UNWRITABLE_OUT = "a file under the runs dir or --out could not be read or written"
+#: What each ending means for each command -- the Exit lines of its --help.
+ENDINGS = {
+    "search": {outcome.OK: "every run was started and reported; read each run's state",
+               outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
+               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}",
+               outcome.EMPTY: "every run finished with no answer and no sources"},
+    "status": {outcome.OK: "the runs were reported; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}"},
+    "log": {outcome.OK: "the log was read -- not that the research finished or succeeded",
+            outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "result": {outcome.OK: "every run has a result; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.FAILED: f"a run failed, was abandoned or is still running, or {_UNWRITABLE}",
+               outcome.EMPTY: "every run ended with no answer and no sources"},
+    "show": {outcome.OK: "the text was returned", outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "stop": {outcome.OK: "watching stopped where it was going; the daemon's runs continue",
+             outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
+    "sessions": {outcome.OK: "sessions were listed", outcome.BAD_ARGUMENTS: _REFUSED,
+                 outcome.EMPTY: "no session matched"},
+    "fetch": {outcome.OK: "at least one file was written; read each item's status", outcome.BAD_ARGUMENTS: _REFUSED,
+              outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}"},
+    "map": {outcome.OK: "URLs were found and the manifest written", outcome.BAD_ARGUMENTS: _REFUSED,
+            outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: _UNWRITABLE_OUT,
+            outcome.EMPTY: "nothing to map: no sitemap or page could be read, or the filters kept no URL"},
+    "crawl": {outcome.OK: "at least one page was saved; the manifest has every page's status",
+              outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
+              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}",
+              outcome.EMPTY: "no page to crawl: discovery found none, or the filters kept none"},
+    "doctor": {outcome.OK: "nothing it can see would stop a command", outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.ASIDE_UNAVAILABLE: "a check failed; each failed check has its fix"},
+    "setup": {outcome.OK: "the packages were installed", outcome.BAD_ARGUMENTS: _REFUSED,
+              outcome.ASIDE_UNAVAILABLE: "Node is missing or the install failed; the reply says which"},
+    "repl-api": {outcome.OK: "the daemon's tool description was returned", outcome.BAD_ARGUMENTS: _REFUSED,
+                 outcome.ASIDE_UNAVAILABLE: _NO_ASIDE},
+}
+ENDINGS["resume"] = ENDINGS["search"]
+
+
+def _exit_lines(command: str) -> str:
+    return "Exit codes:\n" + "\n".join(f"{EXIT[o]}  {meaning}" for o, meaning in
+                                       sorted(ENDINGS[command].items(), key=lambda kv: EXIT[kv[0]]))
+
+
 NEXT_HELP = (
     "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout it needs, "
     "and run_in_background says whether to run it in the background. Background is for when something will "
@@ -40,7 +87,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # type: ignore[override]
         print(json.dumps({"ok": False, "error": "bad_arguments", "message": message, "fix": f"{self.prog} --help"},
                          ensure_ascii=False))
-        raise SystemExit(outcome.EXIT_ARGS)
+        raise SystemExit(EXIT[outcome.BAD_ARGUMENTS])
 
 
 def _count(minimum: int):
@@ -104,7 +151,7 @@ def _add_runs_dir(p: argparse.ArgumentParser) -> None:
 
 def _add_target(p: argparse.ArgumentParser, *, all_flag: bool = False) -> None:
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--run", metavar="ID", help="A single run id, as returned by `search`.")
+    g.add_argument("--run", metavar="ID", help="A run id as returned by `search`, or any beginning of one that only that run has.")
     g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`.")
     if all_flag:
         g.add_argument("--all", action="store_true", help="Every run still being watched.")
@@ -165,7 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = JsonArgumentParser(
         prog="cli.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
-        epilog="Exit codes: 0 command handled (inspect run/item states) | 2 bad args | 3 aside unavailable | 4 run failed/abandoned | 5 no result data.",
+        epilog="Exit codes describe the command, not the investigation: 0 handled (read the states in the reply) | "
+        "2 bad arguments | 3 Aside unavailable | 4 a run failed or was abandoned, nothing was saved, or a file could not "
+        "be written | 5 no result data. Each command's --help lists its own.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"ultra-search {__version__}")
@@ -179,9 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
         "search",
         help="Run an autonomous web investigation (Aside's in-browser agent).",
         description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
-        "as one group. Synchronous by default: if the work finishes within --wait you get the answer, "
-        "sources and usage inline; if it does not, the run is left alive and you get a handle plus a "
-        "`next` action for watching it. Finished entries include their state; a partial snapshot is not a complete investigation. "
+        "as one group. Synchronous by default: if the work finishes within --wait its entry carries the answer; "
+        "if it does not, the run is left alive and the reply carries a `next` action for watching it. "
+        "A partial snapshot is not a complete investigation.\n"
+        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
+        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
@@ -205,8 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "target",
         metavar="RUN_OR_SESSION",
-        help="A run id from `search`, or an Aside session id from `sessions` -- including a "
-        "session started in the Aside app or by a bare `aside exec`, which this did not create.",
+        help="A run id from `search` -- or any beginning of one that only that run has -- or an Aside session id "
+        "from `sessions`, including a session started in the Aside app or by a bare `aside exec`, which this did "
+        "not create.",
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
     _add_wait_opts(r)
@@ -215,10 +268,11 @@ def build_parser() -> argparse.ArgumentParser:
     # --- status -------------------------------------------------------------
     st = sub.add_parser(
         "status",
-        help="Snapshot of a run: state, children, last activity.",
+        help="Snapshot of a run: state, idleness, children, usage.",
         description="One snapshot and exit -- there is no --follow here; `log --follow` is the only watcher. "
-        "Reports last_activity_at and idle_seconds across the run's own output and every child session, so a "
-        "parent that has gone quiet while its children work is visibly not stalled.",
+        "Each entry leads with run_id, state, idle_seconds, possibly_stalled and live_children, then label, group, "
+        "session_id, child_ids and usage. idle_seconds counts from the newest write across the run's own output and "
+        "every child session, so a parent that has gone quiet while its children work is visibly not stalled.",
     )
     _add_target(st)
     st.add_argument(
@@ -235,9 +289,10 @@ def build_parser() -> argparse.ArgumentParser:
     lg = sub.add_parser(
         "log",
         help="Stream a run's events; the only watcher.",
-        description="Print this run's events, then a cursor and a final JSON response with runs (per-run state), "
-        "cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires. "
-        "Exit 0 means the log was read, not that research finished or succeeded. A resumed run excludes earlier turns and their children.",
+        description="Print this run's events on stderr as they come, one line each, then one JSON reply on stdout: runs "
+        "(per-run state), cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires; "
+        "the last stderr lines then say run.<state> for each run that ended, run.still-running for one that has not. "
+        "A resumed run excludes earlier turns and their children.",
         epilog=NEXT_HELP,
     )
     _add_target(lg)
@@ -245,8 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--since",
         default="0",
         metavar="CURSOR",
-        help="Resume from a previous call's `# cursor=` value. A run with no children prints a byte offset; "
-        "one with children, or a group, prints a JSON object, since its streams advance independently.",
+        help="Resume from a previous reply's `cursor`. A run with no children has a byte offset; one with "
+        "children, or a group, a JSON object, since its streams advance independently.",
     )
     lg.add_argument(
         "--level",
@@ -280,11 +335,14 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser(
         "result",
         help="A finished run's answer and sources.",
-        description="Each run's answer with its citation tags resolved to URL footnotes, and every source the run and its "
-        "children touched -- always as a runs list, one entry per run. Results are saved in the runs directory and "
+        description="Each run's answer and the sources it opened -- always as a runs list, one entry per run; while a run "
+        "is still going, the reply carries a `next` action for watching it. Results are saved in the runs directory and "
         "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
-        "`opened` means a tool that opens pages returned that URL: an inference that the "
+        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
+        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
+        "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
         "completed: the process exited, its session was read, and every child finished.\n"
@@ -296,7 +354,8 @@ def build_parser() -> argparse.ArgumentParser:
         "abandoned: watching stopped -- the daemon's work and its credit use did not.",
     )
     _add_target(rs)
-    rs.add_argument("--sources-only", action="store_true", help="Omit the answer text.")
+    rs.add_argument("--sources", action="store_true",
+                    help="Every source each run touched -- n, url, title, opened -- in place of the answer and the opened ones.")
     _add_runs_dir(rs)
 
     # --- show ---------------------------------------------------------------
@@ -304,11 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
         "show",
         help="Full text of one source or one tool result.",
         description="The third layer under `result`: the page text Aside already fetched, returned without "
-        "fetching anything again.",
+        "fetching anything again. A source is found by its n from `result` or `result --sources`, or by any of its ids; "
+        "a run still going, or stopped, is read from its transcript so far.",
     )
-    sh.add_argument("--run", metavar="ID", help="Run id. Defaults to the most recent run.")
+    sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
-    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0, or any of its source ids.")
+    g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0 -- the n it lists -- or any of its source ids.")
     g.add_argument(
         "--item",
         type=_count(0),
@@ -334,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one or more URLs into clean markdown files.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
         "(PDF, docx, pptx, xlsx, epub...) are converted too. Full text always goes to a file; use --print "
-        "to also get it inline. Exit 0 means at least one file was written.\n"
+        "to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         "ok: the text was extracted and saved.\n"
         "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
@@ -411,8 +471,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="List Aside sessions that exist right now, so one can be resumed.",
         description="Every conversation Aside still has on disk, newest first -- ones this tool started and "
         "ones started in the Aside app or by a bare `aside exec` alike. The opening prompt is shown because "
-        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside deletes these "
-        "within about a day, so a session listed here may not be listed tomorrow.",
+        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside removes old sessions "
+        "on its own schedule, so a session listed here may not be listed later.",
     )
     se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default 20.")
     se.add_argument(
@@ -434,8 +494,8 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser(
         "doctor",
         help="Check the aside binary, daemon, account and conversion toolchain.",
-        description="Reports everything that has to be working before a command can succeed, and exits 3 "
-        "when something it can see would stop one.",
+        description="Reports everything that has to be working before a command can succeed, each failed check with "
+        "its fix.",
     )
     _add_runs_dir(d)
     sub.add_parser(
@@ -445,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
         "after updating this skill.",
     )
 
+    for name, command in sub.choices.items():
+        command.epilog = f"{command.epilog}\n\n{_exit_lines(name)}" if command.epilog else _exit_lines(name)
     return p
 
 
@@ -453,18 +515,21 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["_supervise"]:
         # Internal: the detached supervisor a `search` or `resume` starts, through the same
         # entry point the caller used. Not a command, so not in --help.
-        return research.run_detached(argv[1])
+        research.run_detached(argv[1])
+        return 0
     args = build_parser().parse_args(argv)
     # The path as the caller reached it, not resolved: a `next` command built from it keeps
     # the installed location, symlink included.
     cli = str(pathlib.Path(__file__).absolute())
     try:
-        return _dispatch(args, _root(args), cli)
+        reply = _dispatch(args, _root(args), cli)
+        print(json.dumps(reply.payload, ensure_ascii=False))
+        return EXIT[reply.outcome]
     except outcome.UltraSearchError as e:
         print(json.dumps(e.payload(), ensure_ascii=False))
-        return e.exit_code
+        return EXIT[e.outcome]
     except BrokenPipeError:
-        return outcome.EXIT_OK
+        return EXIT[outcome.OK]
     except OSError as e:
         # Storage the caller pointed at -- an unwritable --out or --runs-dir, a full disk --
         # still answers in the one shape every command promises.
@@ -473,21 +538,19 @@ def main(argv: list[str] | None = None) -> int:
             fix="Check the path exists and is writable, or choose another with --out or --runs-dir.",
         )
         print(json.dumps(err.payload(), ensure_ascii=False))
-        return err.exit_code
+        return EXIT[err.outcome]
 
 
 def _root(args: argparse.Namespace) -> pathlib.Path:
     """Where runs and saved pages go: --runs-dir, or .ultra-search/ in the working directory."""
-    if not getattr(args, "runs_dir", None):
-        return workspace.default_root()
     try:
-        return pathlib.Path(args.runs_dir).expanduser().resolve()
+        return workspace.root_for(getattr(args, "runs_dir", None))
     except RuntimeError as e:  # a symlink loop, on the Pythons that raise rather than OSError
         raise outcome.ArgumentError(f"--runs-dir {args.runs_dir!r} cannot be resolved: {e}",
                                     fix="Pass a directory that is not a symlink loop.") from e
 
 
-def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> int:
+def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome.Reply:
     c = args.command
     if c in ("search", "resume"):
         common = dict(wait=args.wait, background=args.background, label=args.label, effort=args.effort,
@@ -501,7 +564,7 @@ def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> int:
         return research.log(root, run=args.run, group=args.group, since=args.since, level=args.level,
                             follow_=args.follow, follow_timeout=args.follow_timeout, heartbeat=args.heartbeat, cli=cli)
     if c == "result":
-        return research.result(root, run=args.run, group=args.group, sources_only=args.sources_only)
+        return research.result(root, run=args.run, group=args.group, sources=args.sources, cli=cli)
     if c == "show":
         return research.show(root, run=args.run, source=args.source, item=args.item)
     if c == "stop":

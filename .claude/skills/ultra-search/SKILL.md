@@ -1,7 +1,7 @@
 ---
 name: ultra-search
 description: Search the web, read full pages and documents, and map or crawl sites through the user's logged-in Aside browser, including sources anonymous web tools cannot reach. Use instead of WebSearch/WebFetch for web research, current versions, news, docs, prices, reading a URL, PDFs or Office documents at a URL, and saving pages as markdown. Triggers include search, fetch, crawl, scrape, 검색해봐, 찾아봐, 웹에서, 최신 버전, 원문 읽어와, 크롤링, 마크다운으로 저장, 사이트 전체, 로그인해야 보이는 페이지. Not for local files or codebase search, facts already known, browser actions unrelated to acquiring web content, or delegating non-web work to another model (codex).
-allowed-tools: Bash(python3 "${CLAUDE_SKILL_DIR}/scripts/cli.py" *)
+allowed-tools: Bash(uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" *)
 ---
 
 # Web work through the user's own browser
@@ -9,7 +9,7 @@ allowed-tools: Bash(python3 "${CLAUDE_SKILL_DIR}/scripts/cli.py" *)
 Every command goes through one CLI in this skill's directory. Call it by its expanded absolute path, double-quoted, on one shell line: the pre-approved permission rule matches the command text, so a path built from a variable or a command continued with `\` stops at an approval prompt.
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/cli.py" --help
+uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" --help
 ```
 
 Each command's `--help` owns its inputs, outputs, states and recovery. A command the CLI hands back in `next` keeps the installed path and run store; run it as returned rather than rebuilding it.

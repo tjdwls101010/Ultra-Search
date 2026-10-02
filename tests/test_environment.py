@@ -147,6 +147,14 @@ def test_doctor_fails_on_an_unwritable_runs_directory(aside_home: Path, fake_asi
     assert list(blocked.iterdir()) == []
 
 
+def test_doctor_checks_the_default_store_without_creating_it(aside_home: Path, fake_aside: Path, daemon) -> None:
+    """Checking is not writing: a doctor run in a project leaves nothing behind in it."""
+    code, payload, _ = run_cli("doctor")
+
+    assert check(payload, "runs dir")["ok"] is True
+    assert not (Path.cwd() / ".ultra-search").exists()
+
+
 def test_doctor_reports_a_signed_out_browser_as_a_failure(
     runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
 ) -> None:
@@ -200,12 +208,16 @@ def test_repl_api_answers_with_the_repl_tool_and_how_to_run_it(aside_home: Path,
     assert "aside repl '<code>'" in payload["run"]
     assert "approval" in payload["run"]
     assert "tools" not in payload
+    # The daemon reports its own 120-second kill as if it had gone away; a caller writing a
+    # snippet needs to know both that, and to print results as they land.
+    assert "120" in payload["run"] and "daemon is not reachable" in payload["run"] and "as" in payload["run"]
 
 
 def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> None:
     _, payload, _ = run_cli("repl-api", "--all")
 
     assert [t["name"] for t in payload["tools"]] == ["repl", "navigate"]
+    assert "120" in payload["run"]
 
 
 def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypatch) -> None:
@@ -319,6 +331,28 @@ def test_every_help_stands_on_its_own(command: str) -> None:
     assert "As for" not in help_of(command)
 
 
+#: What each command can end in, from the CLI contract: 0 handled (read the states), 2 bad
+#: arguments, 3 Aside unavailable, 4 a run failed or was abandoned or nothing was saved or a
+#: file could not be read or written, 5 no result data.
+EXIT_CODES = {
+    "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "status": {0, 2, 4}, "log": {0, 2, 4},
+    "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "stop": {0, 2, 4}, "sessions": {0, 2, 5},
+    "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4, 5},
+    "doctor": {0, 2, 3}, "setup": {0, 2, 3}, "repl-api": {0, 2, 3},
+}
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_every_help_names_the_exit_codes_it_can_return(command: str) -> None:
+    """argparse shows the top-level epilog only at the top, and a caller reads the help of the
+    command it is about to run -- so each one says its own exit codes, one per line."""
+    text = help_of(command)
+
+    section = text.split("Exit codes:\n", 1)[1].splitlines()
+    codes = {int(line.split()[0]) for line in section if line[:1].isdigit()}
+    assert codes == EXIT_CODES[command]
+
+
 @pytest.mark.parametrize("command", ["search", "resume", "log"])
 def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
     text = help_of(command)
@@ -348,7 +382,10 @@ def test_show_says_how_sources_are_counted() -> None:
 
 
 def test_map_help_says_what_it_does_not_do() -> None:
-    assert "without extracting or saving pages" in help_of("map")
+    text = help_of("map")
+
+    assert "without extracting or saving pages" in text
+    assert "filters" in next(line for line in text.splitlines() if line.startswith("5 "))
 
 
 def test_crawl_help_says_which_flags_apply_to_a_manifest() -> None:

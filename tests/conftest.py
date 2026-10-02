@@ -12,6 +12,8 @@ import io
 import json
 import os
 import shutil
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,30 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
+@pytest.fixture(scope="session")
+def ready_daemon() -> str:
+    """A stand-in for the daemon's health endpoint that says it is up and ready."""
+    from ultra_search import aside
+
+    body = json.dumps({"ready": True, "version": aside.VERIFIED_DAEMON_VERSION, "runningSessionCount": 0,
+                       "semaphore": {"available": 4, "capacity": 4}}).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/"
+    server.shutdown()
+
+
 @pytest.fixture(autouse=True)
 def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Outside `-m live`, nothing reaches the real aside, ~/.aside or this repository.
@@ -42,6 +68,7 @@ def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
     """
     if "live" in request.keywords:
         return
+    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", request.getfixturevalue("ready_daemon"))
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_BIN", str(tmp_path / "no-real-aside-in-tests"))
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_HOME", str(tmp_path / "no-real-aside-home"))
     cwd = tmp_path / "cwd"
@@ -89,19 +116,25 @@ def fake_aside(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 # --- the CLI seam ------------------------------------------------------------------------
 
 
-def run_cli(*argv: str) -> tuple[int, dict, str]:
-    """argv in; the exit code, the last JSON line on stdout, and all of stdout out."""
+def run_cli_streams(*argv: str) -> tuple[int, str, str]:
+    """argv in; the exit code, stdout and stderr out, kept apart."""
     import cli
 
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = cli.main(list(argv))
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 2
-    text = buf.getvalue()
-    last = [line for line in text.splitlines() if line.startswith("{")]
-    return code, (json.loads(last[-1]) if last else {}), text
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_cli(*argv: str) -> tuple[int, dict, str]:
+    """argv in; the exit code, the JSON document on stdout, and everything printed -- stderr's
+    progress lines, then stdout -- out, the way a background Bash call's output file reads."""
+    code, out, err = run_cli_streams(*argv)
+    last = [line for line in out.splitlines() if line.startswith("{")]
+    return code, (json.loads(last[-1]) if last else {}), err + out
 
 
 @pytest.fixture

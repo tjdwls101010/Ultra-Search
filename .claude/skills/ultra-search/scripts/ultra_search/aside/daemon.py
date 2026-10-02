@@ -13,8 +13,18 @@ DAEMON_URL = "http://127.0.0.1:21420/"
 
 
 def daemon_url() -> str:
-    """The daemon's health endpoint; ULTRA_SEARCH_DAEMON_URL points doctor at another one."""
-    return os.environ.get("ULTRA_SEARCH_DAEMON_URL") or DAEMON_URL
+    """The health endpoint of the daemon `aside exec` will use.
+
+    The aside CLI takes DAEMON_BASE_URL when it is set, else the stable daemon's port (the
+    installed build fixes its own variant, whatever the environment says); checking any other
+    daemon would refuse work the real one can do, or pass work it cannot.
+    ULTRA_SEARCH_DAEMON_URL overrides both, for tests.
+    """
+    if os.environ.get("ULTRA_SEARCH_DAEMON_URL"):
+        return os.environ["ULTRA_SEARCH_DAEMON_URL"]
+    if os.environ.get("DAEMON_BASE_URL"):
+        return os.environ["DAEMON_BASE_URL"].rstrip("/") + "/"
+    return DAEMON_URL
 
 
 def daemon_status() -> dict:
@@ -23,8 +33,11 @@ def daemon_status() -> dict:
     import urllib.request
 
     url = daemon_url()
+    # Straight to the daemon: it is on this machine, and a proxy from the environment would
+    # answer for it -- or refuse to.
+    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
+        with direct.open(url, timeout=5) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
         sem = body.get("semaphore") or {}
         return {

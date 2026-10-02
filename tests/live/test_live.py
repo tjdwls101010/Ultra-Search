@@ -49,11 +49,12 @@ def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
 
     assert code == 0
     run = payload["runs"][0]
+    _, status = cli("status", "--run", run["run_id"], "--runs-dir", str(tmp_path))
     assert run["state"] == "completed", run.get("note")
-    assert run["session_id"]
+    assert status["runs"][0]["session_id"]
     assert run["answer"].strip()
-    assert any(s["opened"] for s in run["sources"]), run["sources"]
-    assert run["usage"]["total_tokens"] > 0
+    assert run["opened_sources"], run
+    assert status["runs"][0]["usage"]["total_tokens"] > 0
 
 
 def test_a_public_page_is_fetched_and_saved(tmp_path: Path) -> None:

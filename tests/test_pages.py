@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, SCRIPTS, repl_calls
+from conftest import FIXTURES, SCRIPTS, repl_calls, run_cli
 
 ARTICLE = "<html><head><title>제목</title></head><body><article><p>" + ("단어 " * 300) + "</p></article></body></html>"
 SHELL = "<html><head><title>shell</title></head><body><div id=root></div></body></html>"
@@ -71,6 +71,17 @@ def test_a_page_is_saved_as_markdown_and_reported(cli, routes, tmp_path: Path) -
     assert item["via"] == "fetch"
     assert Path(item["path"]).suffix == ".md"
     assert "단어" in saved(item)
+
+
+def test_a_fetch_reply_leads_with_its_statuses(cli, routes) -> None:
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE),
+                            "https://example.org/x": page("<p>no</p>", status=403)}})
+
+    _, payload, _ = cli("fetch", "https://example.org/a", "https://example.org/x", "--via", "fetch")
+
+    assert list(payload)[:3] == ["ok", "command", "statuses"]
+    assert payload["statuses"] == {"ok": 1, "blocked": 1}
+    assert list(payload["items"][0])[:5] == ["status", "url", "path", "words", "title"]
 
 
 def test_saved_pages_default_to_the_registry_beside_the_runs(cli, routes, runs_dir: Path) -> None:
@@ -1057,3 +1068,49 @@ def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Pat
 
     assert (tmp_path / "v1.2").is_dir()
     assert Path(item_of(payload)["path"]).parent == tmp_path / "v1.2"
+
+
+# --- where saved work goes ---------------------------------------------------------------
+
+
+def test_the_default_store_keeps_itself_out_of_git(routes, fake_aside: Path, aside_home: Path, tmp_path: Path) -> None:
+    """`.ultra-search/` lands in whatever project the caller is in. Its pages and runs are the
+    user's, not the project's, so the first write there leaves a .gitignore that says so."""
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+
+    code, _, _ = run_cli("fetch", "https://example.org/a")
+
+    assert code == 0
+    assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"
+
+
+def test_a_chosen_place_is_left_as_it_is(routes, fake_aside: Path, aside_home: Path, tmp_path: Path) -> None:
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+    chosen, out = tmp_path / "chosen-root", tmp_path / "chosen-out"
+
+    run_cli("fetch", "https://example.org/a", "--runs-dir", str(chosen))
+    run_cli("fetch", "https://example.org/a", "--out", str(out))
+
+    assert not (chosen / ".gitignore").exists() and not (out / ".gitignore").exists()
+    assert not (Path.cwd() / ".ultra-search").exists(), "a fetch to --out writes nothing under the default store"
+
+
+def test_an_existing_gitignore_is_not_rewritten(routes, fake_aside: Path, aside_home: Path) -> None:
+    store = Path.cwd() / ".ultra-search"
+    store.mkdir()
+    (store / ".gitignore").write_text("pages/\n")
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE)}})
+
+    run_cli("fetch", "https://example.org/a")
+
+    assert (store / ".gitignore").read_text() == "pages/\n"
+
+
+def test_a_crawl_with_nothing_to_fetch_says_so(cli, routes, tmp_path: Path) -> None:
+    routes({"links": SITE})
+
+    code, payload, _ = cli("crawl", "https://site.test/", "--depth", "1", "--include", "*/no-match/*",
+                           "--out", str(tmp_path / "empty"))
+
+    assert code == 5
+    assert payload["requested"] == 0

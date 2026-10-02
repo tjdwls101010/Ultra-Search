@@ -458,3 +458,36 @@ def test_asides_and_the_converters_names_stay_in_their_units() -> None:
         if not path.is_relative_to(PACKAGE / "converter"):
             violations += foreign_names(text, where, CONVERTER_NAMES)
     assert violations == []
+
+
+INVOCATION = 'uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py"'
+
+
+def test_cli_py_states_its_python_and_dependencies_first() -> None:
+    """`uv run` reads this header; without it the script runs on whatever Python uv picks."""
+    head = (SCRIPTS / "cli.py").read_text(encoding="utf-8").split("\n# ///\n", 1)[0].splitlines()
+    assert head[0] == "# /// script"
+    assert any(line.startswith("# requires-python = ") for line in head)
+    assert any(line.startswith("# dependencies = ") for line in head)
+
+
+def test_the_skill_text_calls_the_cli_one_way() -> None:
+    """The pre-approval matches the command text, so the permission rule and every command the
+    skill shows have to be spelled alike."""
+    text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    front = text.split("---", 2)[1]
+    allowed = next(line for line in front.splitlines() if line.startswith("allowed-tools:"))
+    assert allowed == f"allowed-tools: Bash({INVOCATION} *)"
+    blocks = text.split("```")[1::2]
+    calls = [line for block in blocks for line in block.splitlines() if "cli.py" in line]
+    assert calls and all(line.startswith(INVOCATION) for line in calls), calls
+
+
+def test_exit_code_numbers_live_in_cli_py_alone() -> None:
+    """Commands say how they ended; which number that is belongs to the one file that owns the
+    command line, so a command's help and its exit can never disagree."""
+    found = [f"{module_name(p)}:{n.lineno}" for p in package_modules()
+             for n in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
+             if isinstance(n, ast.Name) and n.id.startswith("EXIT_")
+             or isinstance(n, ast.Attribute) and n.attr.startswith("EXIT_")]
+    assert found == []

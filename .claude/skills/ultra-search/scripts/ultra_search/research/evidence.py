@@ -7,24 +7,11 @@ one view, so they cannot disagree about which turn and which children are the ru
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from ultra_search import aside, runs
 from ultra_search.ids import is_safe_id
 from ultra_search.research.marker import marker_for
-
-
-#: Tools whose result means the agent actually read a page, rather than merely being
-#: shown it in a result list. The distinction is what `opened` reports.
-_OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
-
-def is_opening_tool(name: str) -> bool:
-    """Whether this tool's result means the agent read the page rather than just listing it."""
-    return name in _OPENING_TOOLS
-
-
-_CITATION_RE = re.compile(r'<citation\s+refs="([^"]*)"\s*>(.*?)</citation>', re.DOTALL)
 
 
 @dataclass
@@ -59,29 +46,12 @@ def final_answer(events: list[aside.Event], sources: list[Source] | None = None)
     last_prompt = max((i for i, e in enumerate(events) if e.kind == "user"), default=0)
     text = ""
     for e in events[last_prompt:]:
-        if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
+        if e.kind == "assistant" and e.stopped:
             text = e.text
     if not text.strip():
         return ""
-    return resolve_citations(text, sources if sources is not None else collect_sources(events))
-
-
-def resolve_citations(text: str, sources: list[Source]) -> str:
-    by_id = {i: s for s in sources for i in s.ids}
-
-    def sub(m: re.Match[str]) -> str:
-        refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
-        label = m.group(2).strip()
-        urls = []
-        for ref in refs:
-            hit = by_id.get(ref) or next((s for i, s in by_id.items() if ref.startswith(i)), None)
-            if hit and hit.url and hit.url not in urls:
-                urls.append(hit.url)
-        if not urls:
-            return label
-        return f"{label} ({', '.join(urls)})" if label else f"({', '.join(urls)})"
-
-    return _CITATION_RE.sub(sub, text)
+    sources = sources if sources is not None else collect_sources(events)
+    return aside.resolve_answer_tags(text, {i: s.url for s in sources for i in s.ids if s.url})
 
 
 def collect_sources(events: list[aside.Event]) -> list[Source]:
@@ -94,30 +64,14 @@ def collect_sources(events: list[aside.Event]) -> list[Source]:
     out: list[Source] = []
     seen: dict[str, Source] = {}
     for e in events:
-        if e.kind != "tool_result":
-            continue
-        opened = e.tool_name in _OPENING_TOOLS
-        for raw in (e.details or {}).get("sources") or []:
-            if not isinstance(raw, dict):
-                continue
-            url = str(raw.get("url") or "").strip()
-            if not url:
-                continue
-            sid = str(raw.get("id") or "")
-            s = Source(
-                url=url,
-                title=str(raw.get("title") or ""),
-                id=sid,
-                excerpt=str(raw.get("excerpt") or ""),
-                published=str(raw.get("publishDate") or raw.get("published") or ""),
-                opened=opened,
-                ids=[sid] if sid else [],
-            )
-            existing = seen.get(url)
+        for ref in e.sources:
+            s = Source(url=ref.url, title=ref.title, id=ref.id, excerpt=ref.excerpt, published=ref.published,
+                       opened=ref.opened, ids=[ref.id] if ref.id else [])
+            existing = seen.get(ref.url)
             if existing:
                 existing.absorb(s)
                 continue
-            seen[url] = s
+            seen[ref.url] = s
             out.append(s)
     return out
 
@@ -173,10 +127,7 @@ def has_terminal_answer(events: list[aside.Event]) -> bool:
     """
     if any(e.kind == "lifecycle" for e in events):
         return aside.turn_finished(events)
-    for e in events:
-        if e.kind == "assistant" and e.stop_reason and e.stop_reason != "toolUse":
-            return True
-    return False
+    return any(e.kind == "assistant" and e.stopped for e in events)
 
 
 def child_session_ids(events: list[aside.Event]) -> list[str]:
@@ -188,49 +139,23 @@ def child_session_ids(events: list[aside.Event]) -> list[str]:
     """
     out: list[str] = []
     for e in events:
-        if e.kind != "tool_result" or not e.tool_name.startswith("subagent"):
-            continue
-        det = e.details or {}
-        for key in ("taskId", "task_id", "sessionId", "session_id"):
-            val = det.get(key)
-            if is_safe_id(val) and val not in out:
-                out.append(val)
-        for r in det.get("results") or []:
-            if isinstance(r, dict):
-                val = r.get("taskId") or r.get("task_id")
-                if is_safe_id(val) and val not in out:
-                    out.append(val)
+        for cid in e.child_ids:
+            if is_safe_id(cid) and cid not in out:
+                out.append(cid)
     return out
 
 
+_USAGE = ("input", "output", "cache_read", "cache_write", "reasoning", "total_tokens")
+
+
 def total_usage(events: list[aside.Event]) -> dict:
-    keys = ("input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens")
-    acc = dict.fromkeys(keys, 0)
+    acc = dict.fromkeys(_USAGE, 0)
     cost = 0.0
     for e in events:
-        u = e.usage or {}
-        for k in keys:
-            try:
-                acc[k] += int(u.get(k) or 0)
-            except (TypeError, ValueError):
-                pass
-        c = u.get("cost")
-        if isinstance(c, dict):
-            try:
-                cost += float(c.get("total") or 0)
-            except (TypeError, ValueError):
-                pass
-        elif isinstance(c, (int, float)):
-            cost += float(c)
-    return {
-        "input": acc["input"],
-        "output": acc["output"],
-        "cache_read": acc["cacheRead"],
-        "cache_write": acc["cacheWrite"],
-        "reasoning": acc["reasoning"],
-        "total_tokens": acc["totalTokens"],
-        "cost": round(cost, 6),
-    }
+        for k in _USAGE:
+            acc[k] += e.usage.get(k, 0)
+        cost += e.usage.get("cost", 0.0)
+    return {**acc, "cost": round(cost, 6)}
 
 
 # --- one run's view --------------------------------------------------------------
@@ -281,23 +206,25 @@ class Turn:
         return [e for e in self.events if e.kind == "tool_result"]
 
     def source_text(self, url: str) -> str:
-        """What the turn already read of a URL: the page a tool opened, else a listing's excerpt.
+        """What the turn already read of a URL: the fullest result that holds the page, else a
+        notice that a tab opened on it, else a listing's excerpt.
 
-        A URL usually appears twice -- once as a search result, once as the page a later
-        fetch actually read -- and the read page is the one worth returning, whichever
-        stream and whichever order it came in.
+        A URL usually appears more than once -- as a search result, as a tab being opened, as
+        the page then read -- and the read page is the one worth returning, whichever stream
+        and whichever order it came in.
         """
-        fallback = ""
+        read, opened, listed = "", "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
-                if e.kind != "tool_result":
+                named = [s for s in e.sources if s.url == url]
+                if not named:
                     continue
-                if not any(isinstance(s, dict) and s.get("url") == url for s in (e.details or {}).get("sources") or []):
-                    continue
-                if is_opening_tool(e.tool_name) and e.content:
-                    return e.content
-                fallback = fallback or e.content
-        return fallback
+                if any(s.opened and s.holds_page for s in named):
+                    read = max(read, e.content, key=len)
+                elif any(s.opened for s in named):
+                    opened = opened or e.content
+                listed = listed or e.content
+        return read or opened or listed
 
 
 def turn_of(run: runs.Run) -> Turn:

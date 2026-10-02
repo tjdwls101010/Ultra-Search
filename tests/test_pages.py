@@ -1104,3 +1104,13 @@ def test_an_existing_gitignore_is_not_rewritten(routes, fake_aside: Path, aside_
     run_cli("fetch", "https://example.org/a")
 
     assert (store / ".gitignore").read_text() == "pages/\n"
+
+
+def test_a_crawl_with_nothing_to_fetch_says_so(cli, routes, tmp_path: Path) -> None:
+    routes({"links": SITE})
+
+    code, payload, _ = cli("crawl", "https://site.test/", "--depth", "1", "--include", "*/no-match/*",
+                           "--out", str(tmp_path / "empty"))
+
+    assert code == 5
+    assert payload["requested"] == 0

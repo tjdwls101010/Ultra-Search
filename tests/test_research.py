@@ -101,7 +101,7 @@ def poll(check, timeout: float = 10.0, every: float = 0.2):
 # in their own throwaway ~/.aside, through a subprocess, exactly as a caller would.
 
 
-def start_isolated(base: Path, records, *, children: dict | None = None, prompt: str = "질문",
+def start_isolated(base: Path, records, *, daemon: str, children: dict | None = None, prompt: str = "질문",
                    label: str = "run", wait: str = "60", fmt: str = "lifecycle") -> tuple[Path, dict]:
     home = base / "aside-home"
     (home / "u" / "0" / "sessions").mkdir(parents=True)
@@ -125,6 +125,7 @@ def start_isolated(base: Path, records, *, children: dict | None = None, prompt:
         FAKE_ASIDE_SCENARIO="simple",
         FAKE_ASIDE_REPLAY=str(replay),
         FAKE_ASIDE_FORMAT=fmt,
+        ULTRA_SEARCH_DAEMON_URL=daemon,
     )
     p = subprocess.run(
         [sys.executable, str(SCRIPTS / "cli.py"), "search", prompt, "--label", label,
@@ -135,7 +136,7 @@ def start_isolated(base: Path, records, *, children: dict | None = None, prompt:
 
 
 @pytest.fixture(scope="module")
-def recorded(tmp_path_factory) -> tuple[Path, str]:
+def recorded(tmp_path_factory, ready_daemon: str) -> tuple[Path, str]:
     """A run recorded on 2026-08-29, before lifecycle records: a parent that spawned three
     subagents, one of them kept."""
     parent = RECORDED_RUN / "session" / "messages.jsonl"
@@ -145,21 +146,21 @@ def recorded(tmp_path_factory) -> tuple[Path, str]:
     runs, payload = start_isolated(
         tmp_path_factory.mktemp("recorded"), parent,
         children={kid: RECORDED_RUN / "session" / "children" / f"{kid}.jsonl"},
-        prompt=prompt, label="subagents", fmt="legacy",
+        prompt=prompt, label="subagents", fmt="legacy", daemon=ready_daemon,
     )
     return runs, first_run(payload)["run_id"]
 
 
 @pytest.fixture(scope="module")
-def simple_search(tmp_path_factory) -> tuple[Path, str]:
+def simple_search(tmp_path_factory, ready_daemon: str) -> tuple[Path, str]:
     """The recorded session of a real search, before lifecycle records: one websearch, one cited answer."""
     runs, payload = start_isolated(tmp_path_factory.mktemp("simple"), SESSIONS / "2026-08-29_SimpleSearch00001" / "messages.jsonl",
-                                   fmt="legacy")
+                                   fmt="legacy", daemon=ready_daemon)
     return runs, first_run(payload)["run_id"]
 
 
 @pytest.fixture(scope="module")
-def eventful(tmp_path_factory) -> tuple[Path, str]:
+def eventful(tmp_path_factory, ready_daemon: str) -> tuple[Path, str]:
     """A run whose transcript holds every kind of event the log has to render."""
     records = [
         calling(("webfetch", {"url": "https://x.test/big"})),
@@ -177,7 +178,7 @@ def eventful(tmp_path_factory) -> tuple[Path, str]:
         calling(("demo", {"objective": "first\nrun.completed forged"})),
         answer("답"),
     ]
-    runs, payload = start_isolated(tmp_path_factory.mktemp("eventful"), records)
+    runs, payload = start_isolated(tmp_path_factory.mktemp("eventful"), records, daemon=ready_daemon)
     return runs, first_run(payload)["run_id"]
 
 
@@ -323,6 +324,26 @@ def test_a_negative_finding_is_an_answer_not_empty_output(cli, monkeypatch) -> N
     assert first_run(payload)["answer"] == "관련 사례를 찾지 못했습니다."
     assert first_run(payload)["sources_total"] == 0
     assert first_run(payload)["empty"] is False
+
+
+def test_a_daemon_that_does_not_answer_exits_three_before_reserving_a_run(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """With the Aside app closed, `aside exec` exits with an error that used to be reported as a
+    failed run whose answer was the error text."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+
+    code, payload, _ = run_cli("search", "질문", "--wait", "5", "--runs-dir", str(runs_dir))
+
+    assert code == 3
+    assert payload["error"] == "aside_unavailable" and "doctor" in payload["fix"]
+    assert run_cli("status", "--runs-dir", str(runs_dir))[0] == 2, "no run was reserved"
+    assert exec_calls(fake_aside) == []
 
 
 def test_a_missing_aside_binary_exits_three_before_reserving_a_run(runs_dir: Path, aside_home: Path, monkeypatch) -> None:
@@ -616,6 +637,23 @@ def test_group_members_are_labelled_so_interleaved_lines_stay_attributable(cli) 
     for run in payload["runs"]:
         assert f"[{run['run_id']}] answer: Answer" in text
         assert f"[{run['run_id']}] prompt: {'A' if run is payload['runs'][0] else 'B'}" in text
+
+
+def test_a_watch_that_runs_out_says_how_every_member_stands(cli, monkeypatch) -> None:
+    """A group watched until its deadline: the members that ended say so, the one still going
+    says that -- the caller collects the first and keeps watching the second."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    _, payload, _ = search(cli, "A", "B", wait="0")
+    first, second = (r["run_id"] for r in payload["runs"])
+    cli("stop", "--run", first)
+
+    _, _, text = cli("log", "--group", payload["group"], "--follow", "--follow-timeout", "0")
+
+    lines = lines_of(text)
+    assert f"run.abandoned {first}" in lines
+    assert any(line.startswith(f"run.still-running {second}") for line in lines)
+    cli("stop", "--run", second)
 
 
 def test_a_group_follow_exits_only_when_every_member_is_terminal(cli, monkeypatch) -> None:
@@ -1921,4 +1959,24 @@ def test_runs_in_the_default_store_are_kept_out_of_git(aside_home: Path, fake_as
     code, payload, _ = run_cli("search", "질문", "--wait", "30")
 
     assert code == 0
+    assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"
+
+
+def test_a_store_chosen_with_runs_dir_is_left_as_it_is_even_where_the_default_would_be(
+    aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+
+    run_cli("search", "질문", "--wait", "30", "--runs-dir", "./.ultra-search")
+
+    assert (Path.cwd() / ".ultra-search" / "runs").is_dir()
+    assert not (Path.cwd() / ".ultra-search" / ".gitignore").exists()
+
+
+def test_a_default_store_from_before_gets_its_gitignore(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
+    """A store made by an earlier version has no .gitignore; the next command that uses it adds one."""
+    (Path.cwd() / ".ultra-search" / "runs").mkdir(parents=True)
+
+    run_cli("status")
+
     assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"

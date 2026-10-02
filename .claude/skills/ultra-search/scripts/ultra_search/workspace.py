@@ -10,10 +10,25 @@ from __future__ import annotations
 from pathlib import Path
 
 DEFAULT_DIRNAME = ".ultra-search"
+#: The store this command is using, when it is the default one; None when the caller chose one.
+_in_use: Path | None = None
 
 
 def default_root() -> Path:
     return Path.cwd() / DEFAULT_DIRNAME
+
+
+def root_for(chosen: str | None) -> Path:
+    """The store a command uses: the one the caller chose, or the default. A default store that
+    already exists -- one an earlier version made -- gets its .gitignore now."""
+    global _in_use
+    if chosen:
+        _in_use = None
+        return Path(chosen).expanduser().resolve()
+    _in_use = default_root()
+    if _in_use.is_dir():
+        ensure(_in_use)
+    return _in_use
 
 
 def ensure(root: Path) -> None:
@@ -25,10 +40,6 @@ def ensure(root: Path) -> None:
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    try:
-        default = root.resolve() == default_root().resolve()
-    except OSError:
-        default = False
     ignore = root / ".gitignore"
-    if default and not ignore.exists():
+    if _in_use is not None and root == _in_use and not ignore.exists():
         ignore.write_text("*\n", encoding="utf-8")

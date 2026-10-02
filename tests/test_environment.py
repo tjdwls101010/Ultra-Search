@@ -217,6 +217,7 @@ def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> No
     _, payload, _ = run_cli("repl-api", "--all")
 
     assert [t["name"] for t in payload["tools"]] == ["repl", "navigate"]
+    assert "120" in payload["run"]
 
 
 def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypatch) -> None:
@@ -336,7 +337,7 @@ def test_every_help_stands_on_its_own(command: str) -> None:
 EXIT_CODES = {
     "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "status": {0, 2, 4}, "log": {0, 2, 4},
     "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "stop": {0, 2, 4}, "sessions": {0, 2, 5},
-    "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4},
+    "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4, 5},
     "doctor": {0, 2, 3}, "setup": {0, 2, 3}, "repl-api": {0, 2, 3},
 }
 
@@ -381,7 +382,10 @@ def test_show_says_how_sources_are_counted() -> None:
 
 
 def test_map_help_says_what_it_does_not_do() -> None:
-    assert "without extracting or saving pages" in help_of("map")
+    text = help_of("map")
+
+    assert "without extracting or saving pages" in text
+    assert "filters" in next(line for line in text.splitlines() if line.startswith("5 "))
 
 
 def test_crawl_help_says_which_flags_apply_to_a_manifest() -> None:

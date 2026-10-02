@@ -51,10 +51,11 @@ ENDINGS = {
               outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}"},
     "map": {outcome.OK: "URLs were found and the manifest written", outcome.BAD_ARGUMENTS: _REFUSED,
             outcome.ASIDE_UNAVAILABLE: _NO_ASIDE, outcome.FAILED: _UNWRITABLE_OUT,
-            outcome.EMPTY: "no sitemap and no page could be read"},
+            outcome.EMPTY: "nothing to map: no sitemap or page could be read, or the filters kept no URL"},
     "crawl": {outcome.OK: "at least one page was saved; the manifest has every page's status",
               outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
-              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}"},
+              outcome.FAILED: f"nothing was saved, or {_UNWRITABLE_OUT}",
+              outcome.EMPTY: "no page to crawl: discovery found none, or the filters kept none"},
     "doctor": {outcome.OK: "nothing it can see would stop a command", outcome.BAD_ARGUMENTS: _REFUSED,
                outcome.ASIDE_UNAVAILABLE: "a check failed; each failed check has its fix"},
     "setup": {outcome.OK: "the packages were installed", outcome.BAD_ARGUMENTS: _REFUSED,
@@ -232,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
         "A partial snapshot is not a complete investigation.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`.\n"
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
@@ -340,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         "negative finding is still an answer.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`.\n"
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
@@ -542,10 +543,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def _root(args: argparse.Namespace) -> pathlib.Path:
     """Where runs and saved pages go: --runs-dir, or .ultra-search/ in the working directory."""
-    if not getattr(args, "runs_dir", None):
-        return workspace.default_root()
     try:
-        return pathlib.Path(args.runs_dir).expanduser().resolve()
+        return workspace.root_for(getattr(args, "runs_dir", None))
     except RuntimeError as e:  # a symlink loop, on the Pythons that raise rather than OSError
         raise outcome.ArgumentError(f"--runs-dir {args.runs_dir!r} cannot be resolved: {e}",
                                     fix="Pass a directory that is not a symlink loop.") from e

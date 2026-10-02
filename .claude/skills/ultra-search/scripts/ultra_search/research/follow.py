@@ -182,8 +182,11 @@ def follow(
 
         now = time.time()
         if now - started >= follow_timeout:
+            # Every member, ended or not: the caller collects the one and keeps watching the other.
             for run in runs:
-                if states[run.run_id] not in TERMINAL_STATES:
+                if states[run.run_id] in TERMINAL_STATES:
+                    emit(f"run.{states[run.run_id]} {run.run_id}")
+                else:
                     emit(f"run.still-running {run.run_id} watched={round(now - started, 1)}s")
             break
 

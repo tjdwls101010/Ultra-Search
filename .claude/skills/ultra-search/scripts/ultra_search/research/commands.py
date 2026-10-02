@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ultra_search import aside, outcome, runs
 from ultra_search.ids import is_safe_id, normal
-from ultra_search.outcome import ArgumentError, Reply, RunFailed, RunNotFound
+from ultra_search.outcome import ArgumentError, AsideUnavailable, Reply, RunFailed, RunNotFound
 from ultra_search.research import evidence, follow, supervisor
 from ultra_search.research.marker import marker_for, run_id_in
 from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
@@ -378,6 +378,7 @@ def _terminate(pid: object) -> None:
 def search(root: Path, prompts: list[str], *, wait: float, background: bool, label: str | None,
            effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> Reply:
     group = runs.new_group_name() if len(prompts) > 1 else None
+    _require_aside()
     started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout,
                           group=group) for p in prompts]
     return _await_and_report(started, "search", root, group, wait=0.0 if background else wait, cli=cli)
@@ -416,6 +417,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
             )
         _resumable_session(session_id)
 
+    _require_aside()
     new_run = _start_run(
         root, prompt, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,
@@ -447,11 +449,18 @@ def _resumable_session(session_id: str) -> str:
     return session_id
 
 
+def _require_aside() -> None:
+    """Fail before reserving anything if Aside cannot take the work: a registry full of runs
+    that never started is worse than an error, and with the app closed `aside exec` fails in a
+    way that would be recorded as a failed investigation, its error text as the answer."""
+    aside.aside_bin()
+    daemon = aside.daemon_status()
+    if not daemon["ok"]:
+        raise AsideUnavailable(f"the Aside daemon is not ready: {daemon['detail']}")
+
+
 def _start_run(root: Path, prompt: str, cli: str, *, label: str | None, effort: str | None, model: str | None,
                speed: str | None, timeout: float | None, group: str | None, **extra) -> runs.Run:
-    # Fail before reserving anything if aside is not usable: a registry full of runs that
-    # never started is worse than an error.
-    aside.aside_bin()
     run = runs.create_run(
         root,
         label=label or _slug(prompt),

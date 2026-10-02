@@ -157,7 +157,7 @@ def repl_api(*, every: bool) -> Reply:
     """What the daemon's repl tool accepts, asked of the daemon over MCP."""
     tools = aside.mcp_tools()
     if every:
-        return Reply({"ok": True, "command": "repl-api", "tools": tools})
+        return Reply({"ok": True, "command": "repl-api", "tools": tools, "run": _HOW_TO_RUN})
     repl_tool = next((t for t in tools if isinstance(t, dict) and t.get("name") == "repl"), None)
     if repl_tool is None:
         raise AsideUnavailable("the daemon lists no repl tool", fix="Run `repl-api --all` to see what it does list.",
@@ -166,8 +166,11 @@ def repl_api(*, every: bool) -> Reply:
         "ok": True,
         "command": "repl-api",
         "tool": repl_tool,
-        "run": "Run code with `aside repl '<code>'`. This skill's permission rule covers only its own CLI, "
-               "so expect an approval prompt for it. The daemon kills a snippet still running at 120 seconds and reports "
-               "that as \"fetch failed: other side closed / daemon is not reachable\" although the daemon is fine: "
-               "keep each snippet under that, and print each result as it is produced so what finished survives.",
+        "run": _HOW_TO_RUN,
     })
+
+
+_HOW_TO_RUN = ("Run code with `aside repl '<code>'`. This skill's permission rule covers only its own CLI, so expect "
+               "an approval prompt for it. The daemon kills a snippet still running at 120 seconds and reports that as "
+               "\"fetch failed: other side closed / daemon is not reachable\" although the daemon is fine: keep each "
+               "snippet under that, and print each result as it is produced so what finished survives.")

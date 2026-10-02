@@ -23,7 +23,7 @@ SPEEDS = ("default", "fast")
 #: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
 #: entirely while still writing full transcripts to disk.
 VERIFIED_VERSION = "1.26.810.1915"
-VERIFIED_DAEMON_VERSION = "1.26.1001.14"
+VERIFIED_DAEMON_VERSION = "1.26.1002.1950"
 
 
 def aside_bin() -> str:

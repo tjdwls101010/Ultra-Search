@@ -18,8 +18,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ultra_search.ids import is_safe_id, label_for
-from ultra_search.outcome import ArgumentError
+from ultra_search.ids import is_safe_id, label_for, normal
+from ultra_search.outcome import AmbiguousRun, ArgumentError, RunNotFound
 
 RUNS_SUBDIR = "runs"
 
@@ -201,21 +201,38 @@ def all_runs(runs_root: str | os.PathLike[str]) -> list[Run]:
 
 
 def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
-    if not is_safe_id(run_id):
+    """The run with this id, or the one run whose id begins with it.
+
+    A prefix is how ids get typed back -- the time, without the label. A whole id always
+    wins over longer ones it begins; a prefix several runs share is refused with their ids,
+    because guessing reports someone else's run.
+    """
+    key = normal(run_id)
+    if not is_safe_id(key):
         raise ArgumentError(
             f"{run_id!r} is not a run id",
             fix="Run ids look like 260925-021530-label; `status` with no target shows the latest.",
         )
-    path = Path(runs_root) / RUNS_SUBDIR / run_id
-    if not path.is_dir():
-        known = [r.run_id for r in all_runs(runs_root)][-5:]
-        raise ArgumentError(
-            f"no run {run_id!r} under {Path(runs_root) / RUNS_SUBDIR}",
-            fix="Run `status` with no target for the most recent one, or name one of these." if known
-            else "No runs have been started here yet.",
-            recent_runs=known,
+    path = Path(runs_root) / RUNS_SUBDIR / key
+    if path.is_dir():
+        return Run(run_id=key, path=path)
+    every = all_runs(runs_root)
+    matches = [r for r in every if r.run_id.startswith(key)]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise AmbiguousRun(
+            f"{len(matches)} runs begin with {key!r}",
+            fix="Name one of them in full, or by a longer prefix.",
+            candidates=[r.run_id for r in matches][-10:],
         )
-    return Run(run_id=run_id, path=path)
+    known = [r.run_id for r in every][-5:]
+    raise RunNotFound(
+        f"no run {key!r} under {Path(runs_root) / RUNS_SUBDIR}",
+        fix="Run `status` with no target for the most recent one, or name one of these." if known
+        else "No runs have been started here yet.",
+        recent_runs=known,
+    )
 
 
 def resolve_group(runs_root: str | os.PathLike[str], group: str) -> list[Run]:

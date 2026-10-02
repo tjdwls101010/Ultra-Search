@@ -27,8 +27,8 @@ import time
 from pathlib import Path
 
 from ultra_search import aside, outcome, runs
-from ultra_search.ids import is_safe_id
-from ultra_search.outcome import ArgumentError, Reply, RunFailed
+from ultra_search.ids import is_safe_id, normal
+from ultra_search.outcome import ArgumentError, Reply, RunFailed, RunNotFound
 from ultra_search.research import evidence, follow, supervisor
 from ultra_search.research.marker import marker_for, run_id_in
 from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
@@ -392,24 +392,25 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
     continuable from here. Either way the session itself is checked last: a run this tool
     abandoned stopped being watched, not working.
     """
-    resumed_from = target
     try:
         run = runs.resolve_run(root, target)
-    except ArgumentError:
+    except RunNotFound:
         session_id = _resumable_session(target)
+        resumed_from = session_id
     else:
+        resumed_from = run.run_id
         meta = run.meta()
         state = meta.get("state") or "unknown"
         if state not in TERMINAL_STATES:
             raise ArgumentError(
-                f"run {target} is still {state}; resume only continues a session that has stopped working",
-                fix=f"Wait for it with `log --run {target} --follow`, or start a separate `search`.",
+                f"run {run.run_id} is still {state}; resume only continues a session that has stopped working",
+                fix=f"Wait for it with `log --run {run.run_id} --follow`, or start a separate `search`.",
                 state=state,
             )
         session_id = meta.get("session_id")
         if not session_id:
             raise ArgumentError(
-                f"run {target} has no session to continue",
+                f"run {run.run_id} has no session to continue",
                 fix="Its session was never correlated; start a fresh `search` instead.",
                 state=state,
             )
@@ -470,7 +471,7 @@ def _start_run(root: Path, prompt: str, cli: str, *, label: str | None, effort: 
 
 
 def _slug(prompt: str) -> str:
-    words = "".join(ch if ch.isalnum() or ch in "-_ " else " " for ch in prompt).split()
+    words = "".join(ch if ch.isalnum() or ch in "-_ " else " " for ch in normal(prompt)).split()
     return "-".join(words[:4])[:40] or "run"
 
 

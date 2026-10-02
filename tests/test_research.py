@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -1840,3 +1841,75 @@ def test_result_of_a_run_still_going_hands_back_the_watch(cli, monkeypatch) -> N
     assert result["next"]["run_in_background"] is True
     assert first_run(result)["note"] == "no result yet"
     cli("stop", "--run", run_id)
+
+
+# --- run ids a caller can type --------------------------------------------------------------
+#
+# A run id is `<yymmdd-HHMMSS>[-xxxx]-<label>`. Callers rebuilt ids from memory and got them
+# wrong, and a Korean prompt's label used to keep only its ASCII -- `2022--4`, `3`, `run`.
+
+
+def test_a_label_keeps_the_prompts_own_words(cli) -> None:
+    """Typed on a Mac a name can arrive decomposed; it is stored composed, the way it will be
+    typed back."""
+    decomposed = unicodedata.normalize("NFD", "파이썬 최신 안정 버전은 무엇인가")
+
+    _, payload, _ = search(cli, decomposed)
+
+    run_id = first_run(payload)["run_id"]
+    assert run_id.endswith("-파이썬-최신-안정-버전은")
+    assert run_id == unicodedata.normalize("NFC", run_id)
+
+
+def test_a_run_is_found_by_any_prefix_only_it_has(cli) -> None:
+    first = finished_run_id(cli)
+    _, payload, _ = search(cli, "다른 질문", extra=("--label", "other"))
+    second = first_run(payload)["run_id"]
+    shared = next(i for i in range(len(first)) if first[i] != second[i])
+
+    code, status, _ = cli("status", "--run", second[: shared + 1])
+    _, shown, _ = cli("show", "--run", second[: shared + 1], "--item", "0")
+    ambiguous_code, ambiguous, _ = cli("status", "--run", first[:shared])
+
+    assert code == 0 and first_run(status)["run_id"] == second
+    assert shown["run_id"] == second
+    assert ambiguous_code == 2 and ambiguous["error"] == "bad_arguments"
+    assert set(ambiguous["candidates"]) == {first, second}
+
+
+def test_a_whole_id_wins_over_a_longer_one_it_begins(cli) -> None:
+    _, short, _ = search(cli, "질문", extra=("--label", "x"))
+    run_id = first_run(short)["run_id"]
+    search(cli, "질문", extra=("--label", "x-more"))
+
+    code, status, _ = cli("status", "--run", run_id)
+
+    assert code == 0 and first_run(status)["run_id"] == run_id
+
+
+def test_a_korean_run_goes_from_search_through_its_watch_to_result_and_a_resume_by_prefix(cli, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "1")
+    _, payload, _ = cli("search", unicodedata.normalize("NFD", "한국어 질문입니다"), "--background")
+    run_id = first_run(payload)["run_id"]
+
+    watched = subprocess.run(payload["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
+    collected = subprocess.run(json.loads(watched.stdout)["next"]["command"], shell=True, capture_output=True, text=True, timeout=60)
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    code, resumed, _ = cli("resume", run_id[: len(run_id) - 2], "후속", "--wait", "30")
+
+    assert run_id.endswith("-한국어-질문입니다")
+    assert json.loads(collected.stdout)["runs"][0]["answer"] == "느린 답."
+    assert code == 0 and first_run(resumed)["state"] == "completed"
+    assert status_of(cli, first_run(resumed)["run_id"])["resumed_from"] == run_id
+
+
+def test_resuming_a_prefix_several_runs_share_names_them_instead(cli, fake_aside: Path) -> None:
+    finished_run_id(cli)
+    finished_run_id(cli)
+    started = len(exec_calls(fake_aside))
+
+    code, err, _ = cli("resume", "2", "후속")
+
+    assert code == 2 and len(err["candidates"]) == 2
+    assert len(exec_calls(fake_aside)) == started

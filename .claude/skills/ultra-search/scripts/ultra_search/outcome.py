@@ -52,6 +52,14 @@ class ArgumentError(UltraSearchError):
     kind = "bad_arguments"
 
 
+class RunNotFound(ArgumentError):
+    """No run has this id, or begins with it."""
+
+
+class AmbiguousRun(ArgumentError):
+    """Several runs begin with this prefix; the error names them."""
+
+
 class AsideUnavailable(UltraSearchError):
     """The aside binary is missing, or its daemon will not answer.
 

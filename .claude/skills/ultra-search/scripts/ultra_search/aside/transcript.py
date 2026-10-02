@@ -57,6 +57,9 @@ class SourceRef:
     published: str = ""
     #: Whether a page-opening tool returned it -- an inference that it was read, not a check of what it said.
     opened: bool = False
+    #: Whether the result's content is the page itself, as a fetch or a snapshot is, rather than
+    #: a notice that a tab opened on it.
+    holds_page: bool = True
 
 
 @dataclass
@@ -251,13 +254,16 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
     if name == "repl":
         # Each printed page is evidence on its own: a call that opened a tab and then failed on
         # its next statement still opened that page.
-        listed = {s.url for s in sources}
+        found: dict[str, SourceRef] = {s.url: s for s in sources}
         for m in _PAGE_PRINTED.finditer(_flatten_text(obj.get("content"))):
             url = m.group("tab_url") or m.group("snap_url")
-            if url not in listed:
-                listed.add(url)
-                sources.append(SourceRef(url=url, title=(m.group("tab_title") or m.group("snap_title") or "").strip(),
-                                         opened=True))
+            snapshot = m.group("snap_url") is not None
+            if url in found:
+                found[url].holds_page = found[url].holds_page or snapshot
+                continue
+            found[url] = SourceRef(url=url, title=(m.group("tab_title") or m.group("snap_title") or "").strip(),
+                                   opened=True, holds_page=snapshot)
+            sources.append(found[url])
     return Event(
         kind="tool_result",
         index=index,

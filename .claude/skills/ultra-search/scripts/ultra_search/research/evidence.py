@@ -206,23 +206,25 @@ class Turn:
         return [e for e in self.events if e.kind == "tool_result"]
 
     def source_text(self, url: str) -> str:
-        """What the turn already read of a URL: the fullest result of a tool that opened it,
-        else a listing's excerpt.
+        """What the turn already read of a URL: the fullest result that holds the page, else a
+        notice that a tab opened on it, else a listing's excerpt.
 
         A URL usually appears more than once -- as a search result, as a tab being opened, as
         the page then read -- and the read page is the one worth returning, whichever stream
         and whichever order it came in.
         """
-        read, listed = "", ""
+        read, opened, listed = "", "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
                 named = [s for s in e.sources if s.url == url]
                 if not named:
                     continue
-                if any(s.opened for s in named):
+                if any(s.opened and s.holds_page for s in named):
                     read = max(read, e.content, key=len)
+                elif any(s.opened for s in named):
+                    opened = opened or e.content
                 listed = listed or e.content
-        return read or listed
+        return read or opened or listed
 
 
 def turn_of(run: runs.Run) -> Turn:

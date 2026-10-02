@@ -19,27 +19,36 @@ def default_root() -> Path:
 
 
 def root_for(chosen: str | None) -> Path:
-    """The store a command uses: the one the caller chose, or the default. A default store that
-    already exists -- one an earlier version made -- gets its .gitignore now."""
+    """The store a command uses: the one the caller chose, or the default. Choosing writes nothing."""
     global _in_use
     if chosen:
         _in_use = None
         return Path(chosen).expanduser().resolve()
     _in_use = default_root()
-    if _in_use.is_dir():
-        ensure(_in_use)
     return _in_use
 
 
 def ensure(root: Path) -> None:
-    """Create ``root``; when it is the default store, also a .gitignore that keeps it out of git.
+    """Create ``root`` for a write; when it is the default store, also a .gitignore that keeps it
+    out of git.
 
     The default store lands in whatever project the caller happens to be in, and its runs and
     pages are the user's, not that project's. A place the caller chose is left as it is, and
-    a .gitignore already there is the user's to keep.
+    a .gitignore already there is the user's to keep. The .gitignore never fails the write it
+    comes with: a store that cannot take one is still the user's store.
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    ignore = root / ".gitignore"
-    if _in_use is not None and root == _in_use and not ignore.exists():
+    mark_written(root)
+
+
+def mark_written(root: Path) -> None:
+    """Called where something is written into an existing store, so a default store an earlier
+    version made gets its .gitignore at its next write."""
+    ignore = Path(root) / ".gitignore"
+    if _in_use is None or Path(root) != _in_use or ignore.exists():
+        return
+    try:
         ignore.write_text("*\n", encoding="utf-8")
+    except OSError:
+        pass

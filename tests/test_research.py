@@ -1973,10 +1973,67 @@ def test_a_store_chosen_with_runs_dir_is_left_as_it_is_even_where_the_default_wo
     assert not (Path.cwd() / ".ultra-search" / ".gitignore").exists()
 
 
-def test_a_default_store_from_before_gets_its_gitignore(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
-    """A store made by an earlier version has no .gitignore; the next command that uses it adds one."""
-    (Path.cwd() / ".ultra-search" / "runs").mkdir(parents=True)
+def test_a_default_store_from_before_gets_its_gitignore_when_next_written(aside_home: Path, fake_aside: Path) -> None:
+    """A store made by an earlier version has no .gitignore. Reading it writes nothing; the next
+    write into it -- here `stop` marking a run -- adds one."""
+    run_dir = Path.cwd() / ".ultra-search" / "runs" / "260901-000000-old"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({"run_id": run_dir.name, "state": "running"}))
 
     run_cli("status")
+    run_cli("doctor")
+    unread = (Path.cwd() / ".ultra-search" / ".gitignore").exists()
+    run_cli("stop", "--run", run_dir.name)
 
+    assert unread is False
     assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"
+
+
+def test_a_store_that_cannot_take_a_gitignore_is_still_read(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    _, payload, _ = run_cli("search", "질문", "--wait", "30")
+    store = Path.cwd() / ".ultra-search"
+    (store / ".gitignore").unlink()
+    store.chmod(0o500)
+    try:
+        code, result, _ = run_cli("result", "--run", first_run(payload)["run_id"])
+    finally:
+        store.chmod(0o700)
+
+    assert code == 0 and first_run(result)["answer"]
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_the_daemon_checked_is_the_one_aside_exec_uses(runs_dir: Path, aside_home: Path, fake_aside: Path,
+                                                       ready_daemon: str, monkeypatch, healthy: bool) -> None:
+    """The aside CLI talks to DAEMON_BASE_URL when it is set; checking another daemon would refuse
+    work the real one can do, or pass work it cannot."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    monkeypatch.delenv("ULTRA_SEARCH_DAEMON_URL")
+    monkeypatch.setenv("DAEMON_BASE_URL", ready_daemon.rstrip("/") if healthy else closed)
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+
+    code, _, _ = run_cli("search", "질문", "--wait", "30", "--runs-dir", str(runs_dir))
+
+    assert code == (0 if healthy else 3)
+
+
+def test_a_proxy_in_the_environment_does_not_stand_between_the_cli_and_its_daemon(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        proxy = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    for name in ("http_proxy", "HTTP_PROXY"):
+        monkeypatch.setenv(name, proxy)
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+
+    code, _, _ = run_cli("search", "질문", "--wait", "30", "--runs-dir", str(runs_dir))
+
+    assert code == 0

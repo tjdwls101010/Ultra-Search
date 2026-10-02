@@ -81,6 +81,7 @@ class Run:
         the older copy. The lock makes the pair atomic; the atomic rename below only ever
         made the write itself atomic.
         """
+        workspace.mark_written(self.path.parent.parent)
         last: Exception | None = None
         for attempt in range(5):
             try:

@@ -797,7 +797,7 @@ def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
 
 @pytest.mark.parametrize("group", [False, True], ids=["run", "group"])
 def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every_run(
-    cli, replay, aside_home: Path, group: bool
+    cli, replay, aside_home: Path, group: bool, tmp_path: Path
 ) -> None:
     """A wait that ran out hands back the same wait, which prints only what happened since it began -- in the parent and in every child -- and then the result of every run it was waiting for."""
     kids = {"first-member": "KidOfFirst000001", "second-member-with-longer-prompt": "KidOfSecond00001"}
@@ -806,7 +806,7 @@ def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every
     replay([
         *({**tool("subagent", "spawned", taskId=kid), "__if_prompt__": prompt} for prompt, kid in kids.items()),
         calling(text="seen-parent"),
-        {"__sleep__": 8},
+        {"__wait_for__": str(tmp_path / "go-on")},
         answer("new-parent"),
     ])
     prompts = list(kids) if group else ["second-member-with-longer-prompt"]
@@ -817,10 +817,14 @@ def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every
 
     code, waiting, _ = cli("result", *target, "--wait", "0.5")
     following = subprocess.Popen(waiting["next"]["command"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(2)  # the wait has begun before the children write again
+    # Nothing new is written until the wait is running: its Python is up, and has had time for its first read.
+    assert poll(lambda: "cli.py result" in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
+                and target[1] in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout, timeout=60)
+    time.sleep(1)
     for prompt, kid in kids.items():
         with (aside_home / "u" / "0" / "sessions" / f"2026-09-25_{kid}" / "messages.jsonl").open("a") as f:
             f.write(json.dumps(answer(f"new-child of {prompt}")) + "\n")
+    (tmp_path / "go-on").touch()
     out, err = following.communicate(timeout=120)
 
     assert code == 0

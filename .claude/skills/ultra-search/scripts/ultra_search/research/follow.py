@@ -39,7 +39,13 @@ def wait(targets: list, *, seconds: float, check: Callable[[runs.Run], None], le
             check(run)
             for line in _drain(run, cursors[run.run_id], level, label, numbering):
                 _emit(line)
-        if all((r.meta().get("state") or "") in TERMINAL_STATES for r in targets) or time.time() >= deadline:
+        ended = all((r.meta().get("state") or "") in TERMINAL_STATES for r in targets)
+        if ended or time.time() >= deadline:
+            if ended:
+                # A run's last events can land between the read above and its ending: read once more.
+                for run in targets:
+                    for line in _drain(run, cursors[run.run_id], level, label, numbering):
+                        _emit(line)
             return
         time.sleep(min(POLL, max(0.0, deadline - time.time())))
 

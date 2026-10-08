@@ -135,13 +135,18 @@ def _settle_unwatched(run: runs.Run) -> None:
     def decide(meta: dict) -> dict | None:
         if (meta.get("state") or "") in TERMINAL_STATES:
             return None
+        # Whether the supervisor is gone is settled before its result is looked for: one that wrote its result and
+        # then died between the two looks would otherwise be recorded as having left nothing.
+        pid = meta.get("supervisor_pid")
+        gone = isinstance(pid, int) and not _alive(pid)
+        never = (meta.get("state") == "starting" and not pid
+                 and time.time() - float(meta.get("created_at") or 0) > STARTUP_GRACE)
         saved = _saved_result(run) if saved_path.exists() else None
         if saved and saved.get("state") in TERMINAL_STATES:
             return {k: saved[k] for k in ("state", "children", "orphan_children", "empty", "exit_code") if k in saved}
-        pid = meta.get("supervisor_pid")
-        if isinstance(pid, int) and not _alive(pid):
+        if gone:
             return _abandoned("the supervisor is gone")
-        if meta.get("state") == "starting" and not pid and time.time() - float(meta.get("created_at") or 0) > STARTUP_GRACE:
+        if never:
             return _abandoned("the supervisor never started")
         return None
 

@@ -85,7 +85,7 @@ def no_supervisor_left_behind(tmp_path: Path):
     listing = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
     for line in listing.splitlines():
         pid, _, command = line.strip().partition(" ")
-        if "_supervise" in command and str(tmp_path) in command:
+        if "_supervise" in command and f"{tmp_path}{os.sep}" in command:
             with contextlib.suppress(OSError):
                 os.kill(int(pid), signal.SIGTERM)
 

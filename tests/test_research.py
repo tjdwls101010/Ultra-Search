@@ -816,22 +816,24 @@ def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every
     assert poll(lambda: rendered(cli("log", *target)[2]).count("seen-child") == len(run_ids), timeout=15)
 
     code, waiting, _ = cli("result", *target, "--wait", "0.5")
+    following = subprocess.Popen(waiting["next"]["command"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(2)  # the wait has begun before the children write again
     for prompt, kid in kids.items():
         with (aside_home / "u" / "0" / "sessions" / f"2026-09-25_{kid}" / "messages.jsonl").open("a") as f:
             f.write(json.dumps(answer(f"new-child of {prompt}")) + "\n")
-    followed = subprocess.run(waiting["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
+    out, err = following.communicate(timeout=120)
 
     assert code == 0
     assert set(waiting["next"]) == {"command", "bash_timeout_ms", "run_in_background"}
     assert waiting["next"]["run_in_background"] is True
-    assert followed.returncode == 0
-    assert "seen-" not in followed.stderr, "what happened before the wait began is the log's, not the wait's"
-    lines = followed.stderr.splitlines()
+    assert following.returncode == 0
+    assert "seen-" not in err, "what happened before the wait began is the log's, not the wait's"
+    lines = err.splitlines()
     for run_id, prompt in run_ids.items():
         prefix = f"[{run_id}]" if group else ""
-        assert (f"{prefix} " if prefix else "") + "answer: new-parent" in lines
-        assert f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}" in lines
-    result = json.loads(followed.stdout)
+        assert lines.count((f"{prefix} " if prefix else "") + "answer: new-parent") == 1
+        assert lines.count(f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}") == 1
+    result = json.loads(out)
     assert [e["run_id"] for e in result["runs"]] == list(run_ids)
     assert all(e["state"] == "completed" for e in result["runs"])
     assert "next" not in result

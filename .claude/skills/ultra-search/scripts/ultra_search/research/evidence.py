@@ -168,10 +168,30 @@ class Turn:
     observed: bool
     #: Line index of this run's prompt in the transcript.
     start_line: int = 0
+    #: Line index just past the turn's last record once something has ended it -- its `finished`, or a next turn's `started` -- and None while it is open.
+    end_line: int | None = None
     events: list[aside.Event] = field(default_factory=list)
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
     child_events: dict[str, list[aside.Event]] = field(default_factory=dict)
+
+    @property
+    def framed(self) -> bool:
+        """Whether the daemon framed this turn with lifecycle records: the format in which only `finished` ends it."""
+        return any(e.kind == "lifecycle" for e in self.events)
+
+    @property
+    def finished(self) -> bool:
+        return self.framed and aside.turn_finished(self.events)
+
+    def unfinished_children(self) -> list[str]:
+        """This turn's children still working, in spawn order."""
+        return [cid for cid in self.children if not child_is_terminal(self.child_events[cid])]
+
+    def ended_on_error(self) -> bool:
+        """Whether the turn's last message stopped on an error. A turn can end that way and its process still exit 0."""
+        said = [e for e in self.events if e.kind == "assistant"]
+        return bool(said) and said[-1].stop == "error"
 
     def sources(self) -> list[Source]:
         """Every URL the turn and its children touched, one entry per URL."""
@@ -235,11 +255,13 @@ def turn_of(run: runs.Run) -> Turn:
     if start is None:
         return Turn(observed=False)
     opened_at = events[start].timestamp
-    mine = events[_framed(events, start):]
+    end = _turn_end(events, start)
+    mine = events[_framed(events, start):end]
     children = child_session_ids(mine)
     return Turn(
         observed=True,
         start_line=mine[0].index,
+        end_line=None if end is None else mine[-1].index + 1,
         events=mine,
         children=children,
         child_events={cid: _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
@@ -258,6 +280,14 @@ def _framed(events: list[aside.Event], prompt: int) -> int:
             return i
         i -= 1
     return prompt
+
+
+def _turn_end(events: list[aside.Event], prompt: int) -> int | None:
+    """Where the turn that opens with the prompt at ``prompt`` ends: just past its `finished` record, or where a next turn's `started` begins; None while neither has come. A session continued after this run appends that next turn to the same transcript, and without an end this run would take its answer, sources and children for its own."""
+    for i in range(prompt + 1, len(events)):
+        if events[i].kind == "lifecycle" and events[i].lifecycle in ("finished", "started"):
+            return i + 1 if events[i].lifecycle == "finished" else i
+    return None
 
 
 def _from(events: list[aside.Event], since: int) -> list[aside.Event]:

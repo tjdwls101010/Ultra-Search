@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from ultra_search import research, runs
-from conftest import SCRIPTS, aside_session, answer, calling, tool, turn, user
+from conftest import SCRIPTS, aside_session, answer, calling, subagent_turn, tool, turn, user
 
 SESSIONS = Path(__file__).parent / "fixtures" / "sessions"
 
@@ -190,6 +190,160 @@ def test_the_parents_turn_is_waited_for_until_it_has_finished(
 
     assert meta["state"] == "completed"
     assert result_of(run)["answer"] == "최종 답"
+
+
+# --- when a turn is over ------------------------------------------------------------------
+
+
+def test_a_turn_is_over_when_it_finishes_not_when_its_process_exits(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """`aside exec` was seen exiting 0 while both subagents were still working; their results, the final answer and `finished` came after. Taking the exit for the end reported an empty answer with two orphans."""
+    replay(subagent_turn(gap=1.5))
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.5)
+
+    assert meta["state"] == "completed"
+    assert meta["orphan_children"] == []
+    assert result_of(run)["answer"].startswith("최종 답")
+    assert "child 2 found it" in result_of(run)["answer"]
+
+
+ERROR_STOP = {"role": "assistant", "content": [{"type": "text", "text": "도구 오류로 중단합니다"}], "stopReason": "error",
+              "timestamp": 2}
+
+
+@pytest.mark.parametrize("last,state", [(answer("최종 답"), "completed"), (ERROR_STOP, "failed")], ids=["answer", "error"])
+def test_a_finished_turn_whose_process_lingers_is_judged_by_the_turn(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, last: dict, state: str
+) -> None:
+    """The turn is over at `finished` even while the process is still up. The supervisor ends the process after the settle window, and the code that ending produces says nothing about the turn: its last message does."""
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), turn("final-started"), last,
+            turn("finished"), {"__sleep__": 30}])
+    run = start(runs_dir)
+    began = time.time()
+
+    meta = supervise(run, settle=0.5)
+
+    assert time.time() - began < 15, "a turn that finished is not waited on for its process"
+    assert meta["state"] == state
+    assert meta["terminated_by_supervisor"] is True
+    assert result_of(run)["exit_code"] is None
+
+
+def test_a_turn_that_finished_with_an_answer_and_then_exited_non_zero_failed(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, monkeypatch
+) -> None:
+    """Winding down waits for the process; an exit code of its own, not the supervisor's, still decides. The turn is over before the process exits here, so this is the wind-down's judgement, not the watch's."""
+    monkeypatch.setenv("FAKE_ASIDE_EXIT", "1")
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), turn("final-started"),
+            answer("최종 답"), turn("finished"), {"__sleep__": 1.0}])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=5.0)
+
+    assert meta["state"] == "failed"
+    assert meta["exit_code"] == 1
+    assert "terminated_by_supervisor" not in meta
+
+
+def test_an_error_that_ends_a_turn_after_its_process_exited_0_is_a_failure(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The process can exit 0 before the turn's last message, and that message can be an error."""
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), {"__after_exit__": 1.0},
+            turn("final-started"), ERROR_STOP, turn("finished")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.5)
+
+    assert meta["state"] == "failed"
+    assert meta["exit_code"] == 0
+
+
+def test_a_session_that_appears_after_the_process_exits_is_read_not_replaced_by_stdout(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """Exiting 0 before the session is on disk is not a reason to settle for stdout while the discovery deadline still runs: the transcript, once it lands, is the better record."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "late_session")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "1.5")
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.5, discovery_deadline=5.0)
+
+    assert meta["state"] == "completed"
+    assert result_of(run)["answer"] == "Answer Example A (https://example.org/a)"
+    assert "note" not in result_of(run)
+
+
+@pytest.mark.parametrize("process", ["alive", "exited"])
+def test_a_turn_quiet_past_the_idle_limit_is_abandoned_with_what_it_had(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, replay, process: str
+) -> None:
+    """Without the process exit as an ending, silence needs a bound -- whether the process is still up or exited 0 mid-turn. What the turn gathered by then is kept, and the state says watching stopped, not the work."""
+    if process == "alive":
+        monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+        monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    else:
+        replay([calling(("webfetch", {"url": "https://x.test"})),
+                tool("webfetch", "page", sources=[{"id": "w1", "url": "https://x.test/"}])])
+    run = start(runs_dir)
+
+    meta = supervise(run, idle_limit=1.0, settle=0.3)
+
+    assert meta["state"] == "abandoned"
+    assert meta["reason"] == "the turn went quiet before it finished"
+    assert meta["daemon_run_continues"] is True
+    result = result_of(run)
+    assert result["state"] == "abandoned"
+    assert result["answer"] == ""
+    if process == "exited":
+        assert [s["url"] for s in result["sources"]] == ["https://x.test/"]
+
+
+def test_an_earlier_turns_child_still_writing_does_not_keep_this_turn_alive(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A resumed session's earlier children can go on writing; that says nothing about whether this turn is alive."""
+    aside_session(aside_home, "ParentOfBusyKid1", user("old-prompt"), tool("subagent", "spawned", taskId="BusyEarlierKid01"),
+                  answer("partial"))
+    kid = aside_session(aside_home, "BusyEarlierKid01", user("task"), calling(("webfetch", {"url": "https://x.test"})))
+    replay([calling(("webfetch", {"url": "https://y.test"}))])
+    run = start(runs_dir, "후속")
+    run.update_meta(resume_session_id="ParentOfBusyKid1")
+    done = threading.Event()
+
+    def keep_writing() -> None:
+        until = time.time() + 8
+        while not done.wait(0.2) and time.time() < until:
+            with (kid / "messages.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(tool("webfetch", "more")) + "\n")
+
+    writer = threading.Thread(target=keep_writing)
+    writer.start()
+    began = time.time()
+    try:
+        meta = supervise(run, idle_limit=1.0, settle=0.3)
+    finally:
+        done.set()
+        writer.join()
+
+    assert meta["state"] == "abandoned"
+    assert time.time() - began < 6
+
+
+def test_a_turn_ends_at_its_own_finished_record(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
+    """A session continued after this run appends the next turn to the same transcript. This run's answer is still the one its own turn gave."""
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), turn("final-started"),
+            answer("내 턴의 답"), turn("finished"), turn("started"), user("다음 질문"), turn("final-started"),
+            answer("다음 턴의 답"), turn("finished")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed"
+    assert result_of(run)["answer"] == "내 턴의 답"
 
 
 def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(
@@ -403,16 +557,17 @@ def test_only_a_finished_turn_supplies_the_answer(
     runs_dir: Path, aside_home: Path, fake_aside: Path, replay, ending: str
 ) -> None:
     """Text in a turn that stopped to call a tool is the worker narrating what it is about to
-    do. Reporting it as the answer turns "let me check" into a finding."""
+    do. Reporting it as the answer turns "let me check" into a finding. A turn cut off mid-tool never finishes, so it ends at the idle limit, abandoned."""
     records = [calling(("webfetch", {"url": "https://x.test"}), text="잠시 확인하겠습니다"), tool("webfetch", "page")]
     if ending == "stopped_empty":
         records.append({"role": "assistant", "content": [], "stopReason": "stop"})
     replay(records)
     run = start(runs_dir)
 
-    supervise(run, settle=0.3)
+    meta = supervise(run, settle=0.3, idle_limit=1.0)
 
     assert result_of(run)["answer"] == ""
+    assert meta["state"] == ("completed" if ending == "stopped_empty" else "abandoned")
 
 
 def resumed(runs_dir: Path, aside_home: Path) -> runs.Run:

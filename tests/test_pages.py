@@ -353,6 +353,45 @@ def test_the_original_document_is_kept_beside_the_markdown(cli, routes) -> None:
     assert original.parent == Path(item_of(payload)["path"]).parent
 
 
+@pytest.mark.parametrize("name,ct,snippet_ext,passage", [
+    ("ccourt_2018heonba130.hwp", "application/x-msdownload", "bin", "침해의 최소성 및 법익균형성에 위반하여 자기결정권을 침해하는 것으로서 헌법에 위반된다."),
+    ("scourt_2020seu596.hwp", "application/x-hwp", "bin", "대법관의 일치된 의견으로 주문과 같이 결정한다."),
+    ("mss_evidence_form.hwpx", "application/octet-stream", "zip", "신청서 제출 관련 책임 동의 | □ 동의 □ 비동의"),
+], ids=["hwp-as-msdownload", "hwp", "hwpx"])
+def test_a_hancom_document_is_read_by_what_it_is_not_what_it_was_called(cli, routes, name, ct, snippet_ext, passage) -> None:
+    """Servers give Korean public documents any MIME type, and the browser names the file by it -- an HWP as .bin, an HWPX as .zip. The text is read by the content, and the original kept under its real extension."""
+    routes({"fetch_batch": {"https://example.org/doc": {**document(name, ct), "ext": snippet_ext}}})
+
+    code, payload, _ = cli("fetch", "https://example.org/doc")
+
+    item = item_of(payload)
+    assert code == 0
+    assert item["status"] == "ok"
+    assert passage in saved(item)
+    assert Path(item["original_path"]).suffix == Path(name).suffix
+    assert Path(item["original_path"]).read_bytes() == (FIXTURES / "docs" / name).read_bytes()
+
+
+def test_a_damaged_hancom_document_costs_only_itself(cli, routes, tmp_path: Path) -> None:
+    damaged = tmp_path / "cut.hwp"
+    whole = (FIXTURES / "docs" / "ccourt_2018heonba130.hwp").read_bytes()
+    damaged.write_bytes(whole[: len(whole) // 2])
+    routes({"fetch_batch": {
+        "https://example.org/whole": document("mss_evidence_form.hwpx", "application/octet-stream"),
+        "https://example.org/cut": {"status": 200, "content_type": "application/x-hwp", "kind": "file",
+                                    "saved_path": str(damaged), "ext": "bin"},
+    }})
+
+    code, payload, _ = cli("fetch", "https://example.org/whole", "https://example.org/cut")
+
+    by_url = {i["url"]: i for i in payload["items"]}
+    assert code == 0
+    assert by_url["https://example.org/whole"]["status"] == "ok"
+    assert by_url["https://example.org/cut"]["status"] == "unsupported"
+    assert by_url["https://example.org/cut"]["error"]
+    assert by_url["https://example.org/cut"]["path"] is None
+
+
 def test_a_korean_pdf_keeps_its_text(cli, routes) -> None:
     routes({"fetch_batch": {"https://example.org/ko.pdf": document("sample_ko.pdf")}})
 

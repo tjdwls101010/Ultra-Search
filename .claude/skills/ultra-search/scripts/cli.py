@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["olefile>=0.47"]
 # ///
 """ultra-search — search, read, map and save the web through the user's logged-in Aside browser.
 
@@ -398,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch",
         help="Read one or more URLs into clean markdown files.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
-        "(PDF, docx, pptx, xlsx, epub...) are converted too. Full text always goes to a file; use --print "
+        "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave. Full text always goes to a file; use --print "
         "to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         "ok: the text was extracted and saved.\n"

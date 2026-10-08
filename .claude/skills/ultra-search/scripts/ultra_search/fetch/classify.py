@@ -203,6 +203,7 @@ def extract_html(html: str, url: str = "", *, via: str = "fetch") -> Document:
 
 def extract_document(path: str | Path) -> Document:
     # Hancom's formats first: the converter reads neither, and a server names them by any MIME type at all.
+    # 성진: HWP를 text/*나 XML MIME으로 보내는 서버에서는 브라우저 스니펫이 본문을 글자로 읽어 파일이 여기까지 오지 않는다; 그런 서버가 보이면 스니펫이 MIME보다 OLE·zip 서명을 먼저 본다.
     converted = hwp.extract(path) or converter.document_text(path)
     ext = converted.get("ext") or ""
     if converted["status"] != "ok":

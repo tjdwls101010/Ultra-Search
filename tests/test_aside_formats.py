@@ -247,12 +247,32 @@ def test_every_way_an_answer_names_a_saved_file_points_at_its_copy(saved: Path) 
 
 
 def test_a_name_that_only_looks_like_a_saved_file_is_left_alone(saved: Path) -> None:
-    """Another session's file, a longer name, and a file this session did not save are not this file."""
+    """Another session's file, a longer name, a path inside a URL, and a file this session did not save are not this file."""
     text = ("/Users/x/.aside/u/0/sessions/2026-10-01_SomeOtherSession/artifacts/KSOI_20260916.pdf, "
-            "artifacts/KSOI_20260916.pdf.bak, myartifacts/KSOI_20260916.pdf, artifacts/unknown.pdf")
+            "artifacts/KSOI_20260916.pdf.bak, artifacts/KSOI_20260916.pdf%20backup, myartifacts/KSOI_20260916.pdf, "
+            "https://x.test/?file=artifacts/KSOI_20260916.pdf, artifacts/unknown.pdf")
 
     assert aside.rewrite_artifact_refs(text, PARENT_ID, {"KSOI_20260916.pdf": "/copy.pdf"}) == text
     assert aside.referenced_artifacts(text, PARENT_ID, ["KSOI_20260916.pdf"]) == []
+
+
+def test_another_sessions_answer_names_a_file_only_by_its_absolute_path(saved: Path) -> None:
+    """A relative `artifacts/` path means the folder of the session that wrote it, so read from another session's answer only the absolute form names this session's file."""
+    text = f"[부모가 받은 것](artifacts/KSOI_20260916.pdf) [자식이 받은 것]({saved}/tmp/bohun_rfp.hwpx)"
+    copies = {"KSOI_20260916.pdf": "/copy/a.pdf", "tmp/bohun_rfp.hwpx": "/copy/b.hwpx"}
+
+    assert aside.rewrite_artifact_refs(text, PARENT_ID, copies, absolute_only=True) == \
+        "[부모가 받은 것](artifacts/KSOI_20260916.pdf) [자식이 받은 것](/copy/b.hwpx)"
+    assert aside.referenced_artifacts(text, PARENT_ID, list(copies), absolute_only=True) == ["tmp/bohun_rfp.hwpx"]
+
+
+def test_a_linked_artifacts_folder_is_not_read(home: Path, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.txt").write_text("not the agent's")
+    (home / f"2026-10-02_{PARENT_ID}" / "artifacts").symlink_to(elsewhere)
+
+    assert aside.session_artifacts(PARENT_ID) == []
 
 
 # --- what `aside exec` printed -------------------------------------------------------------------

@@ -172,8 +172,8 @@ class Turn:
     #: Line index just past the turn's last record once something has ended it -- its `finished`, or a next turn's `started` -- and None while it is open.
     end_line: int | None = None
     events: list[aside.Event] = field(default_factory=list)
-    #: When this turn began, and when the session's next turn did, in seconds; 0.0 and None where the transcript does not say.
-    started_at: float = 0.0
+    #: When this turn began, and when the session's next turn did, in seconds; None where the transcript does not say, or no next turn has begun.
+    started_at: float | None = None
     next_started_at: float | None = None
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
@@ -203,6 +203,12 @@ class Turn:
             [collect_sources(self.events)]
             + [collect_sources(self.child_events[cid]) for cid in self.children]
         )
+
+    def window(self, cid: str | None = None) -> tuple[float | None, float | None]:
+        """When a stream's part in this turn began and when its session's next turn did, in seconds -- None where the transcript does not say, or no next turn has begun. The turn's own under None, a child's under its id: a child works in a session of its own, which can go on after the parent has moved to its next turn."""
+        if cid is None:
+            return self.started_at, self.next_started_at
+        return _window(self.child_events[cid])
 
     def stream_answers(self, sources: list[Source] | None = None) -> list[tuple[str | None, str]]:
         """Each stream's answer: the turn's own under None, then each child's that said something, under its id.
@@ -281,7 +287,7 @@ def turn_of(run: runs.Run) -> Turn:
         observed=True,
         start_line=mine[0].index,
         end_line=None if end is None else mine[-1].index + 1,
-        started_at=stamps[0] / 1000 if stamps else 0.0,
+        started_at=stamps[0] / 1000 if stamps else None,
         next_started_at=later[0] / 1000 if later else None,
         events=mine,
         children=children,
@@ -309,6 +315,15 @@ def _turn_end(events: list[aside.Event], prompt: int) -> int | None:
         if events[i].kind == "lifecycle" and events[i].lifecycle in ("finished", "started"):
             return i + 1 if events[i].lifecycle == "finished" else i
     return None
+
+
+def _window(events: list[aside.Event]) -> tuple[float | None, float | None]:
+    """A child's part from its first timestamp, to the `started` of a turn after one it finished."""
+    stamps = [e.timestamp for e in events if e.timestamp]
+    done = next((i for i, e in enumerate(events) if e.kind == "lifecycle" and e.lifecycle == "finished"), None)
+    later = [] if done is None else [e.timestamp for e in events[done:]
+                                     if e.kind == "lifecycle" and e.lifecycle == "started" and e.timestamp]
+    return (stamps[0] / 1000 if stamps else None), (later[0] / 1000 if later else None)
 
 
 def _from(events: list[aside.Event], since: int) -> list[aside.Event]:

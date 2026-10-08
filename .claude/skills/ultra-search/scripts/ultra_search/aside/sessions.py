@@ -247,13 +247,15 @@ def session_summaries(limit: int = 30) -> list[dict]:
 def session_artifacts(session_id: str) -> list[tuple[str, Path, float]]:
     """The files the agent saved in a session's `artifacts/` folder, at any depth, by path: (path within that folder, path, modification time).
 
-    Regular files inside the folder only: a link can name any file on this machine, and what is listed here is copied out of Aside's directory.
+    Regular files inside the folder only, and nothing when the folder itself is a link: a link can name any file on this machine, and what is listed here is copied out of Aside's directory.
     """
     d = _session_dir(session_id)
     if d is None:
         return []
     folder = d / "artifacts"
     try:
+        if not stat.S_ISDIR(folder.lstat().st_mode):
+            return []
         base = folder.resolve(strict=True)
     except OSError:
         return []
@@ -271,29 +273,36 @@ def session_artifacts(session_id: str) -> list[tuple[str, Path, float]]:
     return sorted(out)
 
 
-def _ref(session_id: str, rel: str) -> re.Pattern[str]:
-    """Every way an answer names the saved file ``rel``: relative to its session, as the agent links its files (`artifacts/<rel>`), or by the session's absolute path, bare or behind `sandbox:` or `file://`; each with the name as saved, its spaces as `%20`, or all of it percent-encoded.
+#: Where a path in an answer can start: the start of a line, after a space, or after the bracket or quote around a link.
+_PATH_START = r"""(?:^|(?<=[\s(<\[{"'`]))"""
+#: A name followed by any of these is the start of a longer name -- `.bak`, `%20copy`, a letter, a slash -- and a different file. Hangul is not among them: in Korean prose a particle follows the path directly.
+_NAME_GOES_ON = r"(?![A-Za-z0-9_/\\%-]|\.\w)"
 
-    A name continued by more of a name -- `.bak`, a letter, a slash -- is a different file, and a path whose folder is not this session's is another session's file.
+
+def _ref(session_id: str, rel: str, *, absolute_only: bool) -> re.Pattern[str]:
+    """Every way an answer names the saved file ``rel``: relative to its session, as the agent links its own files (`artifacts/<rel>`), or by the session's absolute path, bare or behind `sandbox:` or `file://`; each with the name as saved, its spaces as `%20`, or all of it percent-encoded.
+
+    A relative path means the folder of the session that wrote it, so ``absolute_only`` is for reading another session's answer. A path inside a URL, or one whose folder is not this session's, is not this file.
     """
     names = "|".join(re.escape(n) for n in sorted({rel, rel.replace(" ", "%20"), quote(rel)}, key=len, reverse=True))
-    forms = [rf"(?<![A-Za-z0-9_/.%-])(?:\./)?artifacts/(?:{names})"]
+    forms = [] if absolute_only else [rf"{_PATH_START}(?:\./)?artifacts/(?:{names})"]
     d = _session_dir(session_id)
     if d is not None:
         folder = str(d / "artifacts")
         roots = "|".join(re.escape(r) for r in sorted({folder, folder.replace(" ", "%20"), quote(folder)}, key=len, reverse=True))
-        forms.insert(0, rf"(?:sandbox:|file://)?(?:{roots})/(?:{names})")
-    return re.compile(rf"(?:{'|'.join(forms)})(?![A-Za-z0-9_/\\-]|\.\w)")
+        forms.insert(0, rf"{_PATH_START}(?:sandbox:|file://)?(?:{roots})/(?:{names})")
+    return re.compile(rf"(?:{'|'.join(forms) or '(?!)'}){_NAME_GOES_ON}", re.M)
 
 
-def referenced_artifacts(text: str, session_id: str, rels: list[str]) -> list[str]:
-    """Which of the session's saved files ``text`` names, in the order given."""
-    return [rel for rel in rels if _ref(session_id, rel).search(text)]
+def referenced_artifacts(text: str, session_id: str, rels: list[str], *, absolute_only: bool = False) -> list[str]:
+    """Which of the session's saved files ``text`` names, in the order given; by absolute path only, with ``absolute_only``, for text another session wrote."""
+    return [rel for rel in rels if _ref(session_id, rel, absolute_only=absolute_only).search(text)]
 
 
-def rewrite_artifact_refs(text: str, session_id: str, copies: dict[str, str | os.PathLike[str]]) -> str:
-    """``text`` with each saved file it names -- ``copies`` maps a path within the session's `artifacts/` to where a copy of the file now is -- naming that copy instead, as a plain path a reader can open."""
+def rewrite_artifact_refs(text: str, session_id: str, copies: dict[str, str | os.PathLike[str]], *,
+                          absolute_only: bool = False) -> str:
+    """``text`` with each saved file it names -- ``copies`` maps a path within the session's `artifacts/` to where a copy of the file now is -- naming that copy instead, as a plain path a reader can open; by absolute path only, with ``absolute_only``, for text another session wrote."""
     for rel in sorted(copies, key=len, reverse=True):
         target = str(copies[rel])
-        text = _ref(session_id, rel).sub(lambda _: target, text)
+        text = _ref(session_id, rel, absolute_only=absolute_only).sub(lambda _: target, text)
     return text

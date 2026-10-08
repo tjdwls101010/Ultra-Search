@@ -366,7 +366,7 @@ def test_a_resumed_run_keeps_its_turns_files_and_the_earlier_ones_its_answer_nam
 
     supervise(run, settle=0.3)
 
-    copies = run.path / "artifacts"
+    copies = run.path / "artifacts" / "ParentWithFiles1"
     assert sorted(result_of(run)["artifacts"]) == [str(copies / "new.pdf"), str(copies / "old-named.pdf")]
     assert result_of(run)["answer"] == f"[이전 파일]({copies / 'old-named.pdf'}) [새 파일]({copies / 'new.pdf'})"
 
@@ -384,7 +384,7 @@ def test_a_file_a_later_turn_rewrote_is_not_passed_off_as_this_runs(
     meta = supervise(run, settle=2.0)
 
     result = result_of(run)
-    copies = run.path / "artifacts"
+    (copies,) = (run.path / "artifacts").iterdir()
     assert meta["state"] == "completed"
     assert result["artifacts"] == [str(copies / "b.txt")]
     assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.txt", "changed by a later turn")]
@@ -408,37 +408,42 @@ def test_a_file_still_being_written_is_reported_not_torn(
     runs_dir: Path, aside_home: Path, fake_aside: Path, replay, tmp_path: Path
 ) -> None:
     """A child still at work can be writing a file while the run's copies are taken. A copy that is half of it would pass for the file, so it is tried once more and then reported; the run and its other files are unaffected."""
-    replay([{"__artifact__": "growing.log", "text": ""}, {"__artifact__": "stable.txt", "text": "ok"}, {"__sleep__": 0.5},
-            answer("[로그](artifacts/growing.log) [파일](artifacts/stable.txt)")])
+    writing = tmp_path / "writer-is-writing"
+    replay([{"__artifact__": "growing.log", "text": ""}, {"__artifact__": "stable.txt", "text": "ok"},
+            {"__wait_for__": str(writing)}, answer("[로그](artifacts/growing.log) [파일](artifacts/stable.txt)")])
     stop = tmp_path / "stop-writing"
     sessions = aside_home / "u" / "0" / "sessions"
+    before = set(sessions.iterdir())
     run = start(runs_dir)
     writer = None
+
+    def launch() -> None:
+        # The turn is held open until the writer has written once, so it is writing while the copies are taken.
+        nonlocal writer
+        until = time.time() + 30
+        while time.time() < until:
+            new = [d / "artifacts" / "growing.log" for d in set(sessions.iterdir()) - before]
+            if writer is None and new and new[0].exists():
+                writer = subprocess.Popen([sys.executable, "-c", WRITER, str(new[0]), str(stop)])
+            if new and new[0].exists() and new[0].stat().st_size:
+                writing.touch()
+                return
+            time.sleep(0.01)
+
+    watcher = threading.Thread(target=launch)
+    watcher.start()
     try:
-        before = set(sessions.iterdir())
-        meta = None
-
-        def launch() -> None:
-            nonlocal writer
-            while writer is None:
-                new = set(sessions.iterdir()) - before
-                if new:
-                    target = next(iter(new)) / "artifacts" / "growing.log"
-                    writer = subprocess.Popen([sys.executable, "-c", WRITER, str(target), str(stop)])
-                time.sleep(0.01)
-
-        watcher = threading.Thread(target=launch)
-        watcher.start()
         meta = supervise(run, settle=0.3)
-        watcher.join()
     finally:
+        watcher.join()
         stop.touch()
         if writer:
             writer.wait(timeout=60)
 
     result = result_of(run)
+    (copies,) = (run.path / "artifacts").iterdir()
     assert meta["state"] == "completed"
-    assert result["artifacts"] == [str(run.path / "artifacts" / "stable.txt")]
+    assert result["artifacts"] == [str(copies / "stable.txt")]
     assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("growing.log", "changing while copied")]
 
 
@@ -469,9 +474,43 @@ def test_an_abandoned_turns_files_are_kept_as_they_were(
     meta = supervise(run, idle_limit=1.0, settle=0.3)
 
     result = result_of(run)
+    (copies,) = (run.path / "artifacts").iterdir()
     assert meta["state"] == "abandoned"
-    assert result["artifacts"] == [str(run.path / "artifacts" / "draft.txt")]
+    assert result["artifacts"] == [str(copies / "draft.txt")]
     assert "as they were" in result["note"]
+
+
+def test_a_snapshot_of_something_that_is_not_a_file_fails_at_once(tmp_path: Path) -> None:
+    """A pipe in place of a saved file would hold the supervisor on its open forever."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    got: list[object] = []
+
+    def copy() -> None:
+        try:
+            runs.copy_snapshot(fifo, tmp_path / "copy")
+        except OSError as e:
+            got.append(e)
+
+    t = threading.Thread(target=copy, daemon=True)
+    t.start()
+    t.join(5)
+    if not got:
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # lets a reader stuck on the pipe go
+    assert got and isinstance(got[0], OSError)
+    assert not (tmp_path / "copy").exists()
+
+
+def test_a_turn_without_lifecycle_records_that_ended_on_an_error_failed(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, monkeypatch
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_FORMAT", "legacy")
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), ERROR_STOP])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "failed"
 
 
 def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(

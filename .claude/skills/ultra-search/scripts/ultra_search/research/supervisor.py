@@ -14,11 +14,11 @@ Each poll, the first of these that holds decides:
     W2  this turn has finished                                    wind down, below
     W3  exited 0, no session found by the discovery deadline      completed_unstructured
     W4  exited 0, session found, this turn not in it yet          wait the settle window for it, else completed_unstructured
-    W5  exited 0, this turn seen without lifecycle records        the earlier format: settle, then completed or with orphans
+    W5  exited 0, this turn seen without lifecycle records        the earlier format: settle, then judge as below
     W6  nothing written for the idle limit, alive or exited 0     abandoned, with what it had by then
     W7  anything else -- still running, or exited 0 mid-turn      keep watching
 
-Winding down gives the process and this turn's children the settle window to end, ends a process still running after it, and then judges once: a non-zero exit of its own or a last message that stopped on an error is failed, a child still running is completed_with_orphans, anything else completed. The exit code of a process the supervisor ended says nothing about the turn and is not read.
+Winding down gives the process and this turn's children the settle window to end, ends a process still running after it, and then judges once, as the earlier format's settle does: a non-zero exit of its own or a last message that stopped on an error is failed, a child still running is completed_with_orphans, anything else completed. The exit code of a process the supervisor ended says nothing about the turn and is not read.
 
 Run detached, this writes meta.json continuously so `status` and `log` can read progress from a process that has no channel back to them. It is started as `cli.py _supervise <run>`: the one entry point, found by the path the caller used to reach it.
 """
@@ -193,7 +193,7 @@ def supervise(
                 # for the children, within the settle window.
                 orphans = turn.unfinished_children()
                 if (evidence.has_terminal_answer(turn.events) and not orphans) or now - exited_at >= settle:
-                    state = "completed_with_orphans" if orphans else "completed"
+                    state = "failed" if turn.ended_on_error() else "completed_with_orphans" if orphans else "completed"
                     return _finish(run, watch.session_id, turn, state, exit_code, orphans)
                 time.sleep(min(poll, 0.2))
                 continue
@@ -281,10 +281,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         sources = turn.sources()
         if session_id:
             kept, missing = _keep_artifacts(run, session_id, turn, sources)
-        # Each stream's references to its own session's files, before the streams are joined: a parent and a
-        # child can each have saved a file of the same name.
-        answer = turn.answer(sources, rewrite=lambda cid, text: aside.rewrite_artifact_refs(
-            text, cid or session_id, kept.get(cid, {})) if session_id else text)
+        answer = turn.answer(sources, rewrite=lambda cid, text: _point_at_copies(text, cid, session_id, kept))
         usage = turn.usage()
     else:
         answer, sources, usage = _from_stdout(_read_text(run.stdout_path))
@@ -333,35 +330,65 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
 
 def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
                     sources: list[evidence.Source]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
-    """Copy into the run the files this turn's sessions saved, and say which could not be copied.
+    """Copy into the run the files this turn's sessions saved -- each session's under its own id, since a parent's folder can be named like a child -- and say which could not be copied.
 
-    A session keeps every turn's saved files together. This turn's are the ones changed since it began and before the session's next turn did; an older one is kept only when an answer names it, as a run collecting an earlier child's late result names what that child saved. A file a later turn changed is no longer the one this turn's answer meant, so it is reported rather than copied. The copies are taken now, so a child still at work, or an abandoned turn, leaves them as they were at this moment.
+    A session keeps every turn's saved files together. This turn's are the ones changed since its part in the turn began and before its session's next turn did; an older one is kept only when an answer names it, as a run collecting an earlier child's late result names what that child saved, and where the transcript gives no start only a named file is. A file a later turn changed is no longer the one this turn's answer meant, so it is reported rather than copied. The copies are taken now, so a child still at work, or an abandoned turn, leaves them as they were at this moment.
     """
     kept: dict[str | None, dict[str, Path]] = {}
     missing: list[dict] = []
     texts = dict(turn.stream_answers(sources))
+    streams = [None, *turn.children]
     try:
-        for cid in [None, *turn.children]:
+        for cid in streams:
             sid = cid or session_id
             saved = aside.session_artifacts(sid)
-            named = set(aside.referenced_artifacts(texts.get(cid, ""), sid, [rel for rel, _, _ in saved]))
-            into = run.artifacts_dir / cid if cid else run.artifacts_dir
+            rels = [rel for rel, _, _ in saved]
+            # A relative path means the folder of the session that wrote it; another session's answer names this
+            # one's files only by absolute path.
+            named = set(aside.referenced_artifacts(texts.get(cid, ""), sid, rels))
+            for other in streams:
+                if other != cid:
+                    named |= set(aside.referenced_artifacts(texts.get(other, ""), sid, rels, absolute_only=True))
+            began, next_began = turn.window(cid)
+
+            def later(mtime: float) -> bool:
+                # Aside stamps a record to the millisecond: a file from just before the next turn can share its ms.
+                return next_began is not None and mtime >= next_began + 0.001
+
             for rel, path, mtime in saved:
-                if turn.next_started_at is not None and mtime >= turn.next_started_at:
+                if later(mtime):
                     if rel in named:
                         missing.append({"path": str(path), "error": "changed by a later turn"})
                     continue
-                if mtime < turn.started_at and rel not in named:
+                if rel not in named and (began is None or mtime < began):
                     continue
+                dst = run.artifacts_dir / sid / rel
                 try:
-                    runs.copy_snapshot(path, into / rel)
+                    copied = runs.copy_snapshot(path, dst)
                 except OSError as e:
                     missing.append({"path": str(path), "error": str(e)})
                     continue
-                kept.setdefault(cid, {})[rel] = into / rel
+                if later(copied.st_mtime):  # rewritten between the listing and the copy
+                    dst.unlink(missing_ok=True)
+                    if rel in named:
+                        missing.append({"path": str(path), "error": "changed by a later turn"})
+                    continue
+                kept.setdefault(cid, {})[rel] = dst
     except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
         missing.append({"path": str(run.artifacts_dir), "error": f"{type(e).__name__}: {e}"})
     return kept, missing
+
+
+def _point_at_copies(text: str, cid: str | None, session_id: str | None,
+                     kept: dict[str | None, dict[str, Path]]) -> str:
+    """One stream's text naming the copies: its own session's files by any path, another session's by absolute path only."""
+    if not session_id:
+        return text
+    text = aside.rewrite_artifact_refs(text, cid or session_id, kept.get(cid, {}))
+    for other, copies in kept.items():
+        if other != cid:
+            text = aside.rewrite_artifact_refs(text, other or session_id, copies, absolute_only=True)
+    return text
 
 
 def _from_stdout(stdout: str):

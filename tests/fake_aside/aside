@@ -26,7 +26,7 @@ carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains 
 the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
 resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
 
-A replay record carrying `"__session__": ID` goes to that session's transcript instead, made if it does not exist, so a replay can write its subagents' transcripts as they work -- before and after the process exits. A record `{"__artifact__": REL, "text": TEXT}` saves a file the agent made in the session's `artifacts/` instead of being written as a record -- `"link": TARGET` makes it a symlink, `"mode": N` sets its permissions -- and `__SESSION_DIR__` anywhere in a line becomes the session's directory, so an answer can name its files by absolute path. A `"timestamp": "__NOW__"` becomes the moment the record is written.
+A replay record carrying `"__session__": ID` goes to that session's transcript instead, made if it does not exist, so a replay can write its subagents' transcripts as they work -- before and after the process exits. A record `{"__artifact__": REL, "text": TEXT}` saves a file the agent made in the session's `artifacts/` instead of being written as a record -- `"link": TARGET` makes it a symlink, `"mode": N` sets its permissions -- and `__SESSION_DIR__` anywhere in a line becomes the session's directory -- `__SESSION_DIR:ID__` another session's -- so an answer can name files by absolute path. A `"timestamp": "__NOW__"` becomes the moment the record is written, and `{"__wait_for__": PATH}` holds the writer until PATH exists.
 
 `repl` answers the page snippets from FAKE_ASIDE_REPL_ROUTES, a JSON file keyed by the
 snippet named on the snippet's `// snippet: <name>` line and then by URL:
@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import string
 import sys
 import time
@@ -178,6 +179,7 @@ def replay(d: Path, prompt: str) -> bool:
         if not line.strip():
             continue
         line = line.replace("__SESSION_DIR__", str(d))
+        line = re.sub(r"__SESSION_DIR:(\w+)__", lambda m: str(session_dir(m.group(1))), line)
         try:
             rec = json.loads(line)
         except ValueError:
@@ -188,6 +190,12 @@ def replay(d: Path, prompt: str) -> bool:
         role = rec.get("role") if isinstance(rec, dict) else None
         if isinstance(rec, dict) and "__sleep__" in rec:
             time.sleep(float(rec["__sleep__"]))
+            continue
+        if isinstance(rec, dict) and "__wait_for__" in rec:
+            gate = Path(rec["__wait_for__"])
+            until = time.time() + 30
+            while not gate.exists() and time.time() < until:
+                time.sleep(0.01)
             continue
         if isinstance(rec, dict) and "__after_exit__" in rec:
             if os.fork() != 0:

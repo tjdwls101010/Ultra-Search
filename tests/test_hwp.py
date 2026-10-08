@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import shutil
 import zipfile
+import zlib
 from pathlib import Path
 
 import olefile
@@ -133,6 +134,66 @@ def rezipped(tmp_path: Path, *, drop: str = "", add: dict[str, str] | None = Non
         for name, text in (add or {}).items():
             dst.writestr(name, text)
     return out
+
+
+def test_a_zip_written_as_a_stream_is_still_hwpx(tmp_path: Path) -> None:
+    """A writer that cannot seek records each entry's size after its content, leaving 0 in the header that comes first."""
+    out = tmp_path / "streamed.hwpx"
+    with zipfile.ZipFile(FORM) as src, out.open("wb") as raw:
+        # Written through a pipe-like object, zipfile cannot go back to fill in sizes: every entry gets a descriptor.
+        class Forward:
+            def __init__(self) -> None:
+                self.pos = 0
+
+            def write(self, b: bytes) -> int:
+                self.pos += raw.write(b)
+                return len(b)
+
+            def tell(self) -> int:
+                return self.pos
+
+            def flush(self) -> None:
+                raw.flush()
+
+        with zipfile.ZipFile(Forward(), "w") as dst:
+            for info in src.infolist():
+                dst.writestr(zipfile.ZipInfo(info.filename), src.read(info),
+                             compress_type=zipfile.ZIP_STORED if info.filename == "mimetype" else zipfile.ZIP_DEFLATED)
+
+    assert out.read_bytes()[6] & 0x08, "the first entry's sizes come after its content"
+    assert hwp.extract(out)["text"] == hwp.extract(FORM)["text"]
+
+
+def test_a_flood_of_elements_in_the_manifest_is_refused_too(tmp_path: Path) -> None:
+    flood = '<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">' + "<x/>" * 400_000 + "</opf:package>"
+    got = hwp.extract(rezipped(tmp_path, drop="Contents/content.hpf", add={"Contents/content.hpf": flood}))
+
+    assert got["status"] == "unsupported" and "manifest" in got["error"]
+
+
+def body_patched(tmp_path: Path, tail: bytes) -> Path:
+    """A copy of the decision whose body gains ``tail`` after its last record, recompressed and padded to the stream's length: bytes after the end of a deflate stream are not part of it."""
+    copy = tmp_path / "patched.hwp"
+    shutil.copy(SCOURT, copy)
+    with olefile.OleFileIO(str(copy), write_mode=True) as ole:
+        packed = ole.openstream("BodyText/Section0").read()
+        body = zlib.decompress(packed, -15) + tail
+        squeezer = zlib.compressobj(9, zlib.DEFLATED, -15)
+        repacked = squeezer.compress(body) + squeezer.flush()
+        assert len(repacked) <= len(packed)
+        ole.write_stream("BodyText/Section0", repacked + b"\0" * (len(packed) - len(repacked)))
+    return copy
+
+
+@pytest.mark.parametrize("tail,why", [
+    (b"\x43\x00", "ends inside a record"),
+    ((67 | 3 << 20).to_bytes(4, "little") + b"\x41\x00\x42", "ends inside a character"),
+    ((67 | 4 << 20).to_bytes(4, "little") + b"\x41\x00\x0b\x00", "ends inside a control"),
+], ids=["record", "character", "control"])
+def test_a_body_cut_inside_a_record_is_damage(tmp_path: Path, tail: bytes, why: str) -> None:
+    got = hwp.extract(body_patched(tmp_path, tail))
+
+    assert got["status"] == "unsupported" and why in got["error"]
 
 
 def test_a_section_the_manifest_lists_but_the_file_lacks_is_damage(tmp_path: Path) -> None:

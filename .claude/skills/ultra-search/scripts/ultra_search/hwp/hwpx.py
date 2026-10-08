@@ -48,20 +48,36 @@ def text_of(path: str | os.PathLike[str]) -> str | None:
 
 
 def _first_entry_is_mimetype(data: bytes) -> bool:
-    """Whether the zip's first entry is `mimetype`, stored uncompressed, reading exactly application/hwp+zip -- read from its local header, so a copy cut short is still known for what it is."""
+    """Whether the zip's first entry is `mimetype`, stored uncompressed, reading exactly application/hwp+zip -- read from its local header, so a copy cut short is still known for what it is. A writer that streams the zip leaves the header's size at 0 and records it after the content, so then the content is read up to where the next record begins."""
     if not data.startswith(b"PK\x03\x04") or len(data) < 30:
         return False
-    method = int.from_bytes(data[8:10], "little")
-    size = int.from_bytes(data[18:22], "little")
+    flags, method = int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
     name_len, extra_len = int.from_bytes(data[26:28], "little"), int.from_bytes(data[28:30], "little")
+    size = len(MIMETYPE) if flags & 0x08 else int.from_bytes(data[18:22], "little")
     start = 30 + name_len + extra_len
-    return method == 0 and data[30:30 + name_len] == b"mimetype" and data[start:start + size] == MIMETYPE
+    content = data[start:start + size]
+    after = data[start + size:start + size + 2]
+    return (method == 0 and data[30:30 + name_len] == b"mimetype" and content == MIMETYPE
+            and (not flags & 0x08 or after == b"PK"))
 
 
 def _listed_sections(z: zipfile.ZipFile) -> list[str]:
-    """The body sections the package manifest lists: a section missing from the zip would otherwise go unread without a sign."""
-    manifest = ElementTree.fromstring(z.read("Contents/content.hpf"))
-    return [href for item in manifest.iter(f"{_OPF}item") if _SECTION.fullmatch(href := item.get("href") or "")]
+    """The body sections the package manifest lists: a section missing from the zip would otherwise go unread without a sign. Read as a stream, under the same bounds as a section."""
+    if z.getinfo("Contents/content.hpf").file_size > _MAX_BODY:
+        raise ValueError(f"the HWPX manifest is larger than {_MAX_BODY >> 20} MB")
+    listed: list[str] = []
+    nodes = 0
+    with z.open("Contents/content.hpf") as stream:
+        for event, elem in ElementTree.iterparse(stream, events=("start", "end")):
+            if event == "start":
+                nodes += 1
+                if nodes > _MAX_NODES:
+                    raise ValueError(f"the HWPX manifest has more than {_MAX_NODES:,} elements")
+            elif elem.tag == f"{_OPF}item":
+                if _SECTION.fullmatch(href := elem.get("href") or ""):
+                    listed.append(href)
+                elem.clear()
+    return listed
 
 
 def _section(stream) -> list[str]:

@@ -213,6 +213,12 @@ def _wind_down(run: runs.Run, watch: _Watch, proc, exit_code: int | None, *, pol
         if (exit_code is not None and not orphans) or time.time() >= deadline:
             break
         time.sleep(min(poll, 0.2))
+    if exit_code is None:
+        # It may have exited while the last sync ran: an exit of its own is judged by its code, on what it wrote.
+        exit_code = proc.poll()
+        if exit_code is not None:
+            turn = watch.sync()
+            orphans = turn.unfinished_children()
     ended_by_us = exit_code is None
     if ended_by_us:
         _terminate(proc)

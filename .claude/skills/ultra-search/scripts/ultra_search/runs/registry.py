@@ -47,6 +47,11 @@ class Run:
             raise ValueError(f"not a session id: {child_id!r}")
         return self.path / "session" / "children" / f"{child_id}.jsonl"
 
+    @property
+    def artifacts_dir(self) -> Path:
+        """Where copies of the files the agent saved go: the run's own at the top, each child's under its id."""
+        return self.path / "artifacts"
+
     def child_transcripts(self) -> list[Path]:
         d = self.path / "session" / "children"
         try:

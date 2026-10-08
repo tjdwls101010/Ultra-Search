@@ -318,6 +318,41 @@ def test_a_search_whose_process_exits_mid_turn_hands_back_the_final_answer(cli, 
     assert run["answer"].startswith("최종 답")
 
 
+def test_the_files_the_agent_saved_come_back_as_copies_its_answer_points_at(cli, replay, aside_home: Path) -> None:
+    """The agent keeps what it downloads in its session's `artifacts/`, and its answer names those files relative to that session -- a path the caller cannot open. Each comes back as a copy under the run, the answer pointing at it; a parent and a child that saved the same name keep their own; a link is not followed out of the folder."""
+    kid = "SavingChild00001"
+    replay([
+        {"__artifact__": "KSPO 보고서 (최종).pdf", "text": "parent pdf"},
+        {"__artifact__": "tmp/표.csv", "text": "a,b"},
+        {"__artifact__": "report.txt", "text": "parent report"},
+        {"__artifact__": "linked.txt", "link": str(aside_home)},
+        calling(("subagent", {"action": "spawn", "description": "c1"})),
+        {"__session__": kid, **turn("started")}, {"__session__": kid, **user("child task")},
+        {"__session__": kid, "__artifact__": "report.txt", "text": "child report"},
+        {"__session__": kid, **turn("final-started")},
+        {"__session__": kid, **answer("자식 보고서: [보고서](artifacts/report.txt)")},
+        {"__session__": kid, **turn("finished")},
+        tool("subagent", "spawned", taskId=kid),
+        turn("final-started"),
+        answer("[원문](artifacts/KSPO 보고서 (최종).pdf) · [표](sandbox:__SESSION_DIR__/artifacts/tmp/%ED%91%9C.csv) · "
+               "[보고서](artifacts/report.txt)"),
+        turn("finished"),
+    ])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    copies = Path(run["result_path"]).parent / "artifacts"
+    expected = {copies / "KSPO 보고서 (최종).pdf": "parent pdf", copies / "tmp" / "표.csv": "a,b",
+                copies / "report.txt": "parent report", copies / kid / "report.txt": "child report"}
+    assert sorted(run["artifacts"]) == sorted(str(p) for p in expected)
+    assert {Path(p): Path(p).read_text(encoding="utf-8") for p in run["artifacts"]} == expected
+    assert list(run)[-3:] == ["opened_sources", "artifacts", "result_path"]
+    assert run["answer"] == (f"[원문]({copies / 'KSPO 보고서 (최종).pdf'}) · [표]({copies / 'tmp' / '표.csv'}) · "
+                             f"[보고서]({copies / 'report.txt'})\n\n--- child {kid} ---\n"
+                             f"자식 보고서: [보고서]({copies / kid / 'report.txt'})")
+
+
 def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "fail")
 

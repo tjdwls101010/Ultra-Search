@@ -26,7 +26,7 @@ carrying `"__if_prompt__": TEXT` is written only by a run whose prompt contains 
 the members of one group can write different transcripts. FAKE_ASIDE_PROMPT_DELAY holds a
 resumed turn's prompt back that many seconds, the way a busy daemon lands it late.
 
-A replay record carrying `"__session__": ID` goes to that session's transcript instead, made if it does not exist, so a replay can write its subagents' transcripts as they work -- before and after the process exits.
+A replay record carrying `"__session__": ID` goes to that session's transcript instead, made if it does not exist, so a replay can write its subagents' transcripts as they work -- before and after the process exits. A record `{"__artifact__": REL, "text": TEXT}` saves a file the agent made in the session's `artifacts/` instead of being written as a record -- `"link": TARGET` makes it a symlink, `"mode": N` sets its permissions -- and `__SESSION_DIR__` anywhere in a line becomes the session's directory, so an answer can name its files by absolute path. A `"timestamp": "__NOW__"` becomes the moment the record is written.
 
 `repl` answers the page snippets from FAKE_ASIDE_REPL_ROUTES, a JSON file keyed by the
 snippet named on the snippet's `// snippet: <name>` line and then by URL:
@@ -70,6 +70,18 @@ def record_call(argv: list[str]) -> None:
 
 def new_session_id() -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=16))
+
+
+def save_artifact(d: Path, rec: dict) -> None:
+    """A file the agent saved, where the daemon keeps one: under the session's `artifacts/`."""
+    path = d / "artifacts" / rec["__artifact__"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "link" in rec:
+        path.symlink_to(rec["link"])
+        return
+    path.write_text(rec.get("text", ""), encoding="utf-8")
+    if "mode" in rec:
+        os.chmod(path, int(rec["mode"]))
 
 
 def session_dir(sid: str) -> Path:
@@ -165,10 +177,14 @@ def replay(d: Path, prompt: str) -> bool:
     for i, line in enumerate(lines):
         if not line.strip():
             continue
+        line = line.replace("__SESSION_DIR__", str(d))
         try:
             rec = json.loads(line)
         except ValueError:
             rec = None
+        if isinstance(rec, dict) and rec.get("timestamp") == "__NOW__":
+            rec["timestamp"] = int(time.time() * 1000)
+            line = json.dumps(rec, ensure_ascii=False)
         role = rec.get("role") if isinstance(rec, dict) else None
         if isinstance(rec, dict) and "__sleep__" in rec:
             time.sleep(float(rec["__sleep__"]))
@@ -179,7 +195,14 @@ def replay(d: Path, prompt: str) -> bool:
             time.sleep(float(rec["__after_exit__"]))
             continue
         if isinstance(rec, dict) and "__session__" in rec:
-            append(session_dir(str(rec.pop("__session__"))), rec)
+            target = session_dir(str(rec.pop("__session__")))
+            if "__artifact__" in rec:
+                save_artifact(target, rec)
+            else:
+                append(target, rec)
+            continue
+        if isinstance(rec, dict) and "__artifact__" in rec:
+            save_artifact(d, rec)
             continue
         if isinstance(rec, dict) and "__if_prompt__" in rec:
             if str(rec.pop("__if_prompt__")) not in prompt:

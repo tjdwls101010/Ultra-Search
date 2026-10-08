@@ -275,9 +275,16 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     # This turn only. A resumed session's earlier turns are context, not results, and
     # counting them again would attribute the previous answer, its sources and its tokens
     # to this run -- and strictly this turn's children, for the same reason.
+    kept: dict[str | None, dict[str, Path]] = {}
+    missing: list[dict] = []
     if turn.observed:
         sources = turn.sources()
-        answer = turn.answer(sources)
+        if session_id:
+            kept, missing = _keep_artifacts(run, session_id, turn, sources)
+        # Each stream's references to its own session's files, before the streams are joined: a parent and a
+        # child can each have saved a file of the same name.
+        answer = turn.answer(sources, rewrite=lambda cid, text: aside.rewrite_artifact_refs(
+            text, cid or session_id, kept.get(cid, {})) if session_id else text)
         usage = turn.usage()
     else:
         answer, sources, usage = _from_stdout(_read_text(run.stdout_path))
@@ -300,8 +307,18 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         "empty": not answer.strip() and not sources,
         "exit_code": exit_code,
     }
-    if result_note:
-        result["note"] = result_note
+    notes = [result_note]
+    copied = [str(path) for cid in [None, *turn.children] for path in kept.get(cid, {}).values()]
+    if copied:
+        result["artifacts"] = copied
+        if state in ("completed_with_orphans", "abandoned"):
+            notes.append("the saved files are copies as they were when watching ended")
+    if missing:
+        result["artifacts_missing"] = missing
+        notes.append(f"{len(missing)} saved file{'' if len(missing) == 1 else 's'} could not be copied; "
+                     "artifacts_missing in this result says why")
+    if any(notes):
+        result["note"] = " ".join(filter(None, notes))
     runs.atomic_write_json(run.path / "result.json", result)
     return run.update_meta(
         state=state,
@@ -312,6 +329,39 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         finished_at=time.time(),
         **meta,
     )
+
+
+def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
+                    sources: list[evidence.Source]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
+    """Copy into the run the files this turn's sessions saved, and say which could not be copied.
+
+    A session keeps every turn's saved files together. This turn's are the ones changed since it began and before the session's next turn did; an older one is kept only when an answer names it, as a run collecting an earlier child's late result names what that child saved. A file a later turn changed is no longer the one this turn's answer meant, so it is reported rather than copied. The copies are taken now, so a child still at work, or an abandoned turn, leaves them as they were at this moment.
+    """
+    kept: dict[str | None, dict[str, Path]] = {}
+    missing: list[dict] = []
+    texts = dict(turn.stream_answers(sources))
+    try:
+        for cid in [None, *turn.children]:
+            sid = cid or session_id
+            saved = aside.session_artifacts(sid)
+            named = set(aside.referenced_artifacts(texts.get(cid, ""), sid, [rel for rel, _, _ in saved]))
+            into = run.artifacts_dir / cid if cid else run.artifacts_dir
+            for rel, path, mtime in saved:
+                if turn.next_started_at is not None and mtime >= turn.next_started_at:
+                    if rel in named:
+                        missing.append({"path": str(path), "error": "changed by a later turn"})
+                    continue
+                if mtime < turn.started_at and rel not in named:
+                    continue
+                try:
+                    runs.copy_snapshot(path, into / rel)
+                except OSError as e:
+                    missing.append({"path": str(path), "error": str(e)})
+                    continue
+                kept.setdefault(cid, {})[rel] = into / rel
+    except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
+        missing.append({"path": str(run.artifacts_dir), "error": f"{type(e).__name__}: {e}"})
+    return kept, missing
 
 
 def _from_stdout(stdout: str):

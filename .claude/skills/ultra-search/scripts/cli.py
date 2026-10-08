@@ -234,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
         "A partial snapshot is not a complete investigation.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
@@ -343,6 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
         "negative finding is still an answer.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"

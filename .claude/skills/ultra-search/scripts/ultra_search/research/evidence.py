@@ -7,6 +7,7 @@ one view, so they cannot disagree about which turn and which children are the ru
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ultra_search import aside, runs
@@ -171,6 +172,9 @@ class Turn:
     #: Line index just past the turn's last record once something has ended it -- its `finished`, or a next turn's `started` -- and None while it is open.
     end_line: int | None = None
     events: list[aside.Event] = field(default_factory=list)
+    #: When this turn began, and when the session's next turn did, in seconds; 0.0 and None where the transcript does not say.
+    started_at: float = 0.0
+    next_started_at: float | None = None
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
     child_events: dict[str, list[aside.Event]] = field(default_factory=dict)
@@ -200,18 +204,30 @@ class Turn:
             + [collect_sources(self.child_events[cid]) for cid in self.children]
         )
 
-    def answer(self, sources: list[Source] | None = None) -> str:
-        """The turn's answer, each child's appended under its id.
+    def stream_answers(self, sources: list[Source] | None = None) -> list[tuple[str | None, str]]:
+        """Each stream's answer: the turn's own under None, then each child's that said something, under its id.
 
         Citations resolve against every source of the turn: a parent routinely cites what
         its child read, by the child's id.
         """
         sources = self.sources() if sources is None else sources
-        answer = final_answer(self.events, sources)
+        out: list[tuple[str | None, str]] = [(None, final_answer(self.events, sources))]
         for cid in self.children:
             ctext = final_answer(self.child_events[cid], sources)
             if ctext:
-                answer = f"{answer}\n\n--- child {cid} ---\n{ctext}" if answer else ctext
+                out.append((cid, ctext))
+        return out
+
+    def answer(self, sources: list[Source] | None = None,
+               rewrite: Callable[[str | None, str], str] | None = None) -> str:
+        """The turn's answer, each child's appended under its id. ``rewrite(child id or None, text)`` is applied to each stream's text before they are joined, while it is still known whose text it is."""
+        answer = ""
+        for cid, text in self.stream_answers(sources):
+            text = rewrite(cid, text) if rewrite and text else text
+            if cid is None:
+                answer = text
+            else:
+                answer = f"{answer}\n\n--- child {cid} ---\n{text}" if answer else text
         return answer
 
     def usage(self) -> dict:
@@ -258,10 +274,15 @@ def turn_of(run: runs.Run) -> Turn:
     end = _turn_end(events, start)
     mine = events[_framed(events, start):end]
     children = child_session_ids(mine)
+    stamps = [e.timestamp for e in mine if e.timestamp]
+    later = [] if end is None else [e.timestamp for e in events[end:]
+                                    if e.kind == "lifecycle" and e.lifecycle == "started" and e.timestamp]
     return Turn(
         observed=True,
         start_line=mine[0].index,
         end_line=None if end is None else mine[-1].index + 1,
+        started_at=stamps[0] / 1000 if stamps else 0.0,
+        next_started_at=later[0] / 1000 if later else None,
         events=mine,
         children=children,
         child_events={cid: _from(aside.read_events(run.child_transcript(cid))[0], opened_at)

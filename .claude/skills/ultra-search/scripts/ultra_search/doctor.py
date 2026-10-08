@@ -109,7 +109,7 @@ def doctor(root: Path) -> Reply:
         "notes": [
             # Two things a caller will otherwise learn the expensive way.
             "aside removes old sessions on its own schedule; a run's own copy under the runs dir outlives that",
-            "`stop` ends the watching, not the run -- the daemon keeps working and keeps spending credits",
+            "nothing here cancels a run; its work and its credit use stop only from Aside itself",
         ],
     }
     return Reply(payload, outcome.OK if ok else outcome.ASIDE_UNAVAILABLE)

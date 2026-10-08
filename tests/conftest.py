@@ -12,6 +12,8 @@ import io
 import json
 import os
 import shutil
+import signal
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -74,6 +76,18 @@ def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
+
+
+@pytest.fixture(autouse=True)
+def no_supervisor_left_behind(tmp_path: Path):
+    """A run a test leaves unfinished keeps its detached supervisor watching for up to the idle limit, and nothing in the CLI ends one; the test's own are ended with it."""
+    yield
+    listing = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    for line in listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if "_supervise" in command and str(tmp_path) in command:
+            with contextlib.suppress(OSError):
+                os.kill(int(pid), signal.SIGTERM)
 
 
 @pytest.fixture

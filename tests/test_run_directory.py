@@ -560,24 +560,6 @@ def test_a_turn_without_lifecycle_records_that_ended_on_an_error_failed(
     assert meta["state"] == "failed"
 
 
-def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
-) -> None:
-    """`--timeout` is recorded by the process that starts the run but enforced by the detached
-    supervisor, which cannot be passed an argument -- meta.json is the only link. The reason
-    it records is what tells a later reader this was a deadline and not a `stop`."""
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-    run = start(runs_dir)
-    run.update_meta(watch_timeout=0.6)
-
-    meta = supervise(run, settle=0.2)
-
-    assert meta["state"] == "abandoned"
-    assert meta["reason"] == "watch timeout"
-    assert meta["daemon_run_continues"] is True
-
-
 # --- meta.json ---------------------------------------------------------------------------
 
 
@@ -592,7 +574,7 @@ def test_metadata_round_trips_and_updates_merge(runs_dir: Path) -> None:
 
 
 def test_a_meta_write_is_all_or_nothing(runs_dir: Path) -> None:
-    """`status` may read meta.json at any moment. A value that cannot be serialised fails
+    """`result` may read meta.json at any moment. A value that cannot be serialised fails
     before the file is touched, so a reader sees the old file or the new one."""
     run = runs.create_run(runs_dir, label="x")
     run.write_meta({"state": "running"})
@@ -606,7 +588,7 @@ def test_a_meta_write_is_all_or_nothing(runs_dir: Path) -> None:
 
 
 def test_concurrent_meta_updates_do_not_lose_each_others_keys(runs_dir: Path) -> None:
-    """meta.json is written by the starting CLI, the detached supervisor and `stop`, each
+    """meta.json is written by the starting CLI, the detached supervisor and `result`, each
     doing read-modify-write. Without serialisation the loser's keys vanish."""
     run = runs.create_run(runs_dir, label="race")
     keys = [f"k{i}" for i in range(24)]
@@ -740,30 +722,6 @@ def test_a_copy_that_got_ahead_of_the_cursor_is_not_duplicated(source: Path, tmp
 
     assert dst.read_bytes() == complete
     assert after == full
-
-
-def test_stop_never_overwrites_a_run_that_finished_while_it_waited(runs_dir: Path) -> None:
-    """`stop` asks the supervisor to let go and waits for it. A run that completes in that
-    window has a result; recording it as abandoned would hide that result behind a state
-    that says the work was cut off."""
-    from conftest import run_cli
-
-    run = runs.create_run(runs_dir, label="race")
-    run.update_meta(state="running")
-
-    def supervisor_finishes_first() -> None:
-        while not run.meta().get("stop_requested"):
-            pass
-        run.update_meta(state="completed", finished_at=1.0)
-
-    t = threading.Thread(target=supervisor_finishes_first)
-    t.start()
-    code, payload, _ = run_cli("stop", "--run", run.run_id, "--runs-dir", str(runs_dir))
-    t.join()
-
-    assert code == 0
-    assert run.meta()["state"] == "completed"
-    assert payload["stopped_watching"] == []
 
 
 @pytest.mark.parametrize("ending", ["stopped_empty", "cut_off_mid_tool"])

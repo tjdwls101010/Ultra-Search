@@ -35,16 +35,13 @@ ENDINGS = {
                outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
                outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}",
                outcome.EMPTY: "every run finished with no answer and no sources"},
-    "status": {outcome.OK: "the runs were reported; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
-               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}"},
     "log": {outcome.OK: "the log was read -- not that the research finished or succeeded",
             outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
-    "result": {outcome.OK: "every run has a result; read each run's state", outcome.BAD_ARGUMENTS: _REFUSED,
-               outcome.FAILED: f"a run failed, was abandoned or is still running, or {_UNWRITABLE}",
+    "result": {outcome.OK: "every run has a result, or one is still going and next waits for it; read each run's state",
+               outcome.BAD_ARGUMENTS: _REFUSED,
+               outcome.FAILED: f"a run failed or was abandoned -- next still waits for any still going -- or {_UNWRITABLE}",
                outcome.EMPTY: "every run ended with no answer and no sources"},
     "show": {outcome.OK: "the text was returned", outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
-    "stop": {outcome.OK: "watching stopped where it was going; the daemon's runs continue",
-             outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
     "sessions": {outcome.OK: "sessions were listed", outcome.BAD_ARGUMENTS: _REFUSED,
                  outcome.EMPTY: "no session matched"},
     "fetch": {outcome.OK: "at least one file was written; read each item's status", outcome.BAD_ARGUMENTS: _REFUSED,
@@ -72,12 +69,13 @@ def _exit_lines(command: str) -> str:
 
 
 NEXT_HELP = (
-    "next describes one action: command is the shell command, bash_timeout_ms is the Bash tool timeout it needs, "
-    "and run_in_background says whether to run it in the background. Background is for when something will "
-    "receive its completion notification; with nothing to wake -- a single-turn context -- run the same command "
-    "in the foreground with that bash_timeout_ms. Execute it as returned and use that call's latest next, not a "
-    "saved earlier one. A log response selects another watch with its cursor while work remains, or result "
-    "collection when every target is terminal. Watch expiry does not stop the investigation."
+    "next, while a run is still going, describes one action: command is the shell command, bash_timeout_ms is the "
+    "Bash tool timeout it needs, and run_in_background says whether to run it in the background. Background is for "
+    "when something will receive its completion notification; with nothing to wake -- a single-turn context -- run "
+    "the same command in the foreground with that bash_timeout_ms. Execute it as returned and use that call's latest "
+    "next, not a saved earlier one. It is `result --wait`: it waits for every run to end, printing what they do on "
+    "stderr, and answers with their result -- or, if one is still going when the wait runs out, the same next again. "
+    "A wait ending does not stop the investigation."
 )
 
 
@@ -149,12 +147,10 @@ def _add_runs_dir(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_target(p: argparse.ArgumentParser, *, all_flag: bool = False) -> None:
+def _add_target(p: argparse.ArgumentParser) -> None:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--run", metavar="ID", help="A run id as returned by `search`, or any beginning of one that only that run has.")
     g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`.")
-    if all_flag:
-        g.add_argument("--all", action="store_true", help="Every run still being watched.")
     # No --last flag: with neither --run nor --group this already targets the most recent
     # run's group, and a flag that only restates the default is one more thing to be wrong
     # about.
@@ -194,18 +190,11 @@ def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
 
 
 def _add_exec_opts(p: argparse.ArgumentParser, *, settings: bool = True) -> None:
-    p.add_argument("--label", help="Short name for the run directory, so a later `status` is readable.")
+    p.add_argument("--label", help="Short name for the run directory, so its id reads as what it is about.")
     if settings:
         p.add_argument("--effort", choices=aside.EFFORTS, help="Aside reasoning effort. Default: the account's setting.")
         p.add_argument("--model", help="Aside model id, e.g. openai-codex/gpt-5.6-sol. Default: the account's setting.")
         p.add_argument("--speed", choices=aside.SPEEDS, help="Aside speed setting. Default: the account's setting.")
-    p.add_argument(
-        "--timeout",
-        type=_seconds(positive=True),
-        metavar="SEC",
-        help="Stop WATCHING at this point and mark the run `abandoned`. The daemon-side run keeps going "
-        "and keeps spending credits -- this does not cancel anything. Default: no deadline.",
-    )
     _add_runs_dir(p)
 
 
@@ -235,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
         "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
@@ -268,44 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_wait_opts(r)
     _add_exec_opts(r, settings=False)
 
-    # --- status -------------------------------------------------------------
-    st = sub.add_parser(
-        "status",
-        help="Snapshot of a run: state, idleness, children, usage.",
-        description="One snapshot and exit -- there is no --follow here; `log --follow` is the only watcher. "
-        "Each entry leads with run_id, state, idle_seconds, possibly_stalled and live_children, then label, group, "
-        "session_id, child_ids and usage. idle_seconds counts from the newest write across the run's own output and "
-        "every child session, so a parent that has gone quiet while its children work is visibly not stalled.",
-    )
-    _add_target(st)
-    st.add_argument(
-        "--stall-after",
-        type=_seconds(),
-        default=300.0,
-        metavar="SEC",
-        help="Idle seconds after which possibly_stalled is flagged. This only labels -- nothing is killed "
-        "or transitioned. Default 300.",
-    )
-    _add_runs_dir(st)
-
     # --- log ----------------------------------------------------------------
     lg = sub.add_parser(
         "log",
-        help="Stream a run's events; the only watcher.",
-        description="Print this run's events on stderr as they come, one line each, then one JSON reply on stdout: runs "
-        "(per-run state), cursor and next. With --follow, wait until all targets are terminal or --follow-timeout expires; "
-        "the last stderr lines then say run.<state> for each run that ended, run.still-running for one that has not. "
-        "A resumed run excludes earlier turns and their children.",
-        epilog=NEXT_HELP,
+        help="A run's events, to retrace why it chose a source or came back thin.",
+        description="Print the events of this run's turn on stderr, one line each, then one JSON reply on stdout: runs, "
+        "each run's state. Read once, after the fact or mid-run -- it does not wait; `result --wait` does. A resumed "
+        "run excludes earlier turns and their children.",
     )
     _add_target(lg)
-    lg.add_argument(
-        "--since",
-        default="0",
-        metavar="CURSOR",
-        help="Resume from a previous reply's `cursor`. A run with no children has a byte offset; one with "
-        "children, or a group, a JSON object, since its streams advance independently.",
-    )
     lg.add_argument(
         "--level",
         choices=research.LEVELS,
@@ -316,36 +276,22 @@ def build_parser() -> argparse.ArgumentParser:
         "size, numbered #N for `show --item N`, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
         "characters of each result. raw: the stored records unchanged. Default progress.",
     )
-    lg.add_argument("--follow", action="store_true", help="Keep printing until all targets are terminal or the watching deadline expires.")
-    lg.add_argument(
-        "--follow-timeout",
-        type=_seconds(),
-        default=570.0,
-        metavar="SEC",
-        help="Give up following after this long and print `run.still-running`. Default 570, under the Bash "
-        "tool's 600s ceiling.",
-    )
-    lg.add_argument(
-        "--heartbeat",
-        type=_seconds(positive=True),
-        metavar="SEC",
-        help="With --follow, emit a liveness line every SEC including the number of live children, so a long "
-        "silence is distinguishable from a dead follower.",
-    )
     _add_runs_dir(lg)
 
     # --- result -------------------------------------------------------------
     rs = sub.add_parser(
         "result",
-        help="A finished run's answer and sources.",
-        description="Each run's answer and the sources it opened -- always as a runs list, one entry per run; while a run "
-        "is still going, the reply carries a `next` action for watching it. Results are saved in the runs directory and "
+        help="A run's answer and sources -- waiting for it to end, with --wait.",
+        description="Each run's answer and the sources it opened -- always as a runs list, one entry per run -- waiting "
+        "for them first with --wait; while a run is still going, the reply carries a `next` action that waits for it. "
+        "A run nothing is watching any more -- its supervisor gone or never started -- is settled here as abandoned, "
+        "or with the result its supervisor wrote before it died. Results are saved in the runs directory and "
         "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
         "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
@@ -356,11 +302,20 @@ def build_parser() -> argparse.ArgumentParser:
         "sources come from stdout only.\n"
         "failed: aside exited non-zero, or the turn ended on an error.\n"
         f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
-        "finished, or `stop` or --timeout ended the watch; the daemon's work and its credit use did not.",
+        "finished, or its supervisor is gone; the daemon's work and its credit use did not.",
+        epilog=NEXT_HELP,
     )
     _add_target(rs)
     rs.add_argument("--sources", action="store_true",
                     help="Every source each run touched -- n, url, title, opened -- in place of the answer and the opened ones.")
+    rs.add_argument(
+        "--wait",
+        type=_seconds(),
+        default=0.0,
+        metavar="SEC",
+        help="Wait up to SEC for every run to end, printing what they do on stderr as it happens -- only what happens "
+        "during the wait. Never stops a run. Default 0: answer at once.",
+    )
     _add_runs_dir(rs)
 
     # --- show ---------------------------------------------------------------
@@ -369,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Full text of one source or one tool result.",
         description="The third layer under `result`: the page text Aside already fetched, returned without "
         "fetching anything again. A source is found by its n from `result` or `result --sources`, or by any of its ids; "
-        "a run still going, or stopped, is read from its transcript so far.",
+        "a run still going, or abandoned, is read from its transcript so far.",
     )
     sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
@@ -382,16 +337,6 @@ def build_parser() -> argparse.ArgumentParser:
         "events. `log --level steps` prints each one's N as #N.",
     )
     _add_runs_dir(sh)
-
-    # --- stop ---------------------------------------------------------------
-    sp = sub.add_parser(
-        "stop",
-        help="Stop watching a run and mark it abandoned.",
-        description="Detaches the supervisor and marks the run `abandoned`. THE DAEMON-SIDE RUN CONTINUES "
-        "and keeps spending credits -- the CLI has no way to cancel one. Cancel in the Aside app UI.",
-    )
-    _add_target(sp, all_flag=True)
-    _add_runs_dir(sp)
 
     # --- fetch --------------------------------------------------------------
     f = sub.add_parser(
@@ -558,22 +503,17 @@ def _root(args: argparse.Namespace) -> pathlib.Path:
 def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome.Reply:
     c = args.command
     if c in ("search", "resume"):
-        common = dict(wait=args.wait, background=args.background, label=args.label, timeout=args.timeout, cli=cli)
+        common = dict(wait=args.wait, background=args.background, label=args.label, cli=cli)
         if c == "search":
             return research.search(root, list(args.prompt), effort=args.effort, model=args.model, speed=args.speed,
                                    **common)
         return research.resume(root, args.target, args.prompt, **common)
-    if c == "status":
-        return research.status(root, run=args.run, group=args.group, stall_after=args.stall_after)
     if c == "log":
-        return research.log(root, run=args.run, group=args.group, since=args.since, level=args.level,
-                            follow_=args.follow, follow_timeout=args.follow_timeout, heartbeat=args.heartbeat, cli=cli)
+        return research.log(root, run=args.run, group=args.group, level=args.level)
     if c == "result":
-        return research.result(root, run=args.run, group=args.group, sources=args.sources, cli=cli)
+        return research.result(root, run=args.run, group=args.group, sources=args.sources, wait=args.wait, cli=cli)
     if c == "show":
         return research.show(root, run=args.run, source=args.source, item=args.item)
-    if c == "stop":
-        return research.stop(root, run=args.run, group=args.group, every=args.all)
     if c == "sessions":
         return research.sessions(limit=args.limit, mine=args.mine, search=args.search)
     if c == "fetch":

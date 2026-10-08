@@ -18,3 +18,6 @@ venv/
 
 # Node 변환 의존성
 node_modules/
+
+# graphify 산출물 (추적하지 않는다)
+graphify-out/

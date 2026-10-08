@@ -34,13 +34,13 @@ Leave room for a negative finding when the question allows one. An explicit nega
 
 ## Follow state, not silence
 
-Follow the latest response's `next`: a watcher ending does not mean the investigation finished, let alone succeeded. Run it in the background only when something will receive its completion; a run that ends with its turn -- `claude -p`, a subagent, a scheduled job -- runs `next` in the foreground and collects the result before answering.
+Follow the latest response's `next`: a search that outlasts its wait hands back the command that waits for its result. Run it in the background only when something will receive its completion; a run that ends with its turn -- `claude -p`, a subagent, a scheduled job -- runs `next` in the foreground and collects the result before answering.
 
-Keep supervision cheaper than the work delegated: `status` to judge whether a run is alive, `log` to explain a source choice or an error -- not to replay the investigation.
+`log` explains a source choice or a thin result after the fact; it is not a way to watch.
 
 ## Boundaries that affect the answer
 
-- **Watching is not cancellation.** Nothing in the CLI cancels delegated work or its credit use; only the Aside app does. Bound the objective before starting work you cannot stop here.
+- **Nothing here cancels delegated work.** Only Aside itself stops a run and its credit use; bound the objective before starting work you cannot stop here.
 - **Only acquired content is evidence.** A search source is a lead until the run opened it, and an acquisition that succeeded can still have returned a login wall or bot check, so judge each item's status rather than the command's success. When a claim rests on one page, read what was acquired (`show`, or `fetch` it) before citing it as read.
 - **Partial evidence is not a complete investigation.** The work is done when the question is answered from sourced evidence or the specific gaps are reported -- not when an agent was started or URLs were collected. Report unfinished children and missing sources with the findings instead of turning them into a confident absence.
 - **Requests act as the user.** Their cookies, sessions and browser are in use. Fetch and crawl only what the task needs; being able to reach a private source does not make its contents shareable.

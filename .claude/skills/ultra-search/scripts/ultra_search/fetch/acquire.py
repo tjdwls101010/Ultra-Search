@@ -189,7 +189,7 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     if record and record.get("saved_path"):
         original = Path(record["saved_path"])
         if original.exists():
-            kept = path.with_suffix("." + (record.get("ext") or original.suffix.lstrip(".") or "bin"))
+            kept = path.with_suffix("." + (doc.ext or record.get("ext") or original.suffix.lstrip(".") or "bin"))
             try:
                 kept.write_bytes(original.read_bytes())
                 item["original_path"] = str(kept)

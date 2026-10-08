@@ -193,11 +193,12 @@ def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
 
 
-def _add_exec_opts(p: argparse.ArgumentParser) -> None:
+def _add_exec_opts(p: argparse.ArgumentParser, *, settings: bool = True) -> None:
     p.add_argument("--label", help="Short name for the run directory, so a later `status` is readable.")
-    p.add_argument("--effort", choices=aside.EFFORTS, help="Aside reasoning effort. Default: the account's setting.")
-    p.add_argument("--model", help="Aside model id, e.g. openai-codex/gpt-5.6-sol. Default: the account's setting.")
-    p.add_argument("--speed", choices=aside.SPEEDS, help="Aside speed setting. Default: the account's setting.")
+    if settings:
+        p.add_argument("--effort", choices=aside.EFFORTS, help="Aside reasoning effort. Default: the account's setting.")
+        p.add_argument("--model", help="Aside model id, e.g. openai-codex/gpt-5.6-sol. Default: the account's setting.")
+        p.add_argument("--speed", choices=aside.SPEEDS, help="Aside speed setting. Default: the account's setting.")
     p.add_argument(
         "--timeout",
         type=_seconds(positive=True),
@@ -249,7 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
         "already worked out. Takes a run id from `search` or any session id from `sessions`, so a "
         "conversation started in the Aside app can be picked up here. Creates a new run id recording its "
         "lineage. Refused while the session is still working: attaching to a live one waits for the current "
-        "turn and cannot steer it. The returned run's log and result describe only this new turn. "
+        "turn and cannot steer it. The session keeps its own effort, model and speed; Aside takes none for a "
+        "continued one. The returned run's log and result describe only this new turn. "
         "The follow-up is sent with one more line, as in `search`: \"Read-only research: do not post, purchase, "
         "sign up, or change account settings.\"",
         epilog=NEXT_HELP,
@@ -263,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
     _add_wait_opts(r)
-    _add_exec_opts(r)
+    _add_exec_opts(r, settings=False)
 
     # --- status -------------------------------------------------------------
     st = sub.add_parser(
@@ -553,10 +555,10 @@ def _root(args: argparse.Namespace) -> pathlib.Path:
 def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome.Reply:
     c = args.command
     if c in ("search", "resume"):
-        common = dict(wait=args.wait, background=args.background, label=args.label, effort=args.effort,
-                      model=args.model, speed=args.speed, timeout=args.timeout, cli=cli)
+        common = dict(wait=args.wait, background=args.background, label=args.label, timeout=args.timeout, cli=cli)
         if c == "search":
-            return research.search(root, list(args.prompt), **common)
+            return research.search(root, list(args.prompt), effort=args.effort, model=args.model, speed=args.speed,
+                                   **common)
         return research.resume(root, args.target, args.prompt, **common)
     if c == "status":
         return research.status(root, run=args.run, group=args.group, stall_after=args.stall_after)

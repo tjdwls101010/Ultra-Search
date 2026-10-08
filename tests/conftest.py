@@ -173,10 +173,10 @@ def repl_calls(calls_dir: Path, snippet: str) -> list[dict]:
 
 
 def exec_calls(calls_dir: Path) -> list[list[str]]:
-    """The argv of every `aside exec` the CLI started, in order."""
+    """The argv of every agent turn the CLI started, in order: `aside exec` for a new session, `aside session resume` for an existing one."""
     log = calls_dir / "calls.jsonl"
     rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
-    return [r["argv"] for r in rows if len(r["argv"]) > 1 and r["argv"][1] == "exec"]
+    return [r["argv"] for r in rows if r["argv"][1:2] == ["exec"] or r["argv"][1:3] == ["session", "resume"]]
 
 
 @pytest.fixture

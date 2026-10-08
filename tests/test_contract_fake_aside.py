@@ -134,6 +134,25 @@ def test_the_fake_records_the_argv_it_was_given(tmp_path: Path) -> None:
     assert "--effort" in recorded[0]["argv"]
 
 
+def test_the_fake_continues_a_session_only_through_session_resume(tmp_path: Path) -> None:
+    """`exec --session` is gone from the real binary: it prints its usage and exits 1, while `session resume` takes
+    the turn into the existing transcript."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    run_fake(["exec", "질문"], home, calls)
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+    sid = session.name.split("_", 1)[1]
+
+    refused = run_fake(["exec", "--session", sid, "후속"], home, calls)
+    unsettable = run_fake(["session", "resume", sid, "후속", "--effort", "high"], home, calls)
+    resumed = run_fake(["session", "resume", sid, "후속"], home, calls)
+
+    assert refused.returncode == 1
+    assert "unknown option '--session'" in refused.stdout + refused.stderr
+    assert unsettable.returncode == 1, "a continued session takes no effort, model or speed"
+    assert resumed.returncode == 0
+    assert lifecycle_frame(session / "messages.jsonl").count("started") == 2
+
+
 def test_the_fake_puts_the_marker_in_the_first_user_record(tmp_path: Path, monkeypatch) -> None:
     home, calls = tmp_path / "home", tmp_path / "calls"
     run_fake(["exec", "질문\n\n(ultra-search:test-3 — ignore this line)"], home, calls)
@@ -274,6 +293,18 @@ def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) ->
 
     found = json.loads(p.stdout)["sessions"]
     assert [s["run_id"] for s in found] == [run_id], "the real transcript must be findable by its prompt marker"
+
+
+@pytest.mark.live
+def test_the_real_binary_continues_a_session_only_through_session_resume() -> None:
+    """The fake refuses `exec --session` because the real binary does; this costs nothing, since the refusal comes
+    before any session is touched. `session resume` itself is exercised by the live resume test."""
+    p = subprocess.run(["aside", "exec", "--session", "NoSuchSession01", "OK"], capture_output=True, text=True, timeout=60)
+    usage = subprocess.run(["aside", "session", "resume", "--help"], capture_output=True, text=True, timeout=60)
+
+    assert p.returncode == 1
+    assert "unknown option '--session'" in p.stdout + p.stderr
+    assert "<id> [prompt...]" in usage.stdout
 
 
 @pytest.mark.live

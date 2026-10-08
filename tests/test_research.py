@@ -417,6 +417,20 @@ def test_aside_options_reach_the_command_line(cli, fake_aside: Path) -> None:
         assert argv[argv.index(flag) + 1] == value
 
 
+@pytest.mark.parametrize("option", [("--effort", "high"), ("--model", "openai-codex/gpt-5.6-sol"), ("--speed", "fast")])
+def test_resume_refuses_options_a_continued_session_cannot_take(cli, fake_aside: Path, option: tuple) -> None:
+    """Aside continues a session with the settings it already has: `aside session resume` takes no effort, model or
+    speed. Accepting one here and dropping it would report a setting that never reached the run."""
+    run_id = finished_run_id(cli)
+    started = len(exec_calls(fake_aside))
+
+    code, payload, _ = cli("resume", run_id, "후속 질문", *option)
+
+    assert code == 2
+    assert payload["error"] == "bad_arguments"
+    assert len(exec_calls(fake_aside)) == started
+
+
 def test_a_label_names_the_run_and_cannot_escape_the_registry(cli, runs_dir: Path) -> None:
     _, named, _ = search(cli, "질문", extra=("--label", "python-version"))
     _, hostile, _ = search(cli, "질문", extra=("--label", "../../etc/passwd"))
@@ -1009,7 +1023,8 @@ def test_resume_continues_a_finished_run_in_its_own_session(cli, fake_aside: Pat
     assert status["session_id"] == first_run(first)["session_id"]
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
-    assert argv[argv.index("--session") + 1] == first_run(first)["session_id"]
+    assert argv[1:4] == ["session", "resume", first_run(first)["session_id"]]
+    assert len(argv) == 5 and "ultra-search:" in argv[4], "the prompt alone follows the id: no option reaches a continued session"
 
 
 def test_a_resumed_run_reports_the_new_answer_not_the_previous_one(cli, monkeypatch) -> None:
@@ -1094,7 +1109,8 @@ def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path,
     assert run["state"] == "completed"
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
-    assert argv[argv.index("--session") + 1] == "SimpleSearch00001"
+    assert argv[1:4] == ["session", "resume", "SimpleSearch00001"]
+    assert len(argv) == 5 and "ultra-search:" in argv[4], "the prompt alone follows the id: no option reaches a continued session"
 
 
 def test_resuming_does_not_inherit_the_previous_turns_loose_ends(cli) -> None:

@@ -14,8 +14,11 @@ turn opens with a `turn-lifecycle` `started` record before its prompt, announces
 message with `final-started`, and closes with `finished`. FAKE_ASIDE_FORMAT=legacy writes
 the earlier format, which has none of these records.
 
+A session is continued with `session resume <id> <prompt>`; `exec --session` is refused with
+the usage error the real binary prints, since that binary dropped the option.
+
 FAKE_ASIDE_REPLAY names a JSONL file of transcript records to write after the prompt,
-for `exec` and for a resumed `exec --session` alike; a `{"__sleep__": SEC}` line pauses
+for `exec` and for `session resume` alike; a `{"__sleep__": SEC}` line pauses
 the writer, so a run can be held open at any point of its transcript, a
 `{"__after_exit__": SEC}` line lets the process exit and has the rest written SEC later,
 the way the daemon's last writes can land after `aside exec` has returned, and a record
@@ -451,16 +454,19 @@ def main(argv: list[str]) -> int:
     positionals = [a for a in argv[2:] if not a.startswith("-")]
     flagged = {a for a in argv[2:] if a.startswith("-")}
     if "--version" in flagged or cmd == "--version":
-        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.810.1915"))
+        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.1008.1938"))
         return 0
     if cmd == "exec":
-        # --session <id> consumes the id, which would otherwise look like the prompt.
-        session = None
         if "--session" in argv:
-            i = argv.index("--session")
-            session = argv[i + 1]
-            positionals = [a for a in positionals if a != session]
-        return do_exec(positionals[-1] if positionals else "", session)
+            print("error: unknown option '--session'\n\nUsage: aside exec [options] [prompt...]")
+            return 1
+        return do_exec(positionals[-1] if positionals else "")
+    if cmd == "session" and positionals[:1] == ["resume"] and len(positionals) >= 2:
+        unknown = sorted(flagged - {"--account"})
+        if unknown:
+            print(f"error: unknown option '{unknown[0]}'")
+            return 1
+        return do_exec(positionals[2] if len(positionals) > 2 else "", positionals[1])
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")
     if cmd == "mcp":

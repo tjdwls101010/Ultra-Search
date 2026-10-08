@@ -57,6 +57,23 @@ def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
     assert status["runs"][0]["usage"]["total_tokens"] > 0
 
 
+@pytest.mark.parametrize("url,ext,passage", [
+    ("https://www.scourt.go.kr/sjudge/1625214940201_173540.hwp", ".hwp", "대법관의 일치된 의견으로 주문과 같이 결정한다."),
+    ("https://ccourt.go.kr/common/board/Download.do?bcIdx=941807&cbIdx=1106&streFileNm=20200123090701_cmggokmipgwnxld.hwp",
+     ".hwp", "법익균형성에 위반하여 자기결정권을 침해하는 것으로서 헌법에 위반된다."),
+    ("https://www.mss.go.kr/common/board/Download.do?bcIdx=1069575&cbIdx=310&streFileNm=a37ab8d8-8013-4d42-8ab6-a4b24766ba10.hwpx",
+     ".hwpx", "신청서 제출 관련 책임 동의 | □ 동의 □ 비동의"),
+], ids=["hwp-x-hwp", "hwp-x-msdownload", "hwpx"])
+def test_a_hancom_document_is_fetched_by_the_browser_and_read(tmp_path: Path, url: str, ext: str, passage: str) -> None:
+    """The fake browser runs no JavaScript, so only this shows the snippet passing an HWP served as application/x-hwp or application/x-msdownload, and an HWPX as octet-stream, through to the reader as a file."""
+    code, payload = cli("fetch", url, "--out", str(tmp_path / "out") + "/", "--runs-dir", str(tmp_path))
+
+    item = payload["items"][0]
+    assert code == 0 and item["status"] == "ok", item
+    assert passage in Path(item["path"]).read_text(encoding="utf-8")
+    assert Path(item["original_path"]).suffix == ext
+
+
 def test_a_public_page_is_fetched_and_saved(tmp_path: Path) -> None:
     code, payload = cli("fetch", "https://en.wikipedia.org/wiki/Web_scraping", "--out", str(tmp_path / "pages"))
 

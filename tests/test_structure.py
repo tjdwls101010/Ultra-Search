@@ -29,6 +29,7 @@ KINDS = {
     "doctor": "feature",
     "aside": "system",
     "converter": "system",
+    "hwp": "system",
     "runs": "store",
     "saved": "store",
     "outcome": "helper",
@@ -39,11 +40,12 @@ KINDS = {
 #: Which units each unit may import. A feature built from another feature is an edge named here, never implied.
 ALLOWED = {
     "research": {"aside", "runs", "outcome", "ids"},
-    "fetch": {"aside", "converter", "saved", "outcome", "ids"},
+    "fetch": {"aside", "converter", "hwp", "saved", "outcome", "ids"},
     "site": {"fetch", "aside", "saved", "outcome"},
     "doctor": {"aside", "converter", "runs", "outcome"},
     "aside": {"outcome", "ids"},
     "converter": {"outcome", "ids"},
+    "hwp": {"outcome", "ids"},
     "runs": {"outcome", "ids", "workspace"},
     "saved": {"outcome", "ids", "workspace"},
     "outcome": set(),
@@ -267,6 +269,8 @@ ASIDE_NAMES = ("stopReason", "toolUse", "taskId", "task_id", "cacheRead", "cache
                "webfetch", "websearch", "read_file", "openTab", "closeTab", "\\x1b[", "artifacts/", "sandbox:")
 #: The same for the Node converter, outside `converter/`.
 CONVERTER_NAMES = ("node_modules", "anydoc", "to_markdown.mjs", "npm")
+#: The same for Hancom's formats, outside `hwp/`.
+HWP_NAMES = ("HWP Document File", "hwp+zip", "BodyText", "PrvText", "FileHeader")
 #: An event's stored record and a tool result's own detail are handed out whole, never read: the
 #: raw log level prints the one, `show --item` returns the other.
 OPAQUE_READS = {("ultra_search.research.render", "raw"), ("ultra_search.research.commands", "details")}
@@ -378,6 +382,7 @@ def test_the_format_checkers_catch_a_leak() -> None:
     assert not opaque_reads("x = doc.raw\n", "ultra_search.fetch.acquire")
     assert foreign_names('if e.stop_reason != "toolUse":\n', "x", ASIDE_NAMES)
     assert foreign_names('help="Runs `npm ci`"\n', "x", CONVERTER_NAMES)
+    assert foreign_names('if header.startswith(b"HWP Document File"):\n', "x", HWP_NAMES)
 
 
 # --- the tree ---------------------------------------------------------------------------------------
@@ -446,7 +451,7 @@ def test_only_the_aside_unit_reads_asides_records() -> None:
     assert violations == []
 
 
-def test_asides_and_the_converters_names_stay_in_their_units() -> None:
+def test_asides_the_converters_and_hancoms_names_stay_in_their_units() -> None:
     """The primary guard is the reads above; this catches a name copied into feature code, help
     text included, which a change to the other program would then silently break."""
     violations = []
@@ -457,6 +462,8 @@ def test_asides_and_the_converters_names_stay_in_their_units() -> None:
             violations += foreign_names(text, where, ASIDE_NAMES)
         if not path.is_relative_to(PACKAGE / "converter"):
             violations += foreign_names(text, where, CONVERTER_NAMES)
+        if not path.is_relative_to(PACKAGE / "hwp"):
+            violations += foreign_names(text, where, HWP_NAMES)
     assert violations == []
 
 

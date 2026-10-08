@@ -33,6 +33,7 @@ from conftest import (
     exec_calls,
     run_cli,
     run_cli_streams,
+    subagent_turn,
     tool,
     turn,
     user,
@@ -83,6 +84,17 @@ def status_of(cli, run_id: str) -> dict:
 def saved(entry: dict) -> dict:
     """The whole result a reply points at."""
     return json.loads(Path(entry["result_path"]).read_text(encoding="utf-8"))
+
+
+def follow_next(payload: dict, limit: int = 5) -> dict:
+    """Run each reply's `next` as the shell would, until a reply hands back none: the reply a caller ends with."""
+    for _ in range(limit):
+        if "next" not in payload:
+            return payload
+        done = subprocess.run(payload["next"]["command"], shell=True, capture_output=True, text=True,
+                              timeout=payload["next"]["bash_timeout_ms"] / 1000)
+        payload = json.loads(done.stdout.splitlines()[-1])
+    raise AssertionError(f"still handing back next after {limit} steps: {payload}")
 
 
 def poll(check, timeout: float = 10.0, every: float = 0.2):
@@ -291,6 +303,19 @@ def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch)
     assert code == 0
     assert result["answer"] == "느린 답."
     assert result["sources_total"] > 0
+
+
+def test_a_search_whose_process_exits_mid_turn_hands_back_the_final_answer(cli, replay) -> None:
+    """`aside exec` exited 0 while its subagents were working, and the final answer came 12 seconds later -- past the supervisor's own settle window. Following `next` to the end still has to give the caller that answer, not an empty snapshot with orphans."""
+    replay(subagent_turn(gap=12))
+
+    _, payload, _ = search(cli, "질문", wait="0.5")
+    final = follow_next(payload)
+
+    run = first_run(final)
+    assert final["command"] == "result"
+    assert run["state"] == "completed"
+    assert run["answer"].startswith("최종 답")
 
 
 def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
@@ -991,11 +1016,16 @@ def test_a_citation_to_an_unknown_source_keeps_its_label(cli, replay) -> None:
     assert first_run(payload)["answer"] == "See the release notes for detail."
 
 
-def test_an_unfamiliar_record_or_block_is_kept_and_a_torn_line_is_left_alone(cli, replay) -> None:
+def test_an_unfamiliar_record_or_block_is_kept_and_a_torn_line_is_left_alone(cli, replay, tmp_path: Path) -> None:
     """The transcript is another product's private surface. An unknown role survives as raw,
     an unknown block does not lose the text beside it, and a line still being written is
     not a record yet."""
-    replay(SESSIONS / "2026-08-29_UnknownShape0001" / "messages.jsonl")
+    recorded = (SESSIONS / "2026-08-29_UnknownShape0001" / "messages.jsonl").read_text(encoding="utf-8")
+    whole, torn = recorded.rsplit("\n", 1)
+    # The turn is closed before the torn line, as the daemon closes it: a turn left open is never over.
+    replay_file = tmp_path / "unknown-shape.jsonl"
+    replay_file.write_text(f"{whole}\n{json.dumps(turn('finished'))}\n{torn}", encoding="utf-8")
+    replay(replay_file)
 
     _, payload, _ = search(cli, "질문")
     _, _, text = cli("log", "--run", first_run(payload)["run_id"], "--level", "steps")

@@ -231,3 +231,20 @@ def tool(name: str, content: str, **details: object) -> dict:
 def turn(event: str) -> dict:
     """A `turn-lifecycle` record: the daemon frames every turn with started, final-started, finished."""
     return {"role": "turn-lifecycle", "event": event, "turnId": "t1", "timestamp": 1}
+
+
+def subagent_turn(gap: float) -> list[dict]:
+    """A replay of the run that lost its whole answer: a parent spawns two subagents and waits on them, and `aside exec` exits 0 while both are mid-work. ``gap`` seconds later each child reads its page and finishes, Aside reports it to the parent, and the parent writes its final answer and closes the turn."""
+    kids = ("EarlyExitKid0001", "EarlyExitKid0002")
+    records = [calling(*(("subagent", {"action": "spawn", "description": f"c{i}"}) for i in (1, 2)))]
+    for i, kid in enumerate(kids, 1):
+        records += [{"__session__": kid, **turn("started")}, {"__session__": kid, **user(f"child task {i}")},
+                    {"__session__": kid, **calling(("webfetch", {"url": f"https://kid{i}.test/"}))},
+                    tool("subagent", "spawned", taskId=kid)]
+    records += [calling(("subagent_wait", {})), {"__after_exit__": gap}]
+    for i, kid in enumerate(kids, 1):
+        records += [{"__session__": kid, **tool("webfetch", "page", sources=[{"id": f"k{i}", "url": f"https://kid{i}.test/"}])},
+                    {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer(f"child {i} found it")},
+                    {"__session__": kid, **turn("finished")},
+                    {"role": "system-message", "content": f"Subagent {kid} is done (status: idle, {i}/2 completed)"}]
+    return records + [turn("final-started"), answer("최종 답"), turn("finished")]

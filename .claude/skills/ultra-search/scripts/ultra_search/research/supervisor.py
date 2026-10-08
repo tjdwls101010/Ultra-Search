@@ -1,21 +1,26 @@
-"""The state machine that turns a running `aside exec` into a result on disk.
+"""The state machine that turns a running agent turn into a result on disk.
 
-Deciding a run is over is the whole problem. Three things that look like endings are not:
-silence, because a parent goes quiet for minutes while its subagents work; a killed CLI,
-because the daemon-side run carries on regardless; and a missing session, because the
-transcript is a private surface that may simply not be there. So the only hard signal is
-the process exiting with its stdout drained, and each remaining ambiguity gets its own
-state rather than being rounded to "done":
+Deciding a run is over is the whole problem. Four things that look like endings are not: silence, because a parent goes quiet for minutes while its subagents work; a killed CLI, because the daemon-side run carries on regardless; a missing session, because the transcript is a private surface that may simply not be there; and the process exiting, because `aside exec` has been seen returning 0 mid-turn, with its subagents' results and its final answer still to come. Where the daemon frames turns, the signal is this turn's `finished` record, and each remaining ambiguity gets its own state rather than being rounded to "done":
 
-    completed               process exited, session read, children all terminal
+    completed               this turn finished and every child of it did
     completed_with_orphans  as above, but a child was still writing -- ids reported
-    completed_unstructured  process exited, session never correlated; answer from stdout
-    failed                  non-zero exit
-    abandoned               we stopped watching. THE RUN CONTINUES.
+    completed_unstructured  the session, or this turn in it, never appeared; answer from stdout
+    failed                  a non-zero exit, or a turn that ended on an error
+    abandoned               watching stopped. THE RUN CONTINUES.
 
-Run detached, this writes meta.json continuously so `status` and `log` can read progress
-from a process that has no channel back to them. It is started as `cli.py _supervise <run>`:
-the one entry point, found by the path the caller used to reach it.
+Each poll, the first of these that holds decides:
+
+    W1  the process exited non-zero                               failed
+    W2  this turn has finished                                    wind down, below
+    W3  exited 0, no session found by the discovery deadline      completed_unstructured
+    W4  exited 0, session found, this turn not in it yet          wait the settle window for it, else completed_unstructured
+    W5  exited 0, this turn seen without lifecycle records        the earlier format: settle, then completed or with orphans
+    W6  nothing written for the idle limit, alive or exited 0     abandoned, with what it had by then
+    W7  anything else -- still running, or exited 0 mid-turn      keep watching
+
+Winding down gives the process and this turn's children the settle window to end, ends a process still running after it, and then judges once: a non-zero exit of its own or a last message that stopped on an error is failed, a child still running is completed_with_orphans, anything else completed. The exit code of a process the supervisor ended says nothing about the turn and is not read.
+
+Run detached, this writes meta.json continuously so `status` and `log` can read progress from a process that has no channel back to them. It is started as `cli.py _supervise <run>`: the one entry point, found by the path the caller used to reach it.
 """
 from __future__ import annotations
 
@@ -32,8 +37,11 @@ from ultra_search.research.marker import decorate_prompt, marker_for
 POLL = 2.0
 #: How long to keep looking for the session before giving up and using stdout alone.
 DISCOVERY_DEADLINE = 30.0
-#: After the parent exits, how long a child gets to reach a terminal state.
+#: After the turn ends, how long the process and the turn's children get to end too.
 SETTLE = 10.0
+#: How long a turn may go without a write anywhere it reaches before watching gives up on it.
+# 성진: 무활동 상한은 관측(부모 침묵 74초, 자식은 그동안 기록)에서 넉넉히 잡은 값이다; 자식까지 10분 넘게 조용한 정상 조사는 abandoned로 끊기니, 그런 조사가 실제로 보이면 상한을 올리거나 데몬의 진행 신호를 함께 본다.
+IDLE_LIMIT = 600.0
 
 
 def spawn(cli: str, run_path: str | os.PathLike[str]) -> int:
@@ -70,29 +78,72 @@ def run_detached(run_path: str | os.PathLike[str]) -> None:
         raise
 
 
+class _Watch:
+    """What the supervisor carries from one poll to the next: the session once found, how far each transcript has been copied, and when anything this turn reaches was last written."""
+
+    def __init__(self, run: runs.Run, meta: dict, started: float, discovery_deadline: float) -> None:
+        self.run = run
+        self.marker = meta.get("marker") or marker_for(run.run_id)
+        # A resumed run appends to a session that already exists, so its transcript opens with
+        # the original prompt and the marker never appears in the first line that discovery
+        # reads. The id is already known here -- use it rather than hunting for it.
+        self.session_id: str | None = meta.get("session_id") or meta.get("resume_session_id")
+        self.cursor = int(meta.get("session_cursor") or 0)
+        self.child_cursors: dict[str, int] = dict(meta.get("child_cursors") or {})
+        self.children: list[str] = list(meta.get("children") or [])
+        self.started = started
+        self.discovery_deadline = discovery_deadline
+        self.activity = started
+
+    def sync(self) -> evidence.Turn:
+        """Copy what is new, and return this run's turn as it stands."""
+        if self.session_id is None and time.time() - self.started <= self.discovery_deadline:
+            self.session_id = aside.find_session_by_marker(self.marker)
+            if self.session_id:
+                self.run.update_meta(session_id=self.session_id)
+        if self.session_id is None:
+            self.activity = max(self.activity, self.run.last_write([]))
+            return evidence.Turn(observed=False)
+        src = aside.session_transcript(self.session_id)
+        if src:
+            self.cursor = runs.copy_new_lines(src, self.run.session_transcript, self.cursor)
+        events, _ = aside.read_events(self.run.session_transcript)
+        for cid in evidence.child_session_ids(events):
+            if cid not in self.children:
+                self.children.append(cid)
+        for cid in self.children:
+            child = aside.session_transcript(cid)
+            if child:
+                self.child_cursors[cid] = runs.copy_new_lines(child, self.run.child_transcript(cid),
+                                                              self.child_cursors.get(cid, 0))
+        turn = evidence.turn_of(self.run)
+        # This turn's children only: a resumed session's earlier children can still be writing,
+        # and that is no sign this turn is alive.
+        self.activity = max(self.activity, aside.last_activity(self.session_id, turn.children),
+                            self.run.last_write(turn.children))
+        self.run.update_meta(session_cursor=self.cursor, children=self.children, child_cursors=self.child_cursors,
+                             last_activity_at=self.activity)
+        return turn
+
+
 def supervise(
     run: runs.Run,
     *,
     poll: float = POLL,
     discovery_deadline: float = DISCOVERY_DEADLINE,
     settle: float = SETTLE,
+    idle_limit: float = IDLE_LIMIT,
     timeout: float | None = None,
 ) -> dict:
     meta = run.meta()
     prompt = meta.get("prompt") or ""
-    marker = meta.get("marker") or marker_for(run.run_id)
     if timeout is None and meta.get("watch_timeout") is not None:
         # `--timeout` is recorded by the CLI that started the run; the supervisor is a
         # separate process with no way to be passed it, so it is read back from disk here.
         timeout = float(meta["watch_timeout"])
 
-    # A resumed run appends to a session that already exists, so its transcript opens with
-    # the original prompt and the marker never appears in the first line that discovery
-    # reads. The id is already known here -- use it rather than hunting for it.
-    session_id: str | None = meta.get("session_id") or meta.get("resume_session_id")
-
     proc = aside.start_exec(
-        decorate_prompt(prompt, marker),
+        decorate_prompt(prompt, meta.get("marker") or marker_for(run.run_id)),
         stdout_path=run.stdout_path,
         session=meta.get("resume_session_id"),
         effort=meta.get("effort"),
@@ -100,100 +151,92 @@ def supervise(
         speed=meta.get("speed"),
     )
     started = time.time()
+    watch = _Watch(run, meta, started, discovery_deadline)
     opening = {"state": "running", "pid": proc.pid, "supervisor_pid": os.getpid(),
                "started_at": started, "argv": list(proc.args)}
-    if session_id:
-        opening["session_id"] = session_id
+    if watch.session_id:
+        opening["session_id"] = watch.session_id
     run.update_meta(**opening)
 
-    cursor = int(meta.get("session_cursor") or 0)
-    child_cursors: dict[str, int] = dict(meta.get("child_cursors") or {})
-    children: list[str] = list(meta.get("children") or [])
     exit_code: int | None = None
-
+    exited_at = 0.0
     while True:
+        turn = watch.sync()
+        if exit_code is None:
+            exit_code = proc.poll()
+            exited_at = time.time()
         now = time.time()
         if _stop_requested(run):
             return _abandon(run, "stop requested", proc)
         if timeout is not None and now - started >= timeout:
             return _abandon(run, "watch timeout", proc)
 
-        if session_id is None and now - started <= discovery_deadline:
-            session_id = aside.find_session_by_marker(marker)
-            if session_id:
-                run.update_meta(session_id=session_id)
+        if exit_code not in (None, 0):                                            # W1
+            return _finish(run, watch.session_id, turn, "failed", exit_code, turn.unfinished_children())
+        if turn.finished:                                                         # W2
+            return _wind_down(run, watch, proc, exit_code, poll=poll, settle=settle)
+        if exit_code == 0:
+            if watch.session_id is None:
+                if now - started > discovery_deadline:                            # W3
+                    return _finish(run, None, turn, "completed_unstructured", exit_code, [])
+            elif not turn.observed:                                               # W4
+                # On a resumed session the message already there is the previous turn's answer, so a turn not
+                # seen yet is waited for, never read as this one.
+                if now - exited_at >= settle:
+                    return _finish(run, watch.session_id, turn, "completed_unstructured", exit_code, [])
+                time.sleep(min(poll, 0.2))
+                continue
+            elif not turn.framed:                                                 # W5
+                # The process exiting does not mean its last message has landed: wait for an answer as well as
+                # for the children, within the settle window.
+                orphans = turn.unfinished_children()
+                if (evidence.has_terminal_answer(turn.events) and not orphans) or now - exited_at >= settle:
+                    state = "completed_with_orphans" if orphans else "completed"
+                    return _finish(run, watch.session_id, turn, state, exit_code, orphans)
+                time.sleep(min(poll, 0.2))
+                continue
+        if now - watch.activity >= idle_limit:                                    # W6
+            return _abandon_quiet(run, watch, turn, proc, exit_code, idle_limit)
+        time.sleep(poll)                                                          # W7
 
-        if session_id:
-            cursor, children, child_cursors = _sync(run, session_id, cursor, children, child_cursors)
 
-        exit_code = proc.poll()
-        if exit_code is not None:
-            break
-        time.sleep(poll)
-
-    # The process is gone, but its last writes may not have landed yet. Drain, then
-    # give children a bounded window: a child that finishes here is a clean completion,
-    # one that does not is reported by id rather than quietly ignored.
+def _wind_down(run: runs.Run, watch: _Watch, proc, exit_code: int | None, *, poll: float, settle: float) -> dict:
+    """This turn has finished: give the process and the turn's children the settle window, then judge once."""
     deadline = time.time() + settle
-    orphans: list[str] = []
     while True:
-        if session_id is None and time.time() - started <= discovery_deadline:
-            session_id = aside.find_session_by_marker(marker)
-            if session_id:
-                run.update_meta(session_id=session_id)
-        if session_id:
-            cursor, children, child_cursors = _sync(run, session_id, cursor, children, child_cursors)
-            turn = evidence.turn_of(run)
-            orphans = [c for c in turn.children if not evidence.child_is_terminal(turn.child_events[c])]
-            # Both conditions, not just the children. The process exiting does not mean the
-            # last message has been flushed, and on a resumed session the message that is
-            # already there is the previous turn's answer -- which is why an unobserved turn
-            # is waited for rather than read as this one.
-            if turn.observed and evidence.has_terminal_answer(turn.events) and not orphans:
-                break
-        if time.time() >= deadline:
+        turn = watch.sync()
+        if exit_code is None:
+            exit_code = proc.poll()
+        orphans = turn.unfinished_children()
+        if (exit_code is not None and not orphans) or time.time() >= deadline:
             break
         time.sleep(min(poll, 0.2))
-
-    return _finish(run, session_id, exit_code, orphans)
-
-
-def _sync(run, session_id, cursor, children, child_cursors):
-    src = aside.session_transcript(session_id)
-    if src:
-        cursor = runs.copy_new_lines(src, run.session_transcript, cursor)
-    events, _ = aside.read_events(run.session_transcript)
-    for cid in evidence.child_session_ids(events):
-        if cid not in children:
-            children.append(cid)
-    for cid in children:
-        child = aside.session_transcript(cid)
-        if child:
-            child_cursors[cid] = runs.copy_new_lines(child, run.child_transcript(cid), child_cursors.get(cid, 0))
-    run.update_meta(
-        session_cursor=cursor,
-        children=children,
-        child_cursors=child_cursors,
-        last_activity_at=_activity(run, session_id, children),
-    )
-    return cursor, children, child_cursors
-
-
-def _activity(run, session_id, children) -> float:
-    """Newest write anywhere this run touches: its own files, and Aside's session directories."""
-    theirs = aside.last_activity(session_id, children) if session_id else 0.0
-    return max(theirs, run.last_write())
+    ended_by_us = exit_code is None
+    if ended_by_us:
+        _terminate(proc)
+    if exit_code not in (None, 0) or turn.ended_on_error():
+        state = "failed"
+    elif orphans:
+        state = "completed_with_orphans"
+    else:
+        state = "completed"
+    extra = {"terminated_by_supervisor": True} if ended_by_us else {}
+    return _finish(run, watch.session_id, turn, state, exit_code, orphans, **extra)
 
 
 def _stop_requested(run: runs.Run) -> bool:
     return bool(run.meta().get("stop_requested"))
 
 
-def _abandon(run: runs.Run, reason: str, proc) -> dict:
+def _terminate(proc) -> None:
     try:
         proc.terminate()
     except OSError:
         pass
+
+
+def _abandon(run: runs.Run, reason: str, proc) -> dict:
+    _terminate(proc)
     return run.update_meta(
         state="abandoned",
         reason=reason,
@@ -205,31 +248,36 @@ def _abandon(run: runs.Run, reason: str, proc) -> dict:
     )
 
 
-def _finish(run, session_id, exit_code, orphans) -> dict:
-    stdout = _read_text(run.stdout_path)
+def _abandon_quiet(run: runs.Run, watch: _Watch, turn: evidence.Turn, proc, exit_code: int | None,
+                   idle_limit: float) -> dict:
+    """Nothing this turn reaches has been written for the idle limit: keep what it had, and stop watching."""
+    _terminate(proc)
+    return _finish(
+        run, watch.session_id, turn, "abandoned", exit_code, turn.unfinished_children(),
+        result_note=f"nothing was written for {idle_limit:g}s before the turn finished; this is what it had by then",
+        reason="the turn went quiet before it finished",
+        daemon_run_continues=True,
+        note="the daemon-side run keeps going and keeps spending credits; cancel it in the Aside app",
+    )
+
+
+def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: str, exit_code: int | None,
+            orphans: list[str], *, result_note: str | None = None, **meta: object) -> dict:
+    """Write result.json from this turn -- or, where it was never seen, from stdout -- and then the ending to meta.json."""
     # This turn only. A resumed session's earlier turns are context, not results, and
     # counting them again would attribute the previous answer, its sources and its tokens
     # to this run -- and strictly this turn's children, for the same reason.
-    turn = evidence.turn_of(run) if session_id else evidence.Turn(observed=False)
-    children: list[str] = turn.children
-
     if turn.observed:
         sources = turn.sources()
         answer = turn.answer(sources)
         usage = turn.usage()
-        structured = True
     else:
-        answer, sources, usage, structured = _from_stdout(stdout)
-
-    if exit_code not in (0, None):
-        state = "failed"
-    elif not structured:
-        state = "completed_unstructured"
-    elif orphans:
-        state = "completed_with_orphans"
-    else:
-        state = "completed"
-
+        answer, sources, usage = _from_stdout(_read_text(run.stdout_path))
+        result_note = result_note or (
+            "this run's turn never appeared in the session transcript; answer and sources come from stdout only"
+            if session_id else
+            "the session transcript was never found; answer and sources come from stdout only"
+        )
     result = {
         "run_id": run.run_id,
         "state": state,
@@ -239,25 +287,22 @@ def _finish(run, session_id, exit_code, orphans) -> dict:
             for s in sources
         ],
         "usage": usage,
-        "children": children,
+        "children": turn.children,
         "orphan_children": orphans,
         "empty": not answer.strip() and not sources,
         "exit_code": exit_code,
     }
-    if not structured:
-        result["note"] = (
-            "this run's turn never appeared in the session transcript; answer and sources come from stdout only"
-            if session_id else
-            "the session transcript was never found; answer and sources come from stdout only"
-        )
+    if result_note:
+        result["note"] = result_note
     runs.atomic_write_json(run.path / "result.json", result)
     return run.update_meta(
         state=state,
         exit_code=exit_code,
         orphan_children=orphans,
-        children=children,
+        children=turn.children,
         empty=result["empty"],
         finished_at=time.time(),
+        **meta,
     )
 
 
@@ -270,7 +315,7 @@ def _from_stdout(stdout: str):
     """
     answer, urls = aside.parse_exec_output(stdout)
     sources = [evidence.Source(url=u, opened=False) for u in urls]
-    return answer, sources, evidence.total_usage([]), False
+    return answer, sources, evidence.total_usage([])
 
 
 def _read_text(p: Path) -> str:

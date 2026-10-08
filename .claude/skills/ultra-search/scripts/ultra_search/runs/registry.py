@@ -54,14 +54,15 @@ class Run:
         except OSError:
             return []
 
-    def last_write(self) -> float:
-        """Newest write among the files the run itself keeps: stdout and every transcript copy.
+    def last_write(self, children: list[str] | None = None) -> float:
+        """Newest write among the files the run itself keeps: stdout, the session copy, and the copies of ``children`` -- every child's when None.
 
         A parent that spawned subagents goes silent while they work, so the children's
         copies count -- measuring only the parent would call that silence a stall.
         """
+        copies = self.child_transcripts() if children is None else [self.child_transcript(c) for c in children]
         newest = 0.0
-        for p in [self.stdout_path, self.session_transcript, *self.child_transcripts()]:
+        for p in [self.stdout_path, self.session_transcript, *copies]:
             try:
                 newest = max(newest, p.stat().st_mtime)
             except OSError:

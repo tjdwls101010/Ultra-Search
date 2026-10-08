@@ -234,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
         "A partial snapshot is not a complete investigation.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
@@ -343,17 +344,19 @@ def build_parser() -> argparse.ArgumentParser:
         "negative finding is still an answer.\n"
         "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in `status`. A run with no result yet has only run_id, state, empty and a note.\n"
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
-        "completed: the process exited, its session was read, and every child finished.\n"
+        "completed: this run's turn finished in its session, and every child of it finished.\n"
         "completed_with_orphans: as completed, but orphan_children were still running -- a saved snapshot; their "
         "late results are not collected.\n"
         "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
         "sources come from stdout only.\n"
-        "failed: aside exited non-zero.\n"
-        "abandoned: watching stopped -- the daemon's work and its credit use did not.",
+        "failed: aside exited non-zero, or the turn ended on an error.\n"
+        f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
+        "finished, or `stop` or --timeout ended the watch; the daemon's work and its credit use did not.",
     )
     _add_target(rs)
     rs.add_argument("--sources", action="store_true",

@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from ultra_search.aside.transcript import read_events, turn_finished
 
@@ -236,3 +239,70 @@ def session_summaries(limit: int = 30) -> list[dict]:
             }
         )
     return out
+
+
+# --- the files the agent saved ------------------------------------------------------------
+
+
+def session_artifacts(session_id: str) -> list[tuple[str, Path, float]]:
+    """The files the agent saved in a session's `artifacts/` folder, at any depth, by path: (path within that folder, path, modification time).
+
+    Regular files inside the folder only, and nothing when the folder itself is a link: a link can name any file on this machine, and what is listed here is copied out of Aside's directory.
+    """
+    d = _session_dir(session_id)
+    if d is None:
+        return []
+    folder = d / "artifacts"
+    try:
+        if not stat.S_ISDIR(folder.lstat().st_mode):
+            return []
+        base = folder.resolve(strict=True)
+    except OSError:
+        return []
+    out = []
+    for parent, _, names in os.walk(folder):  # a linked folder is listed, never entered
+        for name in names:
+            path = Path(parent) / name
+            try:
+                st = path.lstat()
+                inside = path.resolve(strict=True).is_relative_to(base)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and inside:
+                out.append((path.relative_to(folder).as_posix(), path, st.st_mtime))
+    return sorted(out)
+
+
+#: Where a path in an answer can start: the start of a line, after a space, or after the bracket or quote around a link.
+_PATH_START = r"""(?:^|(?<=[\s(<\[{"'`]))"""
+#: A name followed by any of these is the start of a longer name -- `.bak`, `%20copy`, a letter, a slash -- and a different file. Hangul is not among them: in Korean prose a particle follows the path directly.
+_NAME_GOES_ON = r"(?![A-Za-z0-9_/\\%-]|\.\w)"
+
+
+def _ref(session_id: str, rel: str, *, absolute_only: bool) -> re.Pattern[str]:
+    """Every way an answer names the saved file ``rel``: relative to its session, as the agent links its own files (`artifacts/<rel>`), or by the session's absolute path, bare or behind `sandbox:` or `file://`; each with the name as saved, its spaces as `%20`, or all of it percent-encoded.
+
+    A relative path means the folder of the session that wrote it, so ``absolute_only`` is for reading another session's answer. A path inside a URL, or one whose folder is not this session's, is not this file.
+    """
+    names = "|".join(re.escape(n) for n in sorted({rel, rel.replace(" ", "%20"), quote(rel)}, key=len, reverse=True))
+    forms = [] if absolute_only else [rf"{_PATH_START}(?:\./)?artifacts/(?:{names})"]
+    d = _session_dir(session_id)
+    if d is not None:
+        folder = str(d / "artifacts")
+        roots = "|".join(re.escape(r) for r in sorted({folder, folder.replace(" ", "%20"), quote(folder)}, key=len, reverse=True))
+        forms.insert(0, rf"{_PATH_START}(?:sandbox:|file://)?(?:{roots})/(?:{names})")
+    return re.compile(rf"(?:{'|'.join(forms) or '(?!)'}){_NAME_GOES_ON}", re.M)
+
+
+def referenced_artifacts(text: str, session_id: str, rels: list[str], *, absolute_only: bool = False) -> list[str]:
+    """Which of the session's saved files ``text`` names, in the order given; by absolute path only, with ``absolute_only``, for text another session wrote."""
+    return [rel for rel in rels if _ref(session_id, rel, absolute_only=absolute_only).search(text)]
+
+
+def rewrite_artifact_refs(text: str, session_id: str, copies: dict[str, str | os.PathLike[str]], *,
+                          absolute_only: bool = False) -> str:
+    """``text`` with each saved file it names -- ``copies`` maps a path within the session's `artifacts/` to where a copy of the file now is -- naming that copy instead, as a plain path a reader can open; by absolute path only, with ``absolute_only``, for text another session wrote."""
+    for rel in sorted(copies, key=len, reverse=True):
+        target = str(copies[rel])
+        text = _ref(session_id, rel, absolute_only=absolute_only).sub(lambda _: target, text)
+    return text

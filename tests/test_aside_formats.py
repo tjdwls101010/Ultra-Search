@@ -200,6 +200,81 @@ def test_a_session_that_finished_its_last_turn_is_not_busy(home: Path) -> None:
     assert aside.session_busy("0lt6LxEfzahYuKsc") is None
 
 
+# --- the files the agent saved -------------------------------------------------------------------
+
+PARENT_ID = "0lt6LxEfzahYuKsc"
+SAVED = ("KSOI_20260916.pdf", "같은 죽음 다른 결론.pptx", "개인정보 영향평가 수행안내서(2025.10_12월수정).pdf", "tmp/bohun_rfp.hwpx")
+
+
+@pytest.fixture
+def saved(home: Path) -> Path:
+    """A session's `artifacts/` as the daemon leaves it -- names with spaces, parentheses and Korean, a subfolder -- plus links a careless copy would follow out of it."""
+    folder = home / f"2026-10-02_{PARENT_ID}" / "artifacts"
+    (folder / "tmp").mkdir(parents=True)
+    for rel in SAVED:
+        (folder / rel).write_bytes(rel.encode())
+    outside = home.parent / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not the agent's")
+    (folder / "linked.txt").symlink_to(outside / "secret.txt")
+    (folder / "linked-folder").symlink_to(outside)
+    (folder / "inside-link.pdf").symlink_to(folder / "KSOI_20260916.pdf")
+    return folder
+
+
+def test_the_saved_files_are_listed_at_any_depth_and_links_are_not(saved: Path) -> None:
+    listed = aside.session_artifacts(PARENT_ID)
+
+    assert [rel for rel, _, _ in listed] == sorted(SAVED)
+    assert all(path == saved / rel and mtime == path.stat().st_mtime for rel, path, mtime in listed)
+    assert aside.session_artifacts("ZFgNUcNIKq1MWMz4") == [], "a session that saved nothing"
+    assert aside.session_artifacts("NoSuchSession01") == []
+
+
+def test_every_way_an_answer_names_a_saved_file_points_at_its_copy(saved: Path) -> None:
+    """The forms are the ones real answers used: a link or an image relative to the session, and the session's absolute path behind `sandbox:` with its spaces encoded."""
+    copies = {rel: f"/runs/r/artifacts/{rel}" for rel in SAVED}
+    text = (f"[다운로드한 원문 PDF](artifacts/KSOI_20260916.pdf) · ![받은 파일](artifacts/tmp/bohun_rfp.hwpx)\n"
+            f"[PPTX 파일 받기](sandbox:{saved}/같은%20죽음%20다른%20결론.pptx)\n"
+            f"{saved}/개인정보 영향평가 수행안내서(2025.10_12월수정).pdf, 그리고 원문은 artifacts/KSOI_20260916.pdf.")
+
+    got = aside.rewrite_artifact_refs(text, PARENT_ID, copies)
+
+    assert got == ("[다운로드한 원문 PDF](/runs/r/artifacts/KSOI_20260916.pdf) · ![받은 파일](/runs/r/artifacts/tmp/bohun_rfp.hwpx)\n"
+                   "[PPTX 파일 받기](/runs/r/artifacts/같은 죽음 다른 결론.pptx)\n"
+                   "/runs/r/artifacts/개인정보 영향평가 수행안내서(2025.10_12월수정).pdf, 그리고 원문은 /runs/r/artifacts/KSOI_20260916.pdf.")
+    assert aside.referenced_artifacts(text, PARENT_ID, list(SAVED)) == list(SAVED)
+
+
+def test_a_name_that_only_looks_like_a_saved_file_is_left_alone(saved: Path) -> None:
+    """Another session's file, a longer name, a path inside a URL, and a file this session did not save are not this file."""
+    text = ("/Users/x/.aside/u/0/sessions/2026-10-01_SomeOtherSession/artifacts/KSOI_20260916.pdf, "
+            "artifacts/KSOI_20260916.pdf.bak, artifacts/KSOI_20260916.pdf%20backup, myartifacts/KSOI_20260916.pdf, "
+            "https://x.test/?file=artifacts/KSOI_20260916.pdf, artifacts/unknown.pdf")
+
+    assert aside.rewrite_artifact_refs(text, PARENT_ID, {"KSOI_20260916.pdf": "/copy.pdf"}) == text
+    assert aside.referenced_artifacts(text, PARENT_ID, ["KSOI_20260916.pdf"]) == []
+
+
+def test_another_sessions_answer_names_a_file_only_by_its_absolute_path(saved: Path) -> None:
+    """A relative `artifacts/` path means the folder of the session that wrote it, so read from another session's answer only the absolute form names this session's file."""
+    text = f"[부모가 받은 것](artifacts/KSOI_20260916.pdf) [자식이 받은 것]({saved}/tmp/bohun_rfp.hwpx)"
+    copies = {"KSOI_20260916.pdf": "/copy/a.pdf", "tmp/bohun_rfp.hwpx": "/copy/b.hwpx"}
+
+    assert aside.rewrite_artifact_refs(text, PARENT_ID, copies, absolute_only=True) == \
+        "[부모가 받은 것](artifacts/KSOI_20260916.pdf) [자식이 받은 것](/copy/b.hwpx)"
+    assert aside.referenced_artifacts(text, PARENT_ID, list(copies), absolute_only=True) == ["tmp/bohun_rfp.hwpx"]
+
+
+def test_a_linked_artifacts_folder_is_not_read(home: Path, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.txt").write_text("not the agent's")
+    (home / f"2026-10-02_{PARENT_ID}" / "artifacts").symlink_to(elsewhere)
+
+    assert aside.session_artifacts(PARENT_ID) == []
+
+
 # --- what `aside exec` printed -------------------------------------------------------------------
 
 

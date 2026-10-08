@@ -232,7 +232,7 @@ def _saved_result(run: runs.Run) -> dict | None:
 def _run_entry(run: runs.Run, *, sources: bool = False) -> dict:
     """One run as search, resume and result report it: the summary that decides what to do
     next, then the answer and the sources it opened -- or, with ``sources``, every source --
-    then where the whole result is saved.
+    then the copies of the files its agent saved, then where the whole result is saved.
 
     Sources are numbered by their place in the saved result, the numbering `show --source`
     uses, so an opened source keeps its number among all of them.
@@ -263,6 +263,8 @@ def _run_entry(run: runs.Run, *, sources: bool = False) -> dict:
         entry["answer"] = saved.get("answer", "")
         entry["opened_sources"] = [{"n": n, "url": s.get("url"), "title": s.get("title") or ""}
                                    for n, s in numbered if s.get("opened")]
+    if saved.get("artifacts"):
+        entry["artifacts"] = saved["artifacts"]
     entry["result_path"] = str(run.path / "result.json")
     return entry
 

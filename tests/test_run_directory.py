@@ -10,6 +10,7 @@ shrinks, vanishes or is still being written.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -344,6 +345,219 @@ def test_a_turn_ends_at_its_own_finished_record(runs_dir: Path, aside_home: Path
 
     assert meta["state"] == "completed"
     assert result_of(run)["answer"] == "내 턴의 답"
+
+
+# --- the files the agent saved ------------------------------------------------------------
+
+
+def test_a_resumed_run_keeps_its_turns_files_and_the_earlier_ones_its_answer_names(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A session's `artifacts/` holds every turn's files. This run's are the ones made in its turn, and an earlier one only when its answer names it -- the way a run that collects an earlier child's late result points at what that child saved."""
+    d = aside_session(aside_home, "ParentWithFiles1", user("old-prompt"), answer("old answer"))
+    for name in ("old-named.pdf", "old-unnamed.pdf"):
+        (d / "artifacts").mkdir(exist_ok=True)
+        (d / "artifacts" / name).write_text(name)
+        os.utime(d / "artifacts" / name, (1_700_000_000, 1_700_000_000))
+    replay([{"__artifact__": "new.pdf", "text": "new"},
+            answer("[이전 파일](artifacts/old-named.pdf) [새 파일](artifacts/new.pdf)")])
+    run = start(runs_dir, "후속")
+    run.update_meta(resume_session_id="ParentWithFiles1")
+
+    supervise(run, settle=0.3)
+
+    copies = run.path / "artifacts" / "ParentWithFiles1"
+    assert sorted(result_of(run)["artifacts"]) == [str(copies / "new.pdf"), str(copies / "old-named.pdf")]
+    assert result_of(run)["answer"] == f"[이전 파일]({copies / 'old-named.pdf'}) [새 파일]({copies / 'new.pdf'})"
+
+
+def test_a_file_a_later_turn_rewrote_is_not_passed_off_as_this_runs(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The session went on to a next turn that saved over a file this run's answer names. The file on disk is now the next turn's, so it is reported missing, not copied; the answer keeps naming the original."""
+    replay([{"__artifact__": "a.txt", "text": "mine"}, {"__artifact__": "b.txt", "text": "only mine"},
+            turn("final-started"), answer("[a](artifacts/a.txt) [b](artifacts/b.txt)"), turn("finished"),
+            {"__sleep__": 0.05}, {**turn("started"), "timestamp": "__NOW__"}, user("다음 질문"), {"__sleep__": 0.05},
+            {"__artifact__": "a.txt", "text": "the next turn's"}])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=2.0)
+
+    result = result_of(run)
+    (copies,) = (run.path / "artifacts").iterdir()
+    assert meta["state"] == "completed"
+    assert result["artifacts"] == [str(copies / "b.txt")]
+    assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.txt", "changed after a later turn began")]
+    assert result["answer"] == f"[a](artifacts/a.txt) [b]({copies / 'b.txt'})"
+    assert "1 saved file" in result["note"]
+
+
+WRITER = """
+import sys, time
+from pathlib import Path
+target, stop = Path(sys.argv[1]), Path(sys.argv[2])
+until = time.time() + 30
+while not stop.exists() and time.time() < until:
+    if target.exists():
+        with target.open("a") as f:
+            f.write("x" * 8192)
+    time.sleep(0.001)
+"""
+
+
+def test_every_task_a_turn_gave_a_child_is_the_runs(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
+    """A parent can give the same child a second task within one turn. Both tasks' files are this run's, and its answer is the second task's -- a child's part ends only at a task the session's next turn gave it."""
+    kid = "TwoTaskChild0001"
+
+    def task(n: int) -> list[dict]:
+        return [{"__session__": kid, **turn("started"), "timestamp": "__NOW__"}, {"__session__": kid, **user(f"task {n}")},
+                {"__session__": kid, "__artifact__": f"task{n}.txt", "text": f"from task {n}"},
+                {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer(f"task {n} done")},
+                {"__session__": kid, **turn("finished"), "timestamp": "__NOW__"}, {"__sleep__": 0.05}]
+
+    replay([calling(("subagent", {"action": "spawn", "description": "c1"})), *task(1),
+            tool("subagent", "spawned", taskId=kid), *task(2), tool("subagent", "continued", taskId=kid),
+            answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    result = result_of(run)
+    assert meta["state"] == "completed"
+    assert sorted(Path(p).name for p in result["artifacts"]) == ["task1.txt", "task2.txt"]
+    assert result["answer"].endswith(f"--- child {kid} ---\ntask 2 done")
+
+
+def test_a_childs_task_from_the_next_turn_does_not_hide_the_one_this_run_collected(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A resumed run collects an earlier child's late result, and the session has already gone on to a next turn that gave the same child a new task. That newer task is not this run's part of the child, however recent it is."""
+    aside_session(aside_home, "ParentLateKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="LateKidNextTask1"), answer("partial"))
+    aside_session(aside_home, "LateKidNextTask1", {**turn("started"), "timestamp": 1_000}, {**user("task"), "timestamp": 1_000},
+                  {**answer("late child answer"), "timestamp": 3_000}, {**turn("finished"), "timestamp": 3_000},
+                  {**turn("started"), "timestamp": 9_999_999_999_999}, {**user("다음 턴의 과제"), "timestamp": 9_999_999_999_999})
+    replay([tool("subagent_wait", "done", results=[{"taskId": "LateKidNextTask1"}]), turn("final-started"),
+            answer("collected"), turn("finished"), {**turn("started"), "timestamp": "__NOW__"}, user("다음 질문")])
+    run = start(runs_dir, "wait for it")
+    run.update_meta(resume_session_id="ParentLateKid001")
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed"
+    assert "late child answer" in result_of(run)["answer"]
+
+
+def test_a_file_still_being_written_is_reported_not_torn(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, tmp_path: Path
+) -> None:
+    """A child still at work can be writing a file while the run's copies are taken. A copy that is half of it would pass for the file, so it is tried once more and then reported; the run and its other files are unaffected."""
+    writing = tmp_path / "writer-is-writing"
+    replay([{"__artifact__": "growing.log", "text": ""}, {"__artifact__": "stable.txt", "text": "ok"},
+            {"__wait_for__": str(writing)}, answer("[로그](artifacts/growing.log) [파일](artifacts/stable.txt)")])
+    stop = tmp_path / "stop-writing"
+    sessions = aside_home / "u" / "0" / "sessions"
+    before = set(sessions.iterdir())
+    run = start(runs_dir)
+    writer = None
+
+    def launch() -> None:
+        # The turn is held open until the file is 20 MB, so each copy attempt takes long enough to span several of
+        # the writer's appends -- one every millisecond -- and the writer is still going when the copies are taken.
+        nonlocal writer
+        until = time.time() + 30
+        while time.time() < until:
+            new = [d / "artifacts" / "growing.log" for d in set(sessions.iterdir()) - before]
+            if writer is None and new and new[0].exists():
+                writer = subprocess.Popen([sys.executable, "-c", WRITER, str(new[0]), str(stop)])
+            if new and new[0].exists() and new[0].stat().st_size > 20 << 20:
+                writing.touch()
+                return
+            time.sleep(0.01)
+
+    watcher = threading.Thread(target=launch)
+    watcher.start()
+    try:
+        meta = supervise(run, settle=0.3)
+    finally:
+        watcher.join()
+        stop.touch()
+        if writer:
+            writer.wait(timeout=60)
+
+    result = result_of(run)
+    (copies,) = (run.path / "artifacts").iterdir()
+    assert meta["state"] == "completed"
+    assert result["artifacts"] == [str(copies / "stable.txt")]
+    assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("growing.log", "changing while copied")]
+
+
+def test_a_file_that_cannot_be_read_costs_only_itself(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    replay([{"__artifact__": "locked.pdf", "text": "x", "mode": 0},
+            tool("webfetch", "page", sources=[{"id": "w1", "url": "https://x.test/"}]),
+            answer("[잠긴 파일](artifacts/locked.pdf)")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    result = result_of(run)
+    assert meta["state"] == "completed"
+    assert result["answer"] == "[잠긴 파일](artifacts/locked.pdf)"
+    assert [s["url"] for s in result["sources"]] == ["https://x.test/"]
+    assert "artifacts" not in result
+    assert [Path(m["path"]).name for m in result["artifacts_missing"]] == ["locked.pdf"]
+
+
+def test_an_abandoned_turns_files_are_kept_as_they_were(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    replay([{"__artifact__": "draft.txt", "text": "half done"}, calling(("webfetch", {"url": "https://x.test"}))])
+    run = start(runs_dir)
+
+    meta = supervise(run, idle_limit=1.0, settle=0.3)
+
+    result = result_of(run)
+    (copies,) = (run.path / "artifacts").iterdir()
+    assert meta["state"] == "abandoned"
+    assert result["artifacts"] == [str(copies / "draft.txt")]
+    assert "as they were" in result["note"]
+
+
+def test_a_snapshot_of_something_that_is_not_a_file_fails_at_once(tmp_path: Path) -> None:
+    """A pipe in place of a saved file would hold the supervisor on its open forever."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    got: list[object] = []
+
+    def copy() -> None:
+        try:
+            runs.copy_snapshot(fifo, tmp_path / "copy")
+        except OSError as e:
+            got.append(e)
+
+    t = threading.Thread(target=copy, daemon=True)
+    t.start()
+    t.join(5)
+    in_time = not t.is_alive()
+    if not in_time:
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # lets a reader stuck on the pipe go
+    assert in_time, "the copy waited on the pipe"
+    assert got and isinstance(got[0], OSError)
+    assert not (tmp_path / "copy").exists()
+
+
+def test_a_turn_without_lifecycle_records_that_ended_on_an_error_failed(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, monkeypatch
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_FORMAT", "legacy")
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), ERROR_STOP])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "failed"
 
 
 def test_the_watch_deadline_recorded_by_the_cli_is_what_abandons_the_run(

@@ -290,12 +290,14 @@ def turn_of(run: runs.Run) -> Turn:
     child_events: dict[str, list[aside.Event]] = {}
     child_next: dict[str, float] = {}
     for cid in children:
-        cev = _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
-        cut = next((i for i, e in enumerate(cev) if later and e.kind == "lifecycle" and e.lifecycle == "started"
-                    and e.timestamp >= later[0]), len(cev))
-        child_events[cid] = cev[:cut]
-        if cut < len(cev):
-            child_next[cid] = cev[cut].timestamp / 1000
+        # Cut before choosing this run's part of it: a task from the next turn is never this run's, even when it is
+        # the newest one in the transcript.
+        full = aside.read_events(run.child_transcript(cid))[0]
+        cut = next((i for i, e in enumerate(full) if later and e.kind == "lifecycle" and e.lifecycle == "started"
+                    and e.timestamp >= later[0]), len(full))
+        child_events[cid] = _from(full[:cut], opened_at)
+        if cut < len(full):
+            child_next[cid] = full[cut].timestamp / 1000
     return Turn(
         observed=True,
         start_line=mine[0].index,

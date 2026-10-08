@@ -400,7 +400,8 @@ until = time.time() + 30
 while not stop.exists() and time.time() < until:
     if target.exists():
         with target.open("a") as f:
-            f.write("x" * 100)
+            f.write("x" * 8192)
+    time.sleep(0.001)
 """
 
 
@@ -427,6 +428,26 @@ def test_every_task_a_turn_gave_a_child_is_the_runs(runs_dir: Path, aside_home: 
     assert result["answer"].endswith(f"--- child {kid} ---\ntask 2 done")
 
 
+def test_a_childs_task_from_the_next_turn_does_not_hide_the_one_this_run_collected(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """A resumed run collects an earlier child's late result, and the session has already gone on to a next turn that gave the same child a new task. That newer task is not this run's part of the child, however recent it is."""
+    aside_session(aside_home, "ParentLateKid001", user("old-prompt"),
+                  tool("subagent", "spawned", taskId="LateKidNextTask1"), answer("partial"))
+    aside_session(aside_home, "LateKidNextTask1", {**turn("started"), "timestamp": 1_000}, {**user("task"), "timestamp": 1_000},
+                  {**answer("late child answer"), "timestamp": 3_000}, {**turn("finished"), "timestamp": 3_000},
+                  {**turn("started"), "timestamp": 9_999_999_999_999}, {**user("다음 턴의 과제"), "timestamp": 9_999_999_999_999})
+    replay([tool("subagent_wait", "done", results=[{"taskId": "LateKidNextTask1"}]), turn("final-started"),
+            answer("collected"), turn("finished"), {**turn("started"), "timestamp": "__NOW__"}, user("다음 질문")])
+    run = start(runs_dir, "wait for it")
+    run.update_meta(resume_session_id="ParentLateKid001")
+
+    meta = supervise(run, settle=0.3)
+
+    assert meta["state"] == "completed"
+    assert "late child answer" in result_of(run)["answer"]
+
+
 def test_a_file_still_being_written_is_reported_not_torn(
     runs_dir: Path, aside_home: Path, fake_aside: Path, replay, tmp_path: Path
 ) -> None:
@@ -441,14 +462,15 @@ def test_a_file_still_being_written_is_reported_not_torn(
     writer = None
 
     def launch() -> None:
-        # The turn is held open until the writer has written once, so it is writing while the copies are taken.
+        # The turn is held open until the file is 20 MB, so each copy attempt takes long enough to span several of
+        # the writer's appends -- one every millisecond -- and the writer is still going when the copies are taken.
         nonlocal writer
         until = time.time() + 30
         while time.time() < until:
             new = [d / "artifacts" / "growing.log" for d in set(sessions.iterdir()) - before]
             if writer is None and new and new[0].exists():
                 writer = subprocess.Popen([sys.executable, "-c", WRITER, str(new[0]), str(stop)])
-            if new and new[0].exists() and new[0].stat().st_size > 1 << 20:
+            if new and new[0].exists() and new[0].stat().st_size > 20 << 20:
                 writing.touch()
                 return
             time.sleep(0.01)

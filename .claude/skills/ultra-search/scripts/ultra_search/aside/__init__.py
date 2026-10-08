@@ -23,7 +23,6 @@ from ultra_search.aside.sessions import (
     session_summaries,
     session_transcript,
     sessions_root,
-    suspension,
 )
 from ultra_search.aside.transcript import Event, SourceRef, ToolCall, read_events, resolve_answer_tags, turn_finished
 
@@ -61,7 +60,6 @@ __all__ = [
     "session_transcript",
     "sessions_root",
     "start_exec",
-    "suspension",
     "turn_finished",
     "version",
 ]

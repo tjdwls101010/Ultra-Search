@@ -89,8 +89,8 @@ def test_the_fakes_transcript_reads_like_a_real_one(cli) -> None:
     roles = [json.loads(line)["role"] for line in text.splitlines()[:-1] if line.startswith("{")]
     assert roles == ["turn-lifecycle", "user", "assistant", "toolResult", "turn-lifecycle", "assistant", "turn-lifecycle"]
     run = payload["runs"][0]
-    _, status, _ = cli("status", "--run", run_id)
-    assert run["answer"] and run["sources_total"] and status["runs"][0]["usage"]["total_tokens"] > 0
+    usage = json.loads(Path(run["result_path"]).read_text(encoding="utf-8"))["usage"]
+    assert run["answer"] and run["sources_total"] and usage["total_tokens"] > 0
 
 
 RECORDED = Path(__file__).resolve().parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "session"

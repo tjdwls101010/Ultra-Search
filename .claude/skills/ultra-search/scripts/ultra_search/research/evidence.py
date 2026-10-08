@@ -2,7 +2,7 @@
 
 A resumed run appends to a transcript that already holds every earlier turn, so "the
 transcript" and "this run" are different things. Every command that reports what a run
-found -- the result the supervisor writes, `status`, `show`, `log` -- reads it through this
+found -- the result the supervisor writes, `show`, `log` -- reads it through this
 one view, so they cannot disagree about which turn and which children are the run's.
 """
 from __future__ import annotations

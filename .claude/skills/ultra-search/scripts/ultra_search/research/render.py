@@ -1,8 +1,8 @@
 """One transcript event, as the line a reader can act on.
 
 Which line an event becomes is decided by who is reading. ``progress`` is read by the
-caller who delegated the run and is choosing between four things: keep waiting, collect
-with ``result``, suspect a stall and check ``status``, or cancel in the Aside app. Only
+caller who delegated the run and is choosing between three things: keep waiting, collect
+with ``result``, or cancel in the Aside app. Only
 what can change that choice becomes a line -- what the run reached for (a tool, how many
 times, the host or objective it pointed at), what it said, what finished, what errored.
 How it asked (arguments, local paths, offsets) and how large a successful result was

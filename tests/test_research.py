@@ -1,4 +1,4 @@
-"""`search`, `resume`, `status`, `log`, `result`, `show`, `stop` and `sessions`, end to end.
+"""`search`, `resume`, `log`, `result`, `show` and `sessions`, end to end.
 
 The seam is argv in, stdout and an exit code out -- exactly what a caller sees. The one
 external boundary, the aside binary, is the fake in tests/fake_aside, which writes session
@@ -10,10 +10,12 @@ run directory to check its answer would pass while `result` reported something e
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from pathlib import Path
 import pytest
 
 import cli
+from ultra_search import research, runs
 from conftest import (
     FIXTURES,
     SCRIPTS,
@@ -77,8 +80,20 @@ def every_source(cli, run_id: str) -> list[dict]:
     return first_run(cli("result", "--run", run_id, "--sources")[1])["sources"]
 
 
-def status_of(cli, run_id: str) -> dict:
-    return first_run(cli("status", "--run", run_id)[1])
+def session_of(cli, run_id: str) -> str | None:
+    """The Aside session a run this tool started correlated with, as `sessions --mine` lists it."""
+    listed = cli("sessions", "--mine", "--limit", "100")[1].get("sessions", [])
+    return next((row["session_id"] for row in listed if row["run_id"] == run_id), None)
+
+
+def kill_supervisors(*targets: runs.Run) -> None:
+    """End a run's detached supervisor the way a crash would. Started from this process by the in-process CLI, it is this
+    process's child and is reaped here -- as the system reaps it once the CLI that started it has exited."""
+    for run in targets:
+        pid = poll(lambda: run.meta().get("supervisor_pid"), timeout=10)
+        os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
 
 
 def saved(entry: dict) -> dict:
@@ -215,7 +230,7 @@ def test_a_search_that_finishes_in_time_returns_its_answer_inline(cli) -> None:
     assert run["answer"] == "Answer Example A (https://example.org/a)"
     assert (run["sources_total"], run["sources_opened"], run["opened_sources"]) == (2, 0, [])
     assert [s["url"] for s in every_source(cli, run["run_id"])] == ["https://example.org/a", "https://example.org/b"]
-    assert status_of(cli, run["run_id"])["usage"]["total_tokens"] > 0
+    assert saved(run)["usage"]["total_tokens"] > 0
 
 
 def test_a_finished_search_does_not_hand_back_a_next_step(cli) -> None:
@@ -243,10 +258,9 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     because nothing told it how to find out the work had finished. The command is spelled
     out rather than described, and carries the Bash timeout it needs.
 
-    Deliberately a slow run. Against a run that has already finished, a follower that
+    Deliberately a slow run. Against a run that has already finished, a command that
     returned immediately without waiting for anything would pass every assertion here -- so
-    the run has to still be going when the follower starts, and the follower has to be the
-    thing that waits."""
+    the run has to still be going when it starts, and it has to be the thing that waits."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "5")
     code, payload, _ = run_cli("search", "질문", "--background", "--runs-dir", str(runs_dir))
@@ -258,23 +272,21 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     assert nxt["run_in_background"] is True
     assert nxt["bash_timeout_ms"] >= 600_000
 
-    # Run it, rather than checking it contains "--follow": a command that names the wrong
-    # run, or that cannot execute at all, passes every string check and still leaves the
-    # caller with no way to find out the work finished.
+    # Run it, rather than checking what it contains: a command that names the wrong run, or
+    # that cannot execute at all, passes every string check and still leaves the caller with
+    # no way to find out the work finished.
     started = time.time()
     done = subprocess.run(shlex.split(nxt["command"]), capture_output=True, text=True, timeout=180)
     waited = time.time() - started
 
     assert done.returncode == 0
-    assert f"run.completed {first_run(payload)['run_id']}" in done.stderr
-    assert waited > 1.0, "the follower has to wait for the run, not return on a run already over"
+    assert waited > 1.0, "it has to wait for the run, not return on a run already over"
+    assert "answer: 느린 답." in done.stderr, "what the run does while it is waited on is shown as it happens"
     finished = json.loads(done.stdout)
-    assert finished["command"] == "log"
+    assert finished["command"] == "result"
+    assert "next" not in finished, "a finished run hands back nothing more to do"
     assert first_run(finished)["state"] == "completed"
-    assert finished["next"]["run_in_background"] is False
-    collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
-    assert collected.returncode == 0
-    assert json.loads(collected.stdout)["runs"][0]["answer"] == "느린 답."
+    assert first_run(finished)["answer"] == "느린 답."
 
 
 def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(cli, monkeypatch) -> None:
@@ -285,8 +297,7 @@ def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(c
 
     assert code == 0
     assert first_run(payload)["state"] in ("starting", "running")
-    assert "next" in payload
-    cli("stop", "--run", first_run(payload)["run_id"])
+    assert " result --run " in payload["next"]["command"] and payload["next"]["command"].endswith(" --wait 570")
 
 
 def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch) -> None:
@@ -295,14 +306,147 @@ def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch)
     _, payload, _ = search(cli, "느린 질문", wait="0.3")
     run_id = first_run(payload)["run_id"]
 
-    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "30")
-    assert f"run.completed {run_id}" in text
+    code, result, _ = cli("result", "--run", run_id, "--wait", "30")
 
-    code, result, _ = cli("result", "--run", run_id)
     result = result["runs"][0]
     assert code == 0
     assert result["answer"] == "느린 답."
     assert result["sources_total"] > 0
+
+
+def test_a_wait_that_runs_out_hands_back_the_wait_again(cli, monkeypatch) -> None:
+    """Running out of time to wait is not an ending: the run is reported as it stands, with the same wait to continue."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
+    _, payload, _ = search(cli, "느린 질문", wait="0.3")
+
+    began = time.time()
+    code, waited, _ = cli("result", "--run", first_run(payload)["run_id"], "--wait", "1")
+
+    assert code == 0
+    assert 1.0 <= time.time() - began < 10
+    assert first_run(waited)["state"] in ("starting", "running")
+    assert waited["next"] == payload["next"]
+
+
+SLOW = [{"__if_prompt__": "느린", **calling(("webfetch", {"url": "https://x.test"}))},
+        {"__if_prompt__": "느린", "__sleep__": 20}, {"__if_prompt__": "느린", **answer("늦은 답")}]
+
+
+@pytest.mark.parametrize("ended,code", [
+    ([{"__if_prompt__": "실패", **{"role": "assistant", "content": [{"type": "text", "text": "오류"}], "stopReason": "error", "timestamp": 2}}], 4),
+    ([{"__if_prompt__": "빈", **answer("")}], 0),
+], ids=["failed-and-running", "empty-and-running"])
+def test_a_group_still_going_is_handed_back_whatever_its_ended_members_say(cli, replay, ended, code) -> None:
+    """A failure is reported as soon as it is known, with the wait for the rest; an empty result is not the group's verdict while a member is still going."""
+    replay(ended + SLOW)
+    _, started, _ = cli("search", "실패 빈 질문", "느린 질문", "--wait", "3")
+
+    got, waited, _ = cli("result", "--group", started["group"], "--wait", "0.5")
+
+    assert got == code
+    assert waited["next"]["command"].endswith(" --wait 570") and f"--group {started['group']}" in waited["next"]["command"]
+    assert {first_run(waited)["state"], waited["runs"][1]["state"]} & {"starting", "running"}
+
+
+def test_a_group_whose_members_all_ended_empty_exits_five(cli, replay) -> None:
+    replay([answer("")])
+    _, started, _ = cli("search", "하나", "둘", "--wait", "30")
+
+    code, collected, _ = cli("result", "--group", started["group"])
+
+    assert code == 5
+    assert "next" not in collected
+
+
+def dead_pid() -> int:
+    """The pid of a process that has exited and been reaped."""
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    return gone.pid
+
+
+def test_a_run_whose_supervisor_is_gone_is_abandoned_not_waited_on_forever(cli, runs_dir: Path) -> None:
+    """Nothing else would ever end it: a wait would hand back the same wait without end."""
+    run = runs.create_run(runs_dir, label="orphaned", prompt="질문")
+    run.update_meta(state="running", supervisor_pid=dead_pid())
+
+    code, payload, _ = cli("result", "--run", run.run_id)
+
+    assert code == 4
+    assert first_run(payload)["state"] == "abandoned"
+    assert "next" not in payload
+    assert "the supervisor is gone" in first_run(payload)["note"]
+
+
+def test_a_run_whose_supervisor_never_started_is_abandoned_and_a_late_one_starts_nothing(
+    cli, runs_dir: Path, fake_aside: Path
+) -> None:
+    """A run reserved more than a minute ago without a supervisor is not coming. If its supervisor wakes after all, it finds the run settled and does not start the work a caller has already been told was abandoned."""
+    fresh = runs.create_run(runs_dir, label="fresh", prompt="질문")
+    stale = runs.create_run(runs_dir, label="stale", prompt="질문")
+    stale.update_meta(created_at=time.time() - 120)
+
+    _, young, _ = cli("result", "--run", fresh.run_id)
+    code, old, _ = cli("result", "--run", stale.run_id)
+    research.supervise(stale, poll=0.05)
+
+    assert first_run(young)["state"] == "starting" and "next" in young
+    assert code == 4 and first_run(old)["state"] == "abandoned"
+    assert "the supervisor never started" in first_run(old)["note"]
+    assert exec_calls(fake_aside) == [], "the supervisor that woke late started no work"
+
+
+def test_a_result_written_by_a_supervisor_that_died_before_recording_it_is_kept(cli, runs_dir: Path) -> None:
+    """The supervisor writes result.json and then meta.json. Dying between the two leaves a result the run's state must come from -- with what it says about children still running."""
+    run = runs.create_run(runs_dir, label="half", prompt="질문")
+    run.update_meta(state="running", supervisor_pid=dead_pid())
+    runs.atomic_write_json(run.path / "result.json", {
+        "run_id": run.run_id, "state": "completed_with_orphans", "answer": "부분 답", "sources": [], "usage": {},
+        "children": ["StillGoingKid001"], "orphan_children": ["StillGoingKid001"], "empty": False, "exit_code": 0})
+
+    code, payload, _ = cli("result", "--run", run.run_id)
+
+    entry = first_run(payload)
+    assert code == 0
+    assert entry["state"] == "completed_with_orphans"
+    assert entry["orphan_children"] == ["StillGoingKid001"]
+    assert "Partial snapshot" in entry["note"]
+    assert entry["answer"] == "부분 답"
+
+
+def test_a_finished_run_is_never_rewritten_as_abandoned(cli, runs_dir: Path) -> None:
+    """Its supervisor is gone because it finished; the check that catches a dead one must not overwrite the result."""
+    run = runs.create_run(runs_dir, label="done", prompt="질문")
+    run.update_meta(state="completed", supervisor_pid=dead_pid())
+
+    code, payload, _ = cli("result", "--run", run.run_id)
+
+    assert first_run(payload)["state"] == "completed"
+    assert code in (0, 5)
+
+
+@pytest.mark.parametrize("argv", [
+    ["status"], ["stop", "--run", "x"], ["search", "q", "--timeout", "1"], ["resume", "x", "q", "--timeout", "1"],
+    ["log", "--follow"], ["log", "--since", "0"], ["log", "--heartbeat", "1"], ["log", "--follow-timeout", "1"],
+], ids=lambda a: " ".join(a[:2]))
+def test_what_was_removed_is_refused(cli, argv: list[str], fake_aside: Path) -> None:
+    code, payload, _ = cli(*argv)
+
+    assert code == 2
+    assert payload["error"] == "bad_arguments"
+    assert "invalid choice" in payload["message"] or "unrecognized arguments" in payload["message"]
+    assert exec_calls(fake_aside) == []
+
+
+def test_log_reads_once_and_answers_without_a_cursor(cli, runs_dir: Path) -> None:
+    run_id = finished_run_id(cli)
+
+    code, out, err = run_cli_streams("log", "--run", run_id, "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert "prompt: 질문" in err
+    assert set(json.loads(out)) == {"ok", "command", "runs"}
 
 
 def test_a_search_whose_process_exits_mid_turn_hands_back_the_final_answer(cli, replay) -> None:
@@ -406,7 +550,7 @@ def test_a_daemon_that_does_not_answer_exits_three_before_reserving_a_run(
 
     assert code == 3
     assert payload["error"] == "aside_unavailable" and "doctor" in payload["fix"]
-    assert run_cli("status", "--runs-dir", str(runs_dir))[0] == 2, "no run was reserved"
+    assert run_cli("result", "--runs-dir", str(runs_dir))[0] == 2, "no run was reserved"
     assert exec_calls(fake_aside) == []
 
 
@@ -418,7 +562,7 @@ def test_a_missing_aside_binary_exits_three_before_reserving_a_run(runs_dir: Pat
     assert code == 3
     assert payload["error"] == "aside_unavailable"
     assert payload["fix"]
-    code, _, _ = run_cli("status", "--runs-dir", str(runs_dir))
+    code, _, _ = run_cli("result", "--runs-dir", str(runs_dir))
     assert code == 2, "a registry full of runs that never started is worse than the error"
 
 
@@ -442,19 +586,19 @@ def test_next_commands_preserve_the_installed_path_and_run_store(
     assert started.returncode == 0
     payload = json.loads(started.stdout)
 
-    for command in ("log", "result"):
-        nxt = payload["next"]
-        args = shlex.split(nxt["command"])
-        # The form the skill's permission rule pre-approves: uv runs the script with the Python
-        # its header asks for, whatever `python3` is on PATH.
-        assert args[:2] == ["uv", "run"] and args[3] == command
-        assert args[2].startswith(str(installed.parent / "installed "))
-        assert nxt["command"].startswith('uv run "')
-        root = Path(args[args.index("--runs-dir") + 1])
-        assert root == started_in / (runs_arg or ".ultra-search")
-        called = subprocess.run(nxt["command"], shell=True, cwd=collected_in, capture_output=True, text=True, timeout=15)
-        assert called.returncode == 0, called.stderr + called.stdout
-        payload = json.loads(called.stdout.splitlines()[-1])
+    nxt = payload["next"]
+    args = shlex.split(nxt["command"])
+    # The form the skill's permission rule pre-approves: uv runs the script with the Python
+    # its header asks for, whatever `python3` is on PATH.
+    assert args[:2] == ["uv", "run"] and args[3] == "result"
+    assert args[2].startswith(str(installed.parent / "installed "))
+    assert nxt["command"].startswith('uv run "')
+    root = Path(args[args.index("--runs-dir") + 1])
+    assert root == started_in / (runs_arg or ".ultra-search")
+    called = subprocess.run(nxt["command"], shell=True, cwd=collected_in, capture_output=True, text=True, timeout=60)
+    assert called.returncode == 0, called.stderr + called.stdout
+    payload = json.loads(called.stdout.splitlines()[-1])
+    assert "next" not in payload
     assert payload["runs"][0]["answer"] == "느린 답."
     assert (started_in / (runs_arg or ".ultra-search") / "runs").is_dir()
     assert not (collected_in / "injected").exists()
@@ -503,8 +647,8 @@ def test_a_label_names_the_run_and_cannot_escape_the_registry(cli, runs_dir: Pat
     run_id = first_run(hostile)["run_id"]
     assert "/" not in run_id and ".." not in run_id
     assert (runs_dir / "runs" / run_id).is_dir()
-    code, status, _ = cli("status", "--run", run_id)
-    assert code == 0 and first_run(status)["state"] == "completed"
+    code, collected, _ = cli("result", "--run", run_id)
+    assert code == 0 and first_run(collected)["state"] == "completed"
 
 
 def test_two_runs_of_the_same_prompt_keep_their_own_sessions(cli, monkeypatch) -> None:
@@ -516,8 +660,7 @@ def test_two_runs_of_the_same_prompt_keep_their_own_sessions(cli, monkeypatch) -
     _, payload, _ = search(cli, "같은 질문", "같은 질문")
     a, b = (r["run_id"] for r in payload["runs"])
 
-    _, status, _ = cli("status", "--group", payload["group"])
-    assert len({r["session_id"] for r in status["runs"]}) == 2
+    assert None not in {session_of(cli, a), session_of(cli, b)} and session_of(cli, a) != session_of(cli, b)
     # Each run's transcript opens with its own marker and never holds the other's.
     _, _, text_a = cli("log", "--run", a, "--level", "raw")
     _, _, text_b = cli("log", "--run", b, "--level", "raw")
@@ -553,19 +696,6 @@ def test_session_discovery_skips_a_directory_with_no_transcript_yet(cli, aside_h
     assert "EmptyDir00000001" not in {s["session_id"] for s in listed["sessions"]}
 
 
-def test_a_watch_deadline_abandons_rather_than_reporting_completion(cli, monkeypatch) -> None:
-    """`--timeout` is recorded by the process that starts the run but enforced by the
-    detached supervisor, which cannot be passed an argument."""
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-
-    code, payload, _ = search(cli, "질문", extra=("--timeout", "1"))
-
-    assert code == 4
-    assert first_run(payload)["state"] == "abandoned"
-    assert first_run(payload)["daemon_run_continues"] is True
-
-
 # --- children ----------------------------------------------------------------------------
 
 
@@ -574,12 +704,11 @@ def test_children_are_collected_with_their_answers(cli, monkeypatch) -> None:
 
     _, payload, _ = search(cli, "질문")
     run = first_run(payload)
-    _, status, _ = cli("status", "--run", run["run_id"])
     _, _, logged = cli("log", "--run", run["run_id"])
 
     assert run["state"] == "completed"
     assert "child 1 done." in run["answer"] and "child 2 done." in run["answer"]
-    kids = first_run(status)["child_ids"]
+    kids = saved(run)["children"]
     assert len(kids) == 2
     for kid in kids:
         assert f"[child {kid}] prompt: child task" in logged
@@ -598,7 +727,7 @@ def test_a_child_still_running_when_the_parent_exits_is_named(cli, replay) -> No
     assert run["state"] == "completed_with_orphans"
     assert run["orphan_children"] == ["xtXKs5dqLhtZ9sCN"]
     assert "not collected" in run["note"]
-    assert status_of(cli, run["run_id"])["child_ids"] == ["WvAjHmOMXm36S58Y", "jYjSOAaKKm79uXXI", "xtXKs5dqLhtZ9sCN"]
+    assert saved(run)["children"] == ["WvAjHmOMXm36S58Y", "jYjSOAaKKm79uXXI", "xtXKs5dqLhtZ9sCN"]
 
 
 def test_a_child_that_stops_with_nothing_to_say_is_finished_not_orphaned(cli, replay, aside_home: Path) -> None:
@@ -631,82 +760,6 @@ def test_log_defaults_to_the_supervisors_view(cli) -> None:
     assert "call " not in text and "out=" not in text
 
 
-def test_log_prints_events_and_a_cursor_that_repeats_nothing(cli) -> None:
-    run_id = finished_run_id(cli)
-
-    _, first, text = cli("log", "--run", run_id)
-    _, second, again = cli("log", "--run", run_id, "--since", str(first["cursor"]))
-
-    assert "prompt: 질문" in text
-    assert lines_of(again) == []
-    assert second["cursor"] == first["cursor"]
-
-
-def test_log_answers_in_one_json_document_and_streams_events_on_stderr(cli, runs_dir: Path) -> None:
-    """The reply is read with one parse; the events are progress, read as they come -- and in a
-    background call's output file, which holds both streams in order, they come first."""
-    run_id = finished_run_id(cli)
-
-    code, out, err = run_cli_streams("log", "--run", run_id, "--follow", "--runs-dir", str(runs_dir))
-
-    assert code == 0
-    assert json.loads(out)["cursor"]
-    assert "prompt: 질문" in err and f"run.completed {run_id}" in err
-    assert "cursor=" not in err
-
-
-def test_follow_exits_on_the_terminal_line(cli) -> None:
-    run_id = finished_run_id(cli)
-
-    code, payload, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5")
-
-    assert code == 0
-    assert f"run.completed {run_id}" in lines_of(text)
-    assert shlex.split(payload["next"]["command"])[3] == "result"
-
-
-def test_a_follow_that_runs_out_of_time_says_the_run_is_still_going(cli, monkeypatch) -> None:
-    """Distinct from a terminal line on purpose: the caller has to be able to tell "it
-    finished" from "I stopped looking", because only one of those means collect a result."""
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-    _, payload, _ = search(cli, "질문", wait="0")
-    run_id = first_run(payload)["run_id"]
-
-    _, followed, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "0.5")
-
-    assert any(line.startswith(f"run.still-running {run_id}") for line in lines_of(text))
-    assert "run.completed" not in text
-    assert followed["next"]["run_in_background"] is True
-    cli("stop", "--run", run_id)
-
-
-def test_heartbeat_marks_a_silence_as_alive(cli, replay, aside_home: Path) -> None:
-    aside_session(aside_home, "LiveChild0000001", user("자식 조사"), calling(("webfetch", {"url": "https://x.test"})))
-    replay([tool("subagent", "spawned", taskId="LiveChild0000001"), {"__sleep__": 30}])
-    _, payload, _ = search(cli, "질문", wait="0")
-    run_id = first_run(payload)["run_id"]
-
-    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5", "--heartbeat", "0.5")
-
-    beats = [line for line in lines_of(text) if line.startswith("heartbeat ")]
-    assert beats
-    assert "running=1 children=1" in beats[-1]
-    cli("stop", "--run", run_id)
-
-
-def test_an_abandoned_run_is_a_terminal_line_too(cli, monkeypatch) -> None:
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-    _, payload, _ = search(cli, "질문", wait="0")
-    run_id = first_run(payload)["run_id"]
-    cli("stop", "--run", run_id)
-
-    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5")
-
-    assert f"run.abandoned {run_id}" in lines_of(text)
-
-
 def test_group_members_are_labelled_so_interleaved_lines_stay_attributable(cli) -> None:
     _, payload, _ = search(cli, "A", "B")
 
@@ -717,119 +770,77 @@ def test_group_members_are_labelled_so_interleaved_lines_stay_attributable(cli) 
         assert f"[{run['run_id']}] prompt: {'A' if run is payload['runs'][0] else 'B'}" in text
 
 
-def test_a_watch_that_runs_out_says_how_every_member_stands(cli, monkeypatch) -> None:
-    """A group watched until its deadline: the members that ended say so, the one still going
-    says that -- the caller collects the first and keeps watching the second."""
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-    _, payload, _ = search(cli, "A", "B", wait="0")
-    first, second = (r["run_id"] for r in payload["runs"])
-    cli("stop", "--run", first)
+def test_a_group_wait_returns_only_when_every_member_has_ended(cli, replay) -> None:
+    """One member ends at once, the other seconds later; the wait is over only when both are, each line labelled with its run."""
+    replay([{"__if_prompt__": "느린", "__sleep__": 3}, answer("답")])
+    _, payload, _ = search(cli, "빠른", "느린", wait="0")
+    quick, slow = (r["run_id"] for r in payload["runs"])
 
-    _, _, text = cli("log", "--group", payload["group"], "--follow", "--follow-timeout", "0")
+    code, collected, text = cli("result", "--group", payload["group"], "--wait", "30")
 
-    lines = lines_of(text)
-    assert f"run.abandoned {first}" in lines
-    assert any(line.startswith(f"run.still-running {second}") for line in lines)
-    cli("stop", "--run", second)
+    assert code == 0
+    assert [r["state"] for r in collected["runs"]] == ["completed", "completed"]
+    assert "next" not in collected
+    assert f"[{slow}] answer: 답" in text
 
 
-def test_a_group_follow_exits_only_when_every_member_is_terminal(cli, monkeypatch) -> None:
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "3")
-    _, payload, _ = search(cli, "A", "B", wait="0")
-    first, second = (r["run_id"] for r in payload["runs"])
-    cli("stop", "--run", first)
-
-    _, _, text = cli("log", "--group", payload["group"], "--follow", "--follow-timeout", "30")
-
-    lines = lines_of(text)
-    assert f"run.abandoned {first}" in lines
-    assert f"run.completed {second}" in lines
-    assert "group.finished 2 run(s)" in lines
-    assert f"[{second}] answer: 느린 답." in text
-
-
-def test_a_group_cursor_round_trips_per_member(cli) -> None:
-    """The members' transcripts differ in length, so one member's position applied to the
-    other lands mid-record and shows up as output."""
-    _, payload, _ = search(cli, "A", "a much longer prompt for the second member")
-    _, first, _ = cli("log", "--group", payload["group"])
-
-    _, _, again = cli("log", "--group", payload["group"], "--since", first["cursor"])
-
-    assert rendered(again) == ""
-
-
-def test_child_activity_appears_in_the_parents_stream_and_its_cursor(cli, monkeypatch) -> None:
-    """A parent investigation goes silent while its subagents work; a watcher that showed
-    only the parent would make that silence look like a hang. And once a child exists, a
-    single run's cursor has to carry the child's position too, or the next read replays it."""
+def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
+    """A parent investigation goes silent while its subagents work; a log that showed only the
+    parent would make that silence look like a hang."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "subagent")
     run_id = finished_run_id(cli)
 
-    _, first, text = cli("log", "--run", run_id)
-    _, _, again = cli("log", "--run", run_id, "--since", str(first["cursor"]))
+    _, _, text = cli("log", "--run", run_id)
 
     assert any(line.startswith("[child ") and "answer: child 1 done." in line for line in lines_of(text))
-    assert "child 1 done." not in again and "부모 답" not in again
 
 
 @pytest.mark.parametrize("group", [False, True], ids=["run", "group"])
-def test_a_timed_out_follow_continues_from_each_stream_and_collects_every_run(
-    cli, replay, aside_home: Path, group: bool
+def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every_run(
+    cli, replay, aside_home: Path, group: bool, tmp_path: Path
 ) -> None:
-    """A watch that ran out of time hands back a command that picks up where it stopped --
-    in the parent and in every child, each advancing on its own -- and then hands back the
-    collection of every run it was watching, including one that had already ended."""
+    """A wait that ran out hands back the same wait, which prints only what happened since it began -- in the parent and in every child -- and then the result of every run it was waiting for."""
     kids = {"first-member": "KidOfFirst000001", "second-member-with-longer-prompt": "KidOfSecond00001"}
     for prompt, kid in kids.items():
         aside_session(aside_home, kid, user(f"seen-child of {prompt}"))
     replay([
         *({**tool("subagent", "spawned", taskId=kid), "__if_prompt__": prompt} for prompt, kid in kids.items()),
         calling(text="seen-parent"),
-        {"__sleep__": 10},
+        {"__wait_for__": str(tmp_path / "go-on")},
         answer("new-parent"),
     ])
     prompts = list(kids) if group else ["second-member-with-longer-prompt"]
     _, payload, _ = search(cli, *prompts, wait="0")
-    runs = {r["run_id"]: prompt for r, prompt in zip(payload["runs"], prompts)}
-    target = ["--group", payload["group"]] if group else ["--run", next(iter(runs))]
-    assert poll(lambda: rendered(cli("log", *target)[2]).count("seen-child") == len(runs), timeout=15)
-    if group:
-        ended = next(iter(runs))
-        cli("stop", "--run", ended)
+    run_ids = {r["run_id"]: prompt for r, prompt in zip(payload["runs"], prompts)}
+    target = ["--group", payload["group"]] if group else ["--run", next(iter(run_ids))]
+    assert poll(lambda: rendered(cli("log", *target)[2]).count("seen-child") == len(run_ids), timeout=15)
 
-    code, waiting, text = cli("log", *target, "--follow", "--follow-timeout", "0")
+    code, waiting, _ = cli("result", *target, "--wait", "0.5")
+    following = subprocess.Popen(waiting["next"]["command"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Nothing new is written until the wait is running: its Python is up, and has had time for its first read.
+    assert poll(lambda: "cli.py result" in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
+                and target[1] in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout, timeout=60)
+    time.sleep(1)
     for prompt, kid in kids.items():
         with (aside_home / "u" / "0" / "sessions" / f"2026-09-25_{kid}" / "messages.jsonl").open("a") as f:
             f.write(json.dumps(answer(f"new-child of {prompt}")) + "\n")
-    followed = subprocess.run(waiting["next"]["command"], shell=True, capture_output=True, text=True, timeout=60)
+    (tmp_path / "go-on").touch()
+    out, err = following.communicate(timeout=120)
 
     assert code == 0
-    assert "says: seen-parent" in text
-    assert "run.still-running" in text
     assert set(waiting["next"]) == {"command", "bash_timeout_ms", "run_in_background"}
     assert waiting["next"]["run_in_background"] is True
-    assert followed.returncode == 0
-    assert "seen-" not in followed.stderr
-    for run_id, prompt in runs.items():
+    assert following.returncode == 0
+    assert "seen-" not in err, "what happened before the wait began is the log's, not the wait's"
+    lines = err.splitlines()
+    for run_id, prompt in run_ids.items():
         prefix = f"[{run_id}]" if group else ""
-        lines = followed.stderr.splitlines()
-        if group and run_id == ended:
-            assert not any(line.startswith(prefix) and "new-" in line for line in lines)
-            continue
-        assert (f"{prefix} " if prefix else "") + "answer: new-parent" in lines
-        assert f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}" in lines
-    finished = json.loads(followed.stdout)
-    collected = subprocess.run(finished["next"]["command"], shell=True, capture_output=True, text=True, timeout=20)
-    result = json.loads(collected.stdout)
-    entries = result["runs"]
-    assert [e["run_id"] for e in entries] == list(runs)
-    states = {e["run_id"]: e["state"] for e in entries}
-    assert collected.returncode == (4 if group else 0)
-    for run_id in runs:
-        assert states[run_id] == ("abandoned" if group and run_id == ended else "completed")
+        assert lines.count((f"{prefix} " if prefix else "") + "answer: new-parent") == 1
+        assert lines.count(f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}") == 1
+    result = json.loads(out)
+    assert [e["run_id"] for e in result["runs"]] == list(run_ids)
+    assert all(e["state"] == "completed" for e in result["runs"])
+    assert "next" not in result
 
 
 def test_every_line_of_a_child_event_carries_the_childs_prefix(cli, replay, aside_home: Path) -> None:
@@ -979,9 +990,9 @@ def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
 
 
 def test_usage_totals_across_every_assistant_turn(simple_search) -> None:
-    runs, run_id = simple_search
-    _, status, _ = run_cli("status", "--run", run_id, "--runs-dir", str(runs))
-    usage = status["runs"][0]["usage"]
+    store, run_id = simple_search
+    _, collected, _ = run_cli("result", "--run", run_id, "--runs-dir", str(store))
+    usage = saved(first_run(collected))["usage"]
 
     assert usage["total_tokens"] == 10813 + 18580
     assert usage["cost"] > 0
@@ -1098,19 +1109,16 @@ def test_log_and_show_stop_where_the_runs_turn_ends(cli, replay) -> None:
 
 def test_resume_continues_a_finished_run_in_its_own_session(cli, fake_aside: Path) -> None:
     run_id = finished_run_id(cli)
-    _, first, _ = cli("status", "--run", run_id)
+    session = session_of(cli, run_id)
 
     code, payload, _ = cli("resume", run_id, "후속 질문", "--wait", "30")
 
     run = first_run(payload)
-    status = status_of(cli, run["run_id"])
     assert code == 0
-    assert status["resumed_from"] == run_id
     assert run["state"] == "completed"
-    assert status["session_id"] == first_run(first)["session_id"]
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
-    assert argv[1:4] == ["session", "resume", first_run(first)["session_id"]]
+    assert session and argv[1:4] == ["session", "resume", session]
     assert len(argv) == 5 and "ultra-search:" in argv[4], "the prompt alone follows the id: no option reaches a continued session"
 
 
@@ -1133,8 +1141,7 @@ def test_a_resumed_run_does_not_inherit_the_previous_turns_usage_and_sources(cli
     _, payload, _ = cli("resume", first_run(first)["run_id"], "후속 질문", "--wait", "30")
 
     assert first_run(payload)["sources_total"] == 0, "the earlier turn's sources belong to the earlier run"
-    assert (status_of(cli, first_run(payload)["run_id"])["usage"]["total_tokens"]
-            < status_of(cli, first_run(first)["run_id"])["usage"]["total_tokens"])
+    assert saved(first_run(payload))["usage"]["total_tokens"] < saved(first_run(first))["usage"]["total_tokens"]
 
 
 def test_resume_is_refused_while_the_run_is_still_going(cli, monkeypatch) -> None:
@@ -1149,7 +1156,6 @@ def test_resume_is_refused_while_the_run_is_still_going(cli, monkeypatch) -> Non
 
     assert code == 2
     assert "running" in err["message"]
-    cli("stop", "--run", run_id)
 
 
 def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path, monkeypatch) -> None:
@@ -1168,17 +1174,15 @@ def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path, monke
     # The earlier turns are copied on the supervisor's first pass, before the prompt exists.
     time.sleep(4)
 
-    _, waiting, text = cli("log", "--run", run_id)
-    _, finished, followed = cli("log", "--run", run_id, "--since", str(waiting["cursor"]),
-                                "--follow", "--follow-timeout", "60")
-    _, _, repeated = cli("log", "--run", run_id, "--since", str(finished["cursor"]))
+    _, _, text = cli("log", "--run", run_id)
+    code, _, waited = cli("result", "--run", run_id, "--wait", "60")
     _, _, from_start = cli("log", "--run", run_id)
 
     assert rendered(text) == ""
-    assert "old-" not in rendered(followed)
+    assert code == 0
+    assert "old-" not in rendered(waited)
     for expected in ("prompt: new-prompt", "new-answer", "new-child"):
-        assert expected in rendered(followed)
-    assert rendered(repeated) == ""
+        assert expected in rendered(waited)
     assert "prompt: new-prompt" in rendered(from_start) and "old-" not in rendered(from_start)
 
 
@@ -1192,7 +1196,6 @@ def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path,
 
     run = first_run(payload)
     assert code == 0
-    assert status_of(cli, run["run_id"])["resumed_from"] == "SimpleSearch00001"
     assert run["state"] == "completed"
     assert run["answer"] == "이어서 답합니다."
     argv = exec_calls(fake_aside)[-1]
@@ -1259,77 +1262,29 @@ def test_a_database_without_the_expected_tables_is_ignored(cli, aside_home: Path
     assert first_run(payload)["state"] == "completed"
 
 
-# --- status ------------------------------------------------------------------------------
-
-
-def test_status_reports_activity_rather_than_guessing_at_health(cli) -> None:
-    run_id = finished_run_id(cli)
-
-    code, status, _ = cli("status", "--run", run_id)
-
-    run = first_run(status)
-    assert code == 0
-    assert run["state"] == "completed"
-    assert 0 <= run["idle_seconds"] < 60
-    assert run["possibly_stalled"] is False
-
-
-def test_database_details_are_reported_when_they_exist(cli, aside_home: Path) -> None:
-    run_id = finished_run_id(cli)
-    _, status, _ = cli("status", "--run", run_id)
-    make_state_db(aside_home, (first_run(status)["session_id"], "idle", '{"kind":"approval"}'))
-
-    _, status, _ = cli("status", "--run", run_id)
-
-    assert first_run(status)["suspension"] == {"kind": "approval"}
-
-
-def test_a_quiet_run_is_flagged_but_left_alone_until_a_child_writes(cli, replay, aside_home: Path) -> None:
-    """Silence is labelled, never acted on: a slow run and a stuck one look identical from
-    here. And a parent goes quiet for minutes while its subagents work, so a child's writes
-    count as the run's activity -- the parent's own files stay old throughout."""
-    child = aside_session(aside_home, "BusyChild0000001", user("자식"), calling(("webfetch", {"url": "https://x.test"})))
-    replay([tool("subagent", "spawned", taskId="BusyChild0000001"), {"__sleep__": 40}])
-    _, payload, _ = search(cli, "질문", wait="0")
-    run_id = first_run(payload)["run_id"]
-
-    quiet = poll(lambda: (lambda s: s if first_run(s)["possibly_stalled"] else None)(
-        cli("status", "--run", run_id, "--stall-after", "3")[1]), timeout=20)
-    assert quiet, "nothing has written for longer than --stall-after"
-    with (child / "messages.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(tool("webfetch", "새 결과")) + "\n")
-    busy = poll(lambda: (lambda s: s if not first_run(s)["possibly_stalled"] else None)(
-        cli("status", "--run", run_id, "--stall-after", "3")[1]), timeout=8)
-
-    assert first_run(quiet)["possibly_stalled"] is True
-    assert first_run(quiet)["state"] == "running", "flagged only: nothing is stopped"
-    assert "Nothing was stopped" in first_run(quiet)["note"]
-    assert busy, "a child's write has to count as the run's activity"
-    assert first_run(busy)["child_ids"] == ["BusyChild0000001"] and first_run(busy)["live_children"] == 1
-    assert first_run(busy)["idle_seconds"] < 3
-    cli("stop", "--run", run_id)
+# --- finding runs ------------------------------------------------------------------------
 
 
 def test_runs_are_found_by_id_by_group_and_by_default_the_latest(cli) -> None:
     _, single, _ = search(cli, "하나")
     _, group, _ = search(cli, "A", "B")
 
-    _, by_id, _ = cli("status", "--run", first_run(single)["run_id"])
-    _, by_group, _ = cli("status", "--group", group["group"])
-    _, latest, _ = cli("status")
+    _, by_id, _ = cli("result", "--run", first_run(single)["run_id"])
+    _, by_group, _ = cli("result", "--group", group["group"])
+    _, latest, _ = cli("result")
 
     assert [r["run_id"] for r in by_id["runs"]] == [first_run(single)["run_id"]]
     assert {r["run_id"] for r in by_group["runs"]} == {r["run_id"] for r in group["runs"]}
-    assert all(r["group"] == group["group"] for r in by_group["runs"])
+    assert by_group["group"] == latest["group"] == group["group"]
     assert {r["run_id"] for r in latest["runs"]} == {r["run_id"] for r in group["runs"]}
 
 
 def test_a_run_that_does_not_exist_is_refused_not_guessed(cli) -> None:
-    code, err, _ = cli("status")
+    code, err, _ = cli("result")
     assert code == 2 and err["error"] == "bad_arguments"
 
     finished_run_id(cli)
-    code, err, _ = cli("status", "--run", "260101-000000-nope")
+    code, err, _ = cli("result", "--run", "260101-000000-nope")
     assert code == 2
     assert err["recent_runs"]
 
@@ -1338,32 +1293,28 @@ def test_a_run_that_does_not_exist_is_refused_not_guessed(cli) -> None:
 
 
 @pytest.mark.parametrize("state", ["failed", "abandoned", "completed_with_orphans"])
-def test_terminal_log_and_result_preserve_failure_and_incompleteness(cli, monkeypatch, state) -> None:
+def test_log_and_result_preserve_failure_and_incompleteness(cli, runs_dir: Path, monkeypatch, state) -> None:
     scenario = {"failed": "fail", "abandoned": "slow", "completed_with_orphans": "orphan"}[state]
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", scenario)
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
     monkeypatch.setenv("FAKE_ASIDE_ORPHAN_DELAY", "60")
     _, payload, _ = search(cli, "A", "B", wait="0" if state == "abandoned" else "30")
     if state == "abandoned":
-        cli("stop", "--group", payload["group"])
+        kill_supervisors(*(runs.resolve_run(runs_dir, r["run_id"]) for r in payload["runs"]))
 
-    code, logged, text = cli("log", "--group", payload["group"], "--follow")
+    code, collected, _ = cli("result", "--group", payload["group"])
+    _, logged, _ = cli("log", "--group", payload["group"])
 
-    assert code == 0
-    assert "group.completed" not in text
-    assert {r["state"] for r in logged["runs"]} == {state}
-    assert logged["next"]["run_in_background"] is False
-    collected = subprocess.run(logged["next"]["command"], shell=True, capture_output=True, text=True, timeout=10)
-    result = json.loads(collected.stdout)
-    assert collected.returncode == (0 if state == "completed_with_orphans" else 4)
-    for entry in [*logged["runs"], *result["runs"]]:
+    assert code == (0 if state == "completed_with_orphans" else 4)
+    assert "next" not in collected
+    for entry in [*logged["runs"], *collected["runs"]]:
         assert entry["state"] == state
         if state == "completed_with_orphans":
             assert entry["orphan_children"]
             assert "snapshot" in entry["note"] and "not" in entry["note"]
         elif state == "abandoned":
             assert entry["daemon_run_continues"] is True
-            assert "credits" in entry["note"]
+            assert "credits" in entry["note"] and "the supervisor is gone" in entry["note"]
 
 
 def test_sources_replaces_the_answer_with_every_source(cli) -> None:
@@ -1422,31 +1373,6 @@ def test_result_of_the_whole_group(cli) -> None:
     assert all(r["answer"].startswith("Answer") for r in result["runs"])
 
 
-# --- stop --------------------------------------------------------------------------------
-
-
-def test_stop_says_plainly_that_the_run_itself_continues(cli, monkeypatch) -> None:
-    """`stop` detaches the watcher. It cannot cancel the daemon-side run -- killing the CLI
-    was measured leaving the run going and still spending credits."""
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
-    monkeypatch.setenv("FAKE_ASIDE_DELAY", "10")
-    _, payload, _ = search(cli, "질문", wait="0.3")
-    run_id = first_run(payload)["run_id"]
-
-    code, stopped, _ = cli("stop", "--run", run_id)
-
-    assert code == 0
-    assert stopped["stopped_watching"] == [run_id]
-    assert stopped["daemon_run_continues"] is True
-    assert "aside" in stopped["note"].lower()
-    for command in ("status", "log", "result"):
-        _, payload, _ = cli(command, "--run", run_id)
-        entry = payload["runs"][0]
-        assert entry["state"] == "abandoned"
-        assert entry["daemon_run_continues"] is True
-        assert "credits" in entry["note"]
-
-
 # --- sessions ----------------------------------------------------------------------------
 
 
@@ -1479,10 +1405,10 @@ def test_sessions_can_be_searched_by_prompt(cli) -> None:
 # --- ids that name paths -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["status", "log", "result", "show", "stop"])
+@pytest.mark.parametrize("command", ["log", "result", "show"])
 def test_a_run_id_that_names_a_path_outside_the_registry_is_refused(cli, tmp_path: Path, command: str) -> None:
     """A run id reaches the filesystem as a directory name. One that walks out of the
-    registry must not be read, let alone written to by `stop`."""
+    registry must not be read, let alone written to by `result` settling it."""
     finished_run_id(cli)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -1521,18 +1447,20 @@ def test_a_child_id_that_is_not_an_id_is_not_followed(cli, replay) -> None:
 
     run = first_run(payload)
     assert run["state"] == "completed"
-    assert status_of(cli, run["run_id"])["child_ids"] == []
+    assert saved(run)["children"] == []
 
 
-def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, monkeypatch, fake_aside: Path) -> None:
-    """`stop` ends the watching, not the daemon's turn. Resuming the run it abandoned would
-    attach to that live turn, which waits for it and cannot steer it."""
+def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, runs_dir: Path, monkeypatch, fake_aside: Path) -> None:
+    """Abandoning ends the watching, not the daemon's turn. Resuming the run would attach to
+    that live turn, which waits for it and cannot steer it."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
-    assert poll(lambda: first_run(cli("status", "--run", run_id)[1]).get("session_id"), timeout=10)
-    cli("stop", "--run", run_id)
+    # The run knows its session once its supervisor has copied it -- the log shows the prompt from that copy.
+    assert poll(lambda: "prompt: 질문" in cli("log", "--run", run_id)[2], timeout=15)
+    kill_supervisors(runs.resolve_run(runs_dir, run_id))
+    assert first_run(cli("result", "--run", run_id)[1])["state"] == "abandoned"
     started = len(exec_calls(fake_aside))
 
     code, err, _ = cli("resume", run_id, "후속")
@@ -1543,19 +1471,6 @@ def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, mon
 
 
 # --- inputs the JSON contract has to survive ---------------------------------------------
-
-
-@pytest.mark.parametrize("cursor", ["garbage", "[1]", '{"RUN": {"": "abc"}}', '{"RUN": {"": -5}}', "-3", "²"])
-def test_a_cursor_that_is_not_one_is_refused_rather_than_replayed(cli, cursor: str) -> None:
-    """A cursor this command did not print would otherwise restart the log from the top --
-    or crash -- and either way the caller reads the whole run again believing it is new."""
-    run_id = finished_run_id(cli)
-
-    code, err, text = cli("log", "--run", run_id, "--since", cursor.replace("RUN", run_id))
-
-    assert code == 2
-    assert err["error"] == "bad_arguments"
-    assert "prompt:" not in text
 
 
 def test_an_unwritable_registry_is_reported_in_json(aside_home: Path, fake_aside: Path, tmp_path: Path) -> None:
@@ -1587,11 +1502,10 @@ def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> No
     run_id = first_run(payload)["run_id"]
     _, result, _ = cli("result", "--run", run_id)
     result = result["runs"][0]
-    _, status, _ = cli("status", "--run", run_id)
     code, item, _ = cli("show", "--run", run_id, "--item", "0")
     _, source, _ = cli("show", "--run", run_id, "--source", "0")
 
-    assert first_run(status)["usage"] == saved(result)["usage"]
+    assert saved(result)["usage"]["total_tokens"] < saved(first_run(cli("result", "--run", first)[1]))["usage"]["total_tokens"]
     assert code == 0 and item["content"] == "새 페이지"
     assert source["source"]["url"] == new["url"]
 
@@ -1604,14 +1518,14 @@ def test_a_resumed_run_does_not_count_the_earlier_turns_children(cli, monkeypatc
     run_id = first_run(payload)["run_id"]
     time.sleep(3)
 
-    _, running, _ = cli("status", "--run", run_id)
-    cli("log", "--run", run_id, "--follow", "--follow-timeout", "60")
-    _, finished, _ = cli("status", "--run", run_id)
+    _, running, _ = cli("result", "--run", run_id)
+    _, _, logged_running = cli("log", "--run", run_id)
+    _, finished, _ = cli("result", "--run", run_id, "--wait", "60")
+    _, _, logged = cli("log", "--run", run_id)
 
-    for status in (running, finished):
-        assert first_run(status)["live_children"] == 0
-        assert first_run(status)["child_ids"] == []
     assert first_run(running)["state"] == "running"
+    assert "[child " not in logged_running and "[child " not in logged
+    assert saved(first_run(finished))["children"] == []
 
 
 def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path) -> None:
@@ -1636,22 +1550,6 @@ def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path)
     assert set(merged[listed["url"]]["ids"]) == {"p1", "c1"}
     assert run["answer"].startswith(f"정리 page ({listed['url']}) other ({only_child['url']})")
     assert code == 0 and by_child_id["content"] == "다른 본문"
-
-
-def test_heartbeat_counts_only_the_children_still_working(cli, replay, aside_home: Path) -> None:
-    """The count is there to say the silence is busy. A finished child is not what makes it so."""
-    aside_session(aside_home, "DoneChild0000001", user("끝난 자식"), answer("끝"))
-    aside_session(aside_home, "LiveChild0000002", user("일하는 자식"), calling(("webfetch", {"url": "https://x.test"})))
-    replay([tool("subagent", "spawned", taskId="DoneChild0000001"),
-            tool("subagent", "spawned", taskId="LiveChild0000002"), {"__sleep__": 30}])
-    _, payload, _ = search(cli, "질문", wait="0")
-    run_id = first_run(payload)["run_id"]
-
-    _, _, text = cli("log", "--run", run_id, "--follow", "--follow-timeout", "5", "--heartbeat", "0.5")
-
-    beats = [line for line in lines_of(text) if line.startswith("heartbeat ")]
-    assert beats and beats[-1].endswith("running=1 children=1")
-    cli("stop", "--run", run_id)
 
 
 def test_an_empty_read_does_not_hide_what_a_search_already_showed(cli, replay) -> None:
@@ -1688,12 +1586,11 @@ def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, a
     run_id = first_run(payload)["run_id"]
     _, result, _ = cli("result", "--run", run_id)
     result = result["runs"][0]
-    _, status, _ = cli("status", "--run", run_id)
 
     _, _, logged = cli("log", "--run", run_id)
 
     assert [s["url"] for s in every_source(cli, run_id)] == [new_src["url"]]
-    assert saved(result)["usage"]["input"] == first_run(status)["usage"]["input"] == 10
+    assert saved(result)["usage"]["input"] == 10
     assert "old child answer" not in result["answer"]
     assert "new child answer" in logged and "old child answer" not in logged
 
@@ -1723,14 +1620,15 @@ def test_steps_numbers_tool_results_the_way_show_counts_them(cli, replay, aside_
     run_id = first_run(payload)["run_id"]
     first = poll(lambda: (lambda r: r if "#1 subagent" in r[2] else None)(cli("log", "--run", run_id, "--level", "steps")), timeout=10)
 
-    _, _, rest = cli("log", "--run", run_id, "--level", "steps", "--since", str(first[1]["cursor"]),
-                     "--follow", "--follow-timeout", "30")
-    numbered = [line for line in lines_of(first[2] + rest) if line[:1] == "#" and line[1:2].isdigit()]
+    cli("result", "--run", run_id, "--wait", "30")
+    _, _, whole = cli("log", "--run", run_id, "--level", "steps")
+    numbered = [line for line in lines_of(whole) if line[:1] == "#" and line[1:2].isdigit()]
     shown = [cli("show", "--run", run_id, "--item", str(n))[1]["tool"] for n in range(3)]
 
+    assert [line.split(" ", 2)[:2] for line in lines_of(first[2]) if line[:1] == "#"] == [["#0", "websearch"], ["#1", "subagent"]]
     assert [line.split(" ", 2)[:2] for line in numbered] == [["#0", "websearch"], ["#1", "subagent"], ["#2", "webfetch"]]
     assert shown == ["websearch", "subagent", "webfetch"]
-    assert any(line.startswith("[child NumberedChild001] webfetch out=") for line in lines_of(first[2] + rest))
+    assert any(line.startswith("[child NumberedChild001] webfetch out=") for line in lines_of(whole))
 
 
 def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None:
@@ -1762,7 +1660,7 @@ def test_a_search_finds_its_own_session_in_either_format(cli, monkeypatch, fmt: 
     run = first_run(payload)
     assert code == 0
     assert run["state"] == "completed", run.get("note")
-    assert status_of(cli, run["run_id"])["session_id"]
+    assert session_of(cli, run["run_id"])
     assert run["answer"] == "Answer Example A (https://example.org/a)"
 
 
@@ -1793,13 +1691,12 @@ def test_a_recorded_run_goes_from_search_through_its_child_to_result_and_resume(
     code, payload, _ = search(cli, "What is the latest stable Python 3 release according to python.org?")
     run = first_run(payload)
     _, result, _ = cli("result", "--run", run["run_id"])
-    _, status, _ = cli("status", "--run", run["run_id"])
     monkeypatch.delenv("FAKE_ASIDE_REPLAY")
     resumed_code, resumed, _ = cli("resume", run["run_id"], "Which page did the child read?", "--wait", "30")
 
     assert code == 0
     assert run["state"] == "completed", run.get("note")
-    assert first_run(status)["child_ids"] == [LIFECYCLE_CHILD]
+    assert saved(first_run(result))["children"] == [LIFECYCLE_CHILD]
     answer = first_run(result)["answer"]
     assert answer.startswith("The latest stable Python 3 release is **Python 3.14.8**")
     # The child's answer to its second task, not the empty-handed first one.
@@ -1928,16 +1825,17 @@ def test_every_source_is_one_call_away_numbered_as_show_counts_them(cli, replay)
     assert cli("show", "--run", run_id, "--source", "3")[1]["content"] == "page 3"
 
 
-def test_a_run_still_going_or_stopped_shows_what_it_has_read_so_far(cli, replay) -> None:
-    """Before the result is written -- still running, or abandoned by `stop` -- the sources come
-    from the run's own copy of its transcript."""
+def test_a_run_still_going_or_abandoned_shows_what_it_has_read_so_far(cli, replay, runs_dir: Path) -> None:
+    """Before the result is written -- still running, or abandoned when its supervisor died --
+    the sources come from the run's own copy of its transcript."""
     replay([tool("webfetch", "읽은 본문", sources=[{"id": "a", "url": "https://e.test/a", "title": "A"}]),
             {"__sleep__": 30}])
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
 
     running = poll(lambda: (lambda r: r if r[0] == 0 else None)(cli("show", "--run", run_id, "--source", "0")), timeout=15)
-    cli("stop", "--run", run_id)
+    kill_supervisors(runs.resolve_run(runs_dir, run_id))
+    assert first_run(cli("result", "--run", run_id)[1])["state"] == "abandoned"
     code, stopped, _ = cli("show", "--run", run_id, "--source", "0")
 
     assert running and running[1]["content"] == "읽은 본문"
@@ -1959,17 +1857,6 @@ def test_a_run_answered_from_stdout_says_it_has_no_page_text(runs_dir: Path, asi
     assert shown["content"] == "" and "stdout" in shown["note"]
 
 
-def test_status_leads_with_whether_the_run_is_alive(cli) -> None:
-    run_id = finished_run_id(cli)
-
-    _, status, _ = cli("status", "--run", run_id)
-
-    run = first_run(status)
-    assert list(run)[:5] == ["run_id", "state", "idle_seconds", "possibly_stalled", "live_children"]
-    assert {"label", "session_id", "child_ids", "usage"} <= set(run)
-    assert run["usage"]["total_tokens"] > 0
-
-
 def test_result_of_a_run_still_going_hands_back_the_watch(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
@@ -1978,10 +1865,10 @@ def test_result_of_a_run_still_going_hands_back_the_watch(cli, monkeypatch) -> N
 
     code, result, _ = cli("result", "--run", run_id)
 
-    assert code == 4
+    assert code == 0, "still going is not a failure"
     assert result["next"]["run_in_background"] is True
+    assert result["next"]["command"].endswith(" --wait 570")
     assert first_run(result)["note"] == "no result yet"
-    cli("stop", "--run", run_id)
 
 
 # --- run ids a caller can type --------------------------------------------------------------
@@ -2008,11 +1895,11 @@ def test_a_run_is_found_by_any_prefix_only_it_has(cli) -> None:
     second = first_run(payload)["run_id"]
     shared = next(i for i in range(len(first)) if first[i] != second[i])
 
-    code, status, _ = cli("status", "--run", second[: shared + 1])
+    code, collected, _ = cli("result", "--run", second[: shared + 1])
     _, shown, _ = cli("show", "--run", second[: shared + 1], "--item", "0")
-    ambiguous_code, ambiguous, _ = cli("status", "--run", first[:shared])
+    ambiguous_code, ambiguous, _ = cli("result", "--run", first[:shared])
 
-    assert code == 0 and first_run(status)["run_id"] == second
+    assert code == 0 and first_run(collected)["run_id"] == second
     assert shown["run_id"] == second
     assert ambiguous_code == 2 and ambiguous["error"] == "bad_arguments"
     assert set(ambiguous["candidates"]) == {first, second}
@@ -2023,9 +1910,9 @@ def test_a_whole_id_wins_over_a_longer_one_it_begins(cli) -> None:
     run_id = first_run(short)["run_id"]
     search(cli, "질문", extra=("--label", "x-more"))
 
-    code, status, _ = cli("status", "--run", run_id)
+    code, collected, _ = cli("result", "--run", run_id)
 
-    assert code == 0 and first_run(status)["run_id"] == run_id
+    assert code == 0 and first_run(collected)["run_id"] == run_id
 
 
 def test_a_korean_run_goes_from_search_through_its_watch_to_result_and_a_resume_by_prefix(cli, monkeypatch) -> None:
@@ -2034,15 +1921,13 @@ def test_a_korean_run_goes_from_search_through_its_watch_to_result_and_a_resume_
     _, payload, _ = cli("search", unicodedata.normalize("NFD", "한국어 질문입니다"), "--background")
     run_id = first_run(payload)["run_id"]
 
-    watched = subprocess.run(payload["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
-    collected = subprocess.run(json.loads(watched.stdout)["next"]["command"], shell=True, capture_output=True, text=True, timeout=60)
+    collected = subprocess.run(payload["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
     code, resumed, _ = cli("resume", run_id[: len(run_id) - 2], "후속", "--wait", "30")
 
     assert run_id.endswith("-한국어-질문입니다")
     assert json.loads(collected.stdout)["runs"][0]["answer"] == "느린 답."
     assert code == 0 and first_run(resumed)["state"] == "completed"
-    assert status_of(cli, first_run(resumed)["run_id"])["resumed_from"] == run_id
 
 
 def test_resuming_a_prefix_several_runs_share_names_them_instead(cli, fake_aside: Path) -> None:
@@ -2078,15 +1963,18 @@ def test_a_store_chosen_with_runs_dir_is_left_as_it_is_even_where_the_default_wo
 
 def test_a_default_store_from_before_gets_its_gitignore_when_next_written(aside_home: Path, fake_aside: Path) -> None:
     """A store made by an earlier version has no .gitignore. Reading it writes nothing; the next
-    write into it -- here `stop` marking a run -- adds one."""
+    write into it -- here `result` settling a run whose supervisor is gone -- adds one."""
     run_dir = Path.cwd() / ".ultra-search" / "runs" / "260901-000000-old"
     run_dir.mkdir(parents=True)
     (run_dir / "meta.json").write_text(json.dumps({"run_id": run_dir.name, "state": "running"}))
 
-    run_cli("status")
+    run_cli("log")
+    run_cli("result")
     run_cli("doctor")
     unread = (Path.cwd() / ".ultra-search" / ".gitignore").exists()
-    run_cli("stop", "--run", run_dir.name)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    (run_dir / "meta.json").write_text(json.dumps({**meta, "supervisor_pid": dead_pid()}))
+    run_cli("result")
 
     assert unread is False
     assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"

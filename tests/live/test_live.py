@@ -49,12 +49,12 @@ def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
 
     assert code == 0
     run = payload["runs"][0]
-    _, status = cli("status", "--run", run["run_id"], "--runs-dir", str(tmp_path))
+    _, mine = cli("sessions", "--mine", "--limit", "50", "--runs-dir", str(tmp_path))
     assert run["state"] == "completed", run.get("note")
-    assert status["runs"][0]["session_id"]
+    assert run["run_id"] in [s["run_id"] for s in mine["sessions"]], "the run found its own session by its marker"
     assert run["answer"].strip()
     assert run["opened_sources"], run
-    assert status["runs"][0]["usage"]["total_tokens"] > 0
+    assert json.loads(Path(run["result_path"]).read_text(encoding="utf-8"))["usage"]["total_tokens"] > 0
 
 
 @pytest.mark.parametrize("url,ext,passage", [

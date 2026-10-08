@@ -7,21 +7,14 @@ the run is left alive, and the reply carries `next` -- the literal command that 
 the caller when it finishes, with the Bash timeout that command needs. A handle alone
 would be a handle nobody comes back for.
 
-`status`, `log`, `result`, `show`, `stop`, `sessions` -- looking at runs that are already going.
+`result`, `log`, `show`, `sessions` -- looking at runs that are already going.
 
-These are split by the question each answers, because reaching for the wrong one is how a
-caller ends up polling something that was never going to change. Is it alive and how far
-along (`status`, one snapshot, no watching). What is it doing, incrementally (`log`, the
-only watcher). What did it conclude (`result`). A finished run needs `result`, not more
-`log`.
-
-`status` reports and never acts. A slow investigation and a stuck one are indistinguishable
-from here -- silence is not evidence, since a parent goes quiet for minutes while its
-children work -- so it labels the silence and leaves the judgement to the caller.
+These are split by the question each answers. What did it conclude, waiting for it if asked (`result`, the one wait, which also settles a run whose supervisor is gone -- nothing else would ever end it). Why did it choose a source, or come back thin (`log`, read once, after the fact). What exactly did it read (`show`).
 """
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import time
 from pathlib import Path
@@ -71,68 +64,12 @@ def _session_row(summary: dict) -> dict:
     }
 
 
-def _targets(root: Path, run: str | None, group: str | None, every: bool = False) -> list:
-    if every:
-        found = runs.all_runs(root)
-        if not found:
-            raise ArgumentError(f"no runs under {root}", fix="Start one with `search`.")
-        return found
+def _targets(root: Path, run: str | None, group: str | None) -> list:
     if run:
         return [runs.resolve_run(root, run)]
     if group:
         return runs.resolve_group(root, group)
     return runs.latest_group(root)
-
-
-# --- status ---------------------------------------------------------------------------
-
-
-def status(root: Path, *, run: str | None, group: str | None, stall_after: float) -> Reply:
-    now = time.time()
-    targets = _targets(root, run, group)
-    entries = [_status_entry(r, now, stall_after) for r in targets]
-    return Reply({"ok": True, "command": "status", "runs": entries},
-                 outcome.FAILED if any(e["state"] in FAILED_STATES for e in entries) else outcome.OK)
-
-
-def _status_entry(run: runs.Run, now: float, stall_after: float) -> dict:
-    meta = run.meta()
-    # This run's turn and its children: a resumed run's transcript also holds earlier turns,
-    # whose children and tokens belong to the runs that asked for them.
-    turn = evidence.turn_of(run)
-    # The supervisor records activity as it syncs, but a status call between two syncs
-    # would read a stale number -- so the files themselves get the last word.
-    last = max(float(meta.get("last_activity_at") or 0), run.last_write())
-    idle = round(now - last, 1) if last else None
-    summary = run_summary(run)
-    live = summary["state"] not in TERMINAL_STATES
-    entry = {
-        "run_id": run.run_id,
-        "state": summary["state"],
-        "idle_seconds": idle,
-        "possibly_stalled": bool(live and idle is not None and idle > stall_after),
-        "live_children": sum(1 for cid in turn.children if not evidence.child_is_terminal(turn.child_events[cid])),
-    }
-    entry.update({k: v for k, v in summary.items() if k not in entry})
-    if entry["possibly_stalled"]:
-        entry["note"] = " ".join(filter(None, (entry.get("note"), (
-            "idle beyond --stall-after. Nothing was stopped: a long investigation looks like this too. "
-            "Check `log`, and cancel in the Aside app if it really is stuck."))))
-    entry["label"] = meta.get("label")
-    if meta.get("group"):
-        entry["group"] = meta["group"]
-    entry["session_id"] = meta.get("session_id")
-    if meta.get("resumed_from"):
-        entry["resumed_from"] = meta["resumed_from"]
-    entry["child_ids"] = turn.children
-    entry["usage"] = turn.usage()
-    if meta.get("session_id"):
-        # Aside documents a run pausing for an approval or MFA prompt. It has never been
-        # observed here, so it is surfaced rather than interpreted.
-        susp = aside.suspension(meta["session_id"])
-        if susp:
-            entry["suspension"] = susp
-    return entry
 
 
 def run_summary(run: runs.Run) -> dict:
@@ -144,7 +81,8 @@ def run_summary(run: runs.Run) -> dict:
         notes.append("Partial snapshot: these children were still running; late results are not collected automatically.")
     if entry["state"] == "abandoned":
         entry["daemon_run_continues"] = True
-        notes.append("Only watching stopped. Aside keeps working and spending credits; cancel in the Aside app UI.")
+        why = f" ({meta['reason']})" if meta.get("reason") else ""
+        notes.append(f"Only watching stopped{why}. Aside keeps working and spending credits; cancel in the Aside app UI.")
     if notes:
         entry["note"] = " ".join(notes)
     return entry
@@ -153,56 +91,81 @@ def run_summary(run: runs.Run) -> dict:
 # --- log ------------------------------------------------------------------------------
 
 
-def next_step(targets: list, group: str | None, root: Path, cli: str, *, since=None) -> dict:
-    pending = any(r.meta().get("state") not in TERMINAL_STATES for r in targets)
-    target = ["--group", group] if group else ["--run", targets[0].run_id]
-    argv = ["log" if pending else "result", *target, "--runs-dir", str(root)]
-    if pending:
-        argv += ["--follow"]
-        if since is not None:
-            argv += ["--since", str(since)]
-    quoted_script = cli.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
-    return {
-        "command": f'uv run "{quoted_script}" {shlex.join(argv)}',
-        "bash_timeout_ms": 600_000 if pending else 120_000,
-        "run_in_background": pending,
-    }
-
-
-def log(root: Path, *, run: str | None, group: str | None, since: str, level: str, follow_: bool,
-        follow_timeout: float, heartbeat: float | None, cli: str) -> Reply:
+def log(root: Path, *, run: str | None, group: str | None, level: str) -> Reply:
     targets = _targets(root, run, group)
-    cursor = follow.follow(
-        targets,
-        level=level,
-        since=since,
-        follow=follow_,
-        follow_timeout=follow_timeout,
-        heartbeat=heartbeat,
-    )
-    group = None if run else (group or targets[0].meta().get("group"))
-    return Reply({
-        "ok": True,
-        "command": "log",
-        "runs": [run_summary(r) for r in targets],
-        "cursor": cursor,
-        "next": next_step(targets, group, root, cli, since=cursor),
-    })
+    follow.print_log(targets, level=level)
+    return Reply({"ok": True, "command": "log", "runs": [run_summary(r) for r in targets]})
 
 
 # --- result ---------------------------------------------------------------------------
 
 
-def result(root: Path, *, run: str | None, group: str | None, sources: bool, cli: str) -> Reply:
+#: How long the wait `next` hands back lasts: under the Bash tool's 600-second ceiling, with room to answer.
+WAIT = 570
+#: How long a reserved run may go without its supervisor claiming it before it is taken for one that never will.
+STARTUP_GRACE = 60.0
+
+
+def next_step(targets: list, group: str | None, root: Path, cli: str) -> dict:
+    """The one action that waits for these runs and returns their result."""
+    target = ["--group", group] if group else ["--run", targets[0].run_id]
+    argv = ["result", *target, "--runs-dir", str(root), "--wait", str(WAIT)]
+    quoted_script = cli.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return {"command": f'uv run "{quoted_script}" {shlex.join(argv)}', "bash_timeout_ms": 600_000, "run_in_background": True}
+
+
+def result(root: Path, *, run: str | None, group: str | None, sources: bool, wait: float, cli: str) -> Reply:
     targets = _targets(root, run, group)
     group = None if run else (group or targets[0].meta().get("group"))
-    payload = _envelope("result", targets, [_run_entry(r, sources=sources) for r in targets], group, root, cli)
-    states = [e["state"] for e in payload["runs"]]
-    if any(s in FAILED_STATES for s in states) or any(s not in TERMINAL_STATES for s in states):
-        return Reply(payload, outcome.FAILED)
-    if all(e.get("empty") for e in payload["runs"]):
-        return Reply(payload, outcome.EMPTY)
-    return Reply(payload)
+    for r in targets:
+        _settle_unwatched(r)
+    if wait:
+        follow.wait(targets, seconds=wait, check=_settle_unwatched)
+    entries = [_run_entry(r, sources=sources) for r in targets]
+    return Reply(_envelope("result", targets, entries, group, root, cli), _outcome(entries))
+
+
+def _settle_unwatched(run: runs.Run) -> None:
+    """End a run nothing is watching any more, since nothing else ever will: decided under the meta lock, so a supervisor that settles it at the same moment wins.
+
+    A result on disk is the run's even when its supervisor died before recording it -- with what it says of children still running. A supervisor that is gone abandons the run; so does one that never claimed it within the grace period.
+    """
+    saved_path = run.path / "result.json"
+
+    def decide(meta: dict) -> dict | None:
+        if (meta.get("state") or "") in TERMINAL_STATES:
+            return None
+        # Whether the supervisor is gone is settled before its result is looked for: one that wrote its result and
+        # then died between the two looks would otherwise be recorded as having left nothing.
+        pid = meta.get("supervisor_pid")
+        gone = isinstance(pid, int) and not _alive(pid)
+        never = (meta.get("state") == "starting" and not pid
+                 and time.time() - float(meta.get("created_at") or 0) > STARTUP_GRACE)
+        saved = _saved_result(run) if saved_path.exists() else None
+        if saved and saved.get("state") in TERMINAL_STATES:
+            return {k: saved[k] for k in ("state", "children", "orphan_children", "empty", "exit_code") if k in saved}
+        if gone:
+            return _abandoned("the supervisor is gone")
+        if never:
+            return _abandoned("the supervisor never started")
+        return None
+
+    run.update_meta_if(decide)
+
+
+def _abandoned(reason: str) -> dict:
+    return {"state": "abandoned", "reason": reason, "daemon_run_continues": True, "finished_at": time.time()}
+
+
+def _alive(pid: int) -> bool:
+    # 성진: pid 재사용은 확인하지 않는다(감독자가 죽고 같은 pid를 다른 프로세스가 받으면 살아 있는 것으로 본다); 오판이 보이면 감독자 시작 시각을 함께 기록해 대조한다.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _envelope(command: str, targets: list, entries: list[dict], group: str | None, root: Path, cli: str) -> dict:
@@ -212,7 +175,7 @@ def _envelope(command: str, targets: list, entries: list[dict], group: str | Non
     if group:
         payload["group"] = group
     if any(e["state"] not in TERMINAL_STATES for e in entries):
-        payload["note"] = ("Still running. Execute next, then follow its response; a watcher exiting does not mean "
+        payload["note"] = ("Still running. Execute next, then follow its response; a wait that ends does not mean "
                            "the investigation finished.")
         payload["next"] = next_step(targets, group, root, cli)
     payload["runs"] = entries
@@ -317,77 +280,20 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
     return Reply(payload)
 
 
-# --- stop -----------------------------------------------------------------------------
-
-
-def stop(root: Path, *, run: str | None, group: str | None, every: bool) -> Reply:
-    targets = _targets(root, run, group, every)
-    stopped = []
-    for run in targets:
-        meta = run.meta()
-        if (meta.get("state") or "") in TERMINAL_STATES:
-            continue
-        run.update_meta(stop_requested=True)
-        # The supervisor notices the flag and writes `abandoned` itself. Give it a moment
-        # to do so rather than racing it: two processes writing the terminal state is how
-        # an `abandoned` gets overwritten by a stale `running` a moment later. Any terminal
-        # state ends the wait -- a run that finished meanwhile keeps its result.
-        if not _await_terminal(run, 1.5):
-            _terminate(meta.get("supervisor_pid"))
-            _terminate(meta.get("pid"))
-            if (run.meta().get("state") or "") not in TERMINAL_STATES:
-                run.update_meta(state="abandoned", reason="stop requested",
-                                daemon_run_continues=True, finished_at=time.time())
-        if run.meta().get("state") == "abandoned":
-            stopped.append(run.run_id)
-    payload = {
-        "ok": True,
-        "command": "stop",
-        "stopped_watching": stopped,
-        "daemon_run_continues": True,
-        # The single most likely wrong assumption about this command, said where it is
-        # read rather than only in the help text.
-        "note": "This stopped the watching, not the run. Aside keeps working and keeps spending "
-        "credits; cancel it in the Aside app UI.",
-    }
-    return Reply(payload)
-
-
-def _await_terminal(run: runs.Run, timeout: float) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if (run.meta().get("state") or "") in TERMINAL_STATES:
-            return True
-        time.sleep(0.05)
-    return False
-
-
-def _terminate(pid: object) -> None:
-    import os
-    import signal
-
-    if not isinstance(pid, int):
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
-
-
 # --- search and resume ----------------------------------------------------------------
 
 
 def search(root: Path, prompts: list[str], *, wait: float, background: bool, label: str | None,
-           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> Reply:
+           effort: str | None, model: str | None, speed: str | None, cli: str) -> Reply:
     group = runs.new_group_name() if len(prompts) > 1 else None
     _require_aside()
-    started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout,
-                          group=group) for p in prompts]
+    started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, group=group)
+               for p in prompts]
     return _await_and_report(started, "search", root, group, wait=0.0 if background else wait, cli=cli)
 
 
 def resume(root: Path, target: str, prompt: str, *, wait: float, background: bool, label: str | None,
-           timeout: float | None, cli: str) -> Reply:
+           cli: str) -> Reply:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
@@ -407,7 +313,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
         if state not in TERMINAL_STATES:
             raise ArgumentError(
                 f"run {run.run_id} is still {state}; resume only continues a session that has stopped working",
-                fix=f"Wait for it with `log --run {run.run_id} --follow`, or start a separate `search`.",
+                fix=f"Wait for it with `result --run {run.run_id} --wait {WAIT}`, or start a separate `search`.",
                 state=state,
             )
         session_id = meta.get("session_id")
@@ -421,7 +327,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
 
     _require_aside()
     new_run = _start_run(
-        root, prompt, cli, label=label, effort=None, model=None, speed=None, timeout=timeout, group=None,
+        root, prompt, cli, label=label, effort=None, model=None, speed=None, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,
     )
     return _await_and_report([new_run], "resume", root, None, wait=0.0 if background else wait, cli=cli)
@@ -462,7 +368,7 @@ def _require_aside() -> None:
 
 
 def _start_run(root: Path, prompt: str, cli: str, *, label: str | None, effort: str | None, model: str | None,
-               speed: str | None, timeout: float | None, group: str | None, **extra) -> runs.Run:
+               speed: str | None, group: str | None, **extra) -> runs.Run:
     run = runs.create_run(
         root,
         label=label or _slug(prompt),
@@ -471,7 +377,6 @@ def _start_run(root: Path, prompt: str, cli: str, *, label: str | None, effort: 
         effort=effort,
         model=model,
         speed=speed,
-        watch_timeout=timeout,
         **extra,
     )
     run.update_meta(marker=marker_for(run.run_id))

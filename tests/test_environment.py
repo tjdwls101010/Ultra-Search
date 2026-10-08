@@ -235,12 +235,12 @@ def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypat
 @pytest.mark.parametrize("argv,command", [
     (["search"], "search"),
     (["fetch"], "fetch"),
-    (["status", "--run", "a", "--group", "b"], "status"),
+    (["result", "--run", "a", "--group", "b"], "result"),
     (["no-such-command"], None),
     (["search", "q", "--wait", "-1"], "search"),
     (["search", "q", "--wait", "nan"], "search"),
-    (["search", "q", "--timeout", "inf"], "search"),
-    (["log", "--heartbeat", "0"], "log"),
+    (["result", "--wait", "inf"], "result"),
+    (["log", "--level", "everything"], "log"),
     (["fetch", "https://e.test/", "--concurrency", "0"], "fetch"),
     (["fetch", "https://e.test/", "--max-chars", "-5"], "fetch"),
     (["fetch", "ftp://e.test/file"], "fetch"),
@@ -266,7 +266,7 @@ def test_bad_arguments_answer_in_json_with_where_to_look(argv: list[str], comman
 
 
 def test_a_runs_dir_naming_an_unknown_home_is_refused_in_json() -> None:
-    code, payload, text = run_cli("status", "--runs-dir", "~no-such-user-9f3a/runs")
+    code, payload, text = run_cli("result", "--runs-dir", "~no-such-user-9f3a/runs")
 
     assert code == 2
     assert payload["error"] == "bad_arguments" and payload["fix"]
@@ -281,7 +281,7 @@ def test_a_working_directory_that_is_gone_is_reported_in_json(tmp_path: Path, mo
     monkeypatch.chdir(gone)
     gone.rmdir()
 
-    code, payload, text = run_cli("status")
+    code, payload, text = run_cli("result")
 
     assert code == 4
     assert payload["error"] == "run_failed" and payload["fix"]
@@ -292,7 +292,7 @@ def test_a_runs_dir_that_is_a_symlink_loop_is_refused_in_json(tmp_path: Path) ->
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
 
-    code, payload, text = run_cli("status", "--runs-dir", str(loop))
+    code, payload, text = run_cli("result", "--runs-dir", str(loop))
 
     assert code in (2, 4) and payload["ok"] is False and payload["fix"]
     assert len(text.strip().splitlines()) == 1
@@ -306,7 +306,7 @@ def test_the_version_is_the_packages() -> None:
 
 
 def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
-    _, _, text = run_cli("status", "--help")
+    _, _, text = run_cli("result", "--help")
 
     assert "under the current working directory" in text
     assert "current project" not in text
@@ -314,7 +314,7 @@ def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
 
 # --- what each command's help promises -----------------------------------------------------
 
-COMMANDS = ["search", "resume", "status", "log", "result", "show", "stop", "fetch", "map", "crawl",
+COMMANDS = ["search", "resume", "log", "result", "show", "fetch", "map", "crawl",
             "sessions", "repl-api", "doctor", "setup"]
 
 
@@ -335,8 +335,8 @@ def test_every_help_stands_on_its_own(command: str) -> None:
 #: arguments, 3 Aside unavailable, 4 a run failed or was abandoned or nothing was saved or a
 #: file could not be read or written, 5 no result data.
 EXIT_CODES = {
-    "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "status": {0, 2, 4}, "log": {0, 2, 4},
-    "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "stop": {0, 2, 4}, "sessions": {0, 2, 5},
+    "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "log": {0, 2, 4},
+    "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "sessions": {0, 2, 5},
     "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4, 5},
     "doctor": {0, 2, 3}, "setup": {0, 2, 3}, "repl-api": {0, 2, 3},
 }
@@ -353,7 +353,7 @@ def test_every_help_names_the_exit_codes_it_can_return(command: str) -> None:
     assert codes == EXIT_CODES[command]
 
 
-@pytest.mark.parametrize("command", ["search", "resume", "log"])
+@pytest.mark.parametrize("command", ["search", "resume", "result"])
 def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
     text = help_of(command)
 

@@ -20,7 +20,7 @@ Each poll, the first of these that holds decides:
 
 Winding down gives the process and this turn's children the settle window to end, ends a process still running after it, and then judges once, as the earlier format's settle does: a non-zero exit of its own or a last message that stopped on an error is failed, a child still running is completed_with_orphans, anything else completed. The exit code of a process the supervisor ended says nothing about the turn and is not read.
 
-Run detached, this writes meta.json continuously so `status` and `log` can read progress from a process that has no channel back to them. It is started as `cli.py _supervise <run>`: the one entry point, found by the path the caller used to reach it.
+Run detached, this writes meta.json continuously so `result` and `log` can read progress from a process that has no channel back to them. It is started as `cli.py _supervise <run>`: the one entry point, found by the path the caller used to reach it. It claims the run before it starts any work, and `result` settles a run whose supervisor never claimed it or is gone: a supervisor that wakes after that finds the run settled and starts nothing.
 """
 from __future__ import annotations
 
@@ -133,14 +133,14 @@ def supervise(
     discovery_deadline: float = DISCOVERY_DEADLINE,
     settle: float = SETTLE,
     idle_limit: float = IDLE_LIMIT,
-    timeout: float | None = None,
 ) -> dict:
-    meta = run.meta()
+    # Claimed under the lock before anything starts: a run `result` has already settled -- its supervisor taken
+    # for one that never started -- must not have its work started now, after the caller was told otherwise.
+    meta = run.update_meta_if(lambda m: {"supervisor_pid": os.getpid()} if m.get("state") == "starting"
+                              and not m.get("supervisor_pid") else None)
+    if meta.get("supervisor_pid") != os.getpid():
+        return meta
     prompt = meta.get("prompt") or ""
-    if timeout is None and meta.get("watch_timeout") is not None:
-        # `--timeout` is recorded by the CLI that started the run; the supervisor is a
-        # separate process with no way to be passed it, so it is read back from disk here.
-        timeout = float(meta["watch_timeout"])
 
     proc = aside.start_exec(
         decorate_prompt(prompt, meta.get("marker") or marker_for(run.run_id)),
@@ -168,10 +168,6 @@ def supervise(
             exited_at = time.time()
         turn = watch.sync()
         now = time.time()
-        if _stop_requested(run):
-            return _abandon(run, "stop requested", proc)
-        if timeout is not None and now - started >= timeout:
-            return _abandon(run, "watch timeout", proc)
 
         if exit_code not in (None, 0):                                            # W1
             return _finish(run, watch.session_id, turn, "failed", exit_code, turn.unfinished_children())
@@ -232,28 +228,11 @@ def _wind_down(run: runs.Run, watch: _Watch, proc, exit_code: int | None, *, pol
     return _finish(run, watch.session_id, turn, state, exit_code, orphans, **extra)
 
 
-def _stop_requested(run: runs.Run) -> bool:
-    return bool(run.meta().get("stop_requested"))
-
-
 def _terminate(proc) -> None:
     try:
         proc.terminate()
     except OSError:
         pass
-
-
-def _abandon(run: runs.Run, reason: str, proc) -> dict:
-    _terminate(proc)
-    return run.update_meta(
-        state="abandoned",
-        reason=reason,
-        # Said in the payload, not only in documentation, because this is the one thing
-        # a caller is most likely to assume wrongly and never be corrected on.
-        daemon_run_continues=True,
-        note="the daemon-side run keeps going and keeps spending credits; cancel it in the Aside app",
-        finished_at=time.time(),
-    )
 
 
 def _abandon_quiet(run: runs.Run, watch: _Watch, turn: evidence.Turn, proc, exit_code: int | None,
@@ -264,8 +243,9 @@ def _abandon_quiet(run: runs.Run, watch: _Watch, turn: evidence.Turn, proc, exit
         run, watch.session_id, turn, "abandoned", exit_code, turn.unfinished_children(),
         result_note=f"nothing was written for {idle_limit:g}s before the turn finished; this is what it had by then",
         reason="the turn went quiet before it finished",
+        # Said in the payload, not only in documentation, because this is the one thing
+        # a caller is most likely to assume wrongly and never be corrected on.
         daemon_run_continues=True,
-        note="the daemon-side run keeps going and keeps spending credits; cancel it in the Aside app",
     )
 
 

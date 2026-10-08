@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections.abc import Callable
 import os
 import secrets
 import time
@@ -81,7 +82,7 @@ class Run:
         """Merge changes into meta.json, serialised against other processes.
 
         Three processes write this file: the CLI that started the run, the detached
-        supervisor, and whatever later calls `stop`. Each does read-modify-write, so
+        supervisor, and whatever later calls `result`. Each does read-modify-write, so
         without a lock two concurrent updates lose one side's keys entirely -- the
         supervisor's `state` and `pid` being overwritten by a parent that had already read
         the older copy. The lock makes the pair atomic; the atomic rename below only ever
@@ -106,6 +107,17 @@ class Run:
         meta["meta_lock_contended"] = str(last)
         atomic_write_json(self.meta_path, meta)
         return meta
+
+    def update_meta_if(self, decide: Callable[[dict], dict | None]) -> dict:
+        """Apply what ``decide`` returns for the current meta.json, read and written under the same lock; nothing when it returns None. For a change that is only right while the run is as it was seen -- a state settled by one process must not be overwritten by another that read it a moment before."""
+        with _meta_lock(self.path):
+            meta = load_meta(self.path)
+            changes = decide(meta)
+            if changes:
+                workspace.mark_written(self.path.parent.parent)
+                meta.update(changes)
+                atomic_write_json(self.meta_path, meta)
+            return meta
 
     def meta(self) -> dict:
         return load_meta(self.path)
@@ -180,7 +192,7 @@ def _meta_lock(run_path: Path, timeout: float = 10.0):
 def atomic_write_json(path: Path, obj: dict) -> None:
     """Serialise first, then rename.
 
-    `status` may read this file at any moment. Serialising before touching the
+    `result` may read this file at any moment. Serialising before touching the
     destination means an unserialisable value fails without having damaged what was
     already there, and the rename means a reader sees the old file or the new one.
     """
@@ -220,7 +232,7 @@ def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
     if not is_safe_id(key):
         raise ArgumentError(
             f"{run_id!r} is not a run id",
-            fix="Run ids look like 260925-021530-label; `status` with no target shows the latest.",
+            fix="Run ids look like 260925-021530-label; `result` with no target shows the latest.",
         )
     path = Path(runs_root) / RUNS_SUBDIR / key
     if path.is_dir():
@@ -238,7 +250,7 @@ def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
     known = [r.run_id for r in every][-5:]
     raise RunNotFound(
         f"no run {key!r} under {Path(runs_root) / RUNS_SUBDIR}",
-        fix="Run `status` with no target for the most recent one, or name one of these." if known
+        fix="Run `result` with no target for the most recent one, or name one of these." if known
         else "No runs have been started here yet.",
         recent_runs=known,
     )
@@ -247,7 +259,7 @@ def resolve_run(runs_root: str | os.PathLike[str], run_id: str) -> Run:
 def resolve_group(runs_root: str | os.PathLike[str], group: str) -> list[Run]:
     members = [r for r in all_runs(runs_root) if load_meta(r.path).get("group") == group]
     if not members:
-        raise ArgumentError(f"no group {group!r} under {Path(runs_root) / RUNS_SUBDIR}", fix="Run `status` with no target for the most recent one.")
+        raise ArgumentError(f"no group {group!r} under {Path(runs_root) / RUNS_SUBDIR}", fix="Run `result` with no target for the most recent one.")
     return members
 
 

@@ -198,20 +198,6 @@ def _db_session_row(session_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def suspension(session_id: str) -> object | None:
-    """What Aside's database says the session is paused on, if anything -- surfaced, not interpreted."""
-    row = _db_session_row(session_id)
-    if not row:
-        return None
-    raw = row.get("suspension")
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return raw
-
-
 def session_summaries(limit: int = 30) -> list[dict]:
     """Sessions on disk that have a prompt, newest first: session_id, date, modified_at and
     the whole opening_prompt.

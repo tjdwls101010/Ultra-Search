@@ -1,78 +1,57 @@
-"""Watching a run, and ending the watch in a way the caller can act on.
+"""A run's events as lines: read once, after the fact (`log`), or as they come while `result --wait` waits.
 
-`--follow` exits when the run reaches a terminal state, and that exit is the product.
-Run as a background Bash call, a process that exits notifies the caller -- so following
-turns "a run is happening somewhere" into "you will be told when it is done", which is
-the difference between a background search that gets collected and one that is started
-and forgotten.
-
-Three endings are printed differently on purpose. `run.<state>` means the run finished
-and there is a result to collect. `run.still-running` means only that we stopped looking.
-`heartbeat` means a silence has been checked and is alive. Collapsing any two of those
-would make a caller either collect nothing or wait forever.
+A wait prints only what happens while it waits -- a run's history is `log`'s -- so a caller that chains waits never reads a line twice, and the wait's exit, run as a background Bash call, is what tells the caller the work has ended.
 
 Every line here is progress, so it goes to stderr as it happens, each flushed: stdout is
 kept for the one JSON reply the command ends with.
 """
 from __future__ import annotations
 
-import json
 import sys
 import time
+from collections.abc import Callable
 
 from ultra_search import aside, runs
-from ultra_search.outcome import ArgumentError
 from ultra_search.research import evidence, render
 from ultra_search.research.states import TERMINAL_STATES
 
 POLL = 1.0
 
 
-def parse_since(since: str | int | None, runs: list) -> dict[str, dict[str, int]]:
-    """Cursors from the `cursor` of a previous call's reply.
-
-    A single run's cursor is a plain integer so the common case stays readable; a group's
-    is the JSON object printed for it, because one number cannot describe several streams
-    advancing independently. Anything else is refused: read as "from the start", it would
-    replay the whole run to a caller who believes it is new.
-    """
-    empty = {r.run_id: {} for r in runs}
-    if since in (None, "", 0, "0"):
-        return empty
-    text = str(since)
-    if text.isascii() and text.isdigit():
-        return {runs[0].run_id: {"": int(text)}} if runs else empty
-    bad = ArgumentError(
-        f"--since {text!r} is not a cursor this command printed",
-        fix="Pass the `cursor` value from the previous `log` response, or omit --since to read from the start.",
-    )
-    try:
-        loaded = json.loads(text)
-    except ValueError:
-        raise bad from None
-    if not isinstance(loaded, dict):
-        raise bad
-    out = dict(empty)
-    for run_id, streams in loaded.items():
-        if _offset(streams):
-            out[run_id] = {"": streams}
-        elif isinstance(streams, dict) and all(_offset(v) for v in streams.values()):
-            out[run_id] = dict(streams)
-        else:
-            raise bad
-    return out
+def print_log(targets: list, *, level: str) -> None:
+    """Every event of these runs' turns, once."""
+    numbering: dict[str, int] = {}
+    for run in targets:
+        for line in _drain(run, {}, level, len(targets) > 1, numbering):
+            _emit(line)
 
 
-def _offset(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+def wait(targets: list, *, seconds: float, check: Callable[[runs.Run], None], level: str = "progress") -> None:
+    """Wait until every run has ended or ``seconds`` have passed, printing what they do meanwhile. ``check`` sees each run on every poll: the chance to settle one that nothing is watching any more."""
+    label = len(targets) > 1
+    cursors: dict[str, dict[str, int]] = {r.run_id: {} for r in targets}
+    numbering: dict[str, int] = {}
+    for run in targets:
+        _drain(run, cursors[run.run_id], level, label, numbering)
+    deadline = time.time() + seconds
+    while True:
+        for run in targets:
+            check(run)
+            for line in _drain(run, cursors[run.run_id], level, label, numbering):
+                _emit(line)
+        ended = all((r.meta().get("state") or "") in TERMINAL_STATES for r in targets)
+        if ended or time.time() >= deadline:
+            if ended:
+                # A run's last events can land between the read above and its ending: read once more.
+                for run in targets:
+                    for line in _drain(run, cursors[run.run_id], level, label, numbering):
+                        _emit(line)
+            return
+        time.sleep(min(POLL, max(0.0, deadline - time.time())))
 
 
-def format_cursor(cursors: dict[str, dict[str, int]], runs: list) -> str | int:
-    # A plain integer only while there is one stream to describe. Once a child exists an
-    # integer can only carry the parent's offset, and the next read replays the child.
-    if len(runs) == 1 and set(cursors.get(runs[0].run_id, {})) <= {""}:
-        return cursors.get(runs[0].run_id, {}).get("", 0)
-    return json.dumps(cursors, ensure_ascii=False, separators=(",", ":"))
+def _emit(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
 
 
 def _drain(run: runs.Run, cursors: dict[str, int], level: str, label: bool, numbering: dict[str, int]) -> list[str]:
@@ -127,66 +106,3 @@ def _number(run: runs.Run, path, events: list, start_line: int, numbering: dict[
             n += 1
     numbering[run.run_id] = n
     return ordinals
-
-
-def _live_children(run: runs.Run) -> int:
-    """Children of this run's turn that have not finished -- the ones keeping a quiet parent busy."""
-    turn = evidence.turn_of(run)
-    return sum(1 for cid in turn.children if not evidence.child_is_terminal(turn.child_events[cid]))
-
-
-def follow(
-    runs: list,
-    *,
-    level: str = "progress",
-    since: str | int | None = None,
-    follow: bool = False,
-    follow_timeout: float = 570.0,
-    heartbeat: float | None = None,
-) -> str | int:
-    cursors = parse_since(since, runs)
-    numbering: dict[str, int] = {}
-    label = len(runs) > 1
-    started = time.time()
-    last_beat = started
-
-    def emit(line: str) -> None:
-        print(line, file=sys.stderr, flush=True)
-
-    while True:
-        for run in runs:
-            for line in _drain(run, cursors.setdefault(run.run_id, {}), level, label, numbering):
-                emit(line)
-
-        states = {r.run_id: (r.meta().get("state") or "unknown") for r in runs}
-        done = [r for r in runs if states[r.run_id] in TERMINAL_STATES]
-
-        if not follow:
-            break
-
-        if len(done) == len(runs):
-            for run in runs:
-                emit(f"run.{states[run.run_id]} {run.run_id}")
-            if label:
-                emit(f"group.finished {len(runs)} run(s)")
-            break
-
-        now = time.time()
-        if now - started >= follow_timeout:
-            # Every member, ended or not: the caller collects the one and keeps watching the other.
-            for run in runs:
-                if states[run.run_id] in TERMINAL_STATES:
-                    emit(f"run.{states[run.run_id]} {run.run_id}")
-                else:
-                    emit(f"run.still-running {run.run_id} watched={round(now - started, 1)}s")
-            break
-
-        if heartbeat and now - last_beat >= heartbeat:
-            last_beat = now
-            live = sum(_live_children(r) for r in runs if states[r.run_id] not in TERMINAL_STATES)
-            waiting = [r.run_id for r in runs if states[r.run_id] not in TERMINAL_STATES]
-            emit(f"heartbeat elapsed={round(now - started, 1)}s running={len(waiting)} children={live}")
-
-        time.sleep(POLL)
-
-    return format_cursor(cursors, runs)

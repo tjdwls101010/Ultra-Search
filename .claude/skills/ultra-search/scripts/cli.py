@@ -349,13 +349,14 @@ def build_parser() -> argparse.ArgumentParser:
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
         "Each run ends in one state:\n"
-        "completed: the process exited, its session was read, and every child finished.\n"
+        "completed: this run's turn finished in its session, and every child of it finished.\n"
         "completed_with_orphans: as completed, but orphan_children were still running -- a saved snapshot; their "
         "late results are not collected.\n"
         "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
         "sources come from stdout only.\n"
-        "failed: aside exited non-zero.\n"
-        "abandoned: watching stopped -- the daemon's work and its credit use did not.",
+        "failed: aside exited non-zero, or the turn ended on an error.\n"
+        f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
+        "finished, or `stop` or --timeout ended the watch; the daemon's work and its credit use did not.",
     )
     _add_target(rs)
     rs.add_argument("--sources", action="store_true",

@@ -387,7 +387,7 @@ def test_a_file_a_later_turn_rewrote_is_not_passed_off_as_this_runs(
     (copies,) = (run.path / "artifacts").iterdir()
     assert meta["state"] == "completed"
     assert result["artifacts"] == [str(copies / "b.txt")]
-    assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.txt", "changed by a later turn")]
+    assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.txt", "changed after a later turn began")]
     assert result["answer"] == f"[a](artifacts/a.txt) [b]({copies / 'b.txt'})"
     assert "1 saved file" in result["note"]
 
@@ -402,6 +402,29 @@ while not stop.exists() and time.time() < until:
         with target.open("a") as f:
             f.write("x" * 100)
 """
+
+
+def test_every_task_a_turn_gave_a_child_is_the_runs(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
+    """A parent can give the same child a second task within one turn. Both tasks' files are this run's, and its answer is the second task's -- a child's part ends only at a task the session's next turn gave it."""
+    kid = "TwoTaskChild0001"
+
+    def task(n: int) -> list[dict]:
+        return [{"__session__": kid, **turn("started"), "timestamp": "__NOW__"}, {"__session__": kid, **user(f"task {n}")},
+                {"__session__": kid, "__artifact__": f"task{n}.txt", "text": f"from task {n}"},
+                {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer(f"task {n} done")},
+                {"__session__": kid, **turn("finished"), "timestamp": "__NOW__"}, {"__sleep__": 0.05}]
+
+    replay([calling(("subagent", {"action": "spawn", "description": "c1"})), *task(1),
+            tool("subagent", "spawned", taskId=kid), *task(2), tool("subagent", "continued", taskId=kid),
+            answer("부모 답")])
+    run = start(runs_dir)
+
+    meta = supervise(run, settle=0.3)
+
+    result = result_of(run)
+    assert meta["state"] == "completed"
+    assert sorted(Path(p).name for p in result["artifacts"]) == ["task1.txt", "task2.txt"]
+    assert result["answer"].endswith(f"--- child {kid} ---\ntask 2 done")
 
 
 def test_a_file_still_being_written_is_reported_not_torn(
@@ -425,7 +448,7 @@ def test_a_file_still_being_written_is_reported_not_torn(
             new = [d / "artifacts" / "growing.log" for d in set(sessions.iterdir()) - before]
             if writer is None and new and new[0].exists():
                 writer = subprocess.Popen([sys.executable, "-c", WRITER, str(new[0]), str(stop)])
-            if new and new[0].exists() and new[0].stat().st_size:
+            if new and new[0].exists() and new[0].stat().st_size > 1 << 20:
                 writing.touch()
                 return
             time.sleep(0.01)
@@ -495,8 +518,10 @@ def test_a_snapshot_of_something_that_is_not_a_file_fails_at_once(tmp_path: Path
     t = threading.Thread(target=copy, daemon=True)
     t.start()
     t.join(5)
-    if not got:
+    in_time = not t.is_alive()
+    if not in_time:
         os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))  # lets a reader stuck on the pipe go
+    assert in_time, "the copy waited on the pipe"
     assert got and isinstance(got[0], OSError)
     assert not (tmp_path / "copy").exists()
 

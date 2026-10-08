@@ -352,13 +352,14 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
             began, next_began = turn.window(cid)
 
             def later(mtime: float) -> bool:
-                # Aside stamps a record to the millisecond: a file from just before the next turn can share its ms.
-                return next_began is not None and mtime >= next_began + 0.001
+                # Aside stamps a record to the millisecond, so a file in the next turn's first millisecond could be
+                # either turn's; it is not claimed for this one.
+                return next_began is not None and mtime >= next_began
 
             for rel, path, mtime in saved:
                 if later(mtime):
                     if rel in named:
-                        missing.append({"path": str(path), "error": "changed by a later turn"})
+                        missing.append({"path": str(path), "error": "changed after a later turn began"})
                     continue
                 if rel not in named and (began is None or mtime < began):
                     continue
@@ -371,7 +372,7 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
                 if later(copied.st_mtime):  # rewritten between the listing and the copy
                     dst.unlink(missing_ok=True)
                     if rel in named:
-                        missing.append({"path": str(path), "error": "changed by a later turn"})
+                        missing.append({"path": str(path), "error": "changed after a later turn began"})
                     continue
                 kept.setdefault(cid, {})[rel] = dst
     except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies

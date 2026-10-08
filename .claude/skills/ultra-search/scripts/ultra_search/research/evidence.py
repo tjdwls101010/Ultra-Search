@@ -178,6 +178,8 @@ class Turn:
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
     child_events: dict[str, list[aside.Event]] = field(default_factory=dict)
+    #: For a child whose session went on to a task the session's next turn gave it, when that task began, in seconds.
+    child_next_started_at: dict[str, float] = field(default_factory=dict)
 
     @property
     def framed(self) -> bool:
@@ -205,10 +207,11 @@ class Turn:
         )
 
     def window(self, cid: str | None = None) -> tuple[float | None, float | None]:
-        """When a stream's part in this turn began and when its session's next turn did, in seconds -- None where the transcript does not say, or no next turn has begun. The turn's own under None, a child's under its id: a child works in a session of its own, which can go on after the parent has moved to its next turn."""
+        """When a stream's part in this turn began and when its session's next turn did, in seconds -- None where the transcript does not say, or no next turn has begun. The turn's own under None, a child's under its id: a child works in a session of its own, where every task this turn gave it is this run's, even one that finishes after the parent has moved on."""
         if cid is None:
             return self.started_at, self.next_started_at
-        return _window(self.child_events[cid])
+        stamps = [e.timestamp for e in self.child_events[cid] if e.timestamp]
+        return (stamps[0] / 1000 if stamps else None), self.child_next_started_at.get(cid)
 
     def stream_answers(self, sources: list[Source] | None = None) -> list[tuple[str | None, str]]:
         """Each stream's answer: the turn's own under None, then each child's that said something, under its id.
@@ -283,6 +286,16 @@ def turn_of(run: runs.Run) -> Turn:
     stamps = [e.timestamp for e in mine if e.timestamp]
     later = [] if end is None else [e.timestamp for e in events[end:]
                                     if e.kind == "lifecycle" and e.lifecycle == "started" and e.timestamp]
+    # A child's part ends only where it takes a task begun after this session's next turn did -- a task the next run gave it.
+    child_events: dict[str, list[aside.Event]] = {}
+    child_next: dict[str, float] = {}
+    for cid in children:
+        cev = _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
+        cut = next((i for i, e in enumerate(cev) if later and e.kind == "lifecycle" and e.lifecycle == "started"
+                    and e.timestamp >= later[0]), len(cev))
+        child_events[cid] = cev[:cut]
+        if cut < len(cev):
+            child_next[cid] = cev[cut].timestamp / 1000
     return Turn(
         observed=True,
         start_line=mine[0].index,
@@ -291,8 +304,8 @@ def turn_of(run: runs.Run) -> Turn:
         next_started_at=later[0] / 1000 if later else None,
         events=mine,
         children=children,
-        child_events={cid: _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
-                      for cid in children},
+        child_events=child_events,
+        child_next_started_at=child_next,
     )
 
 
@@ -315,15 +328,6 @@ def _turn_end(events: list[aside.Event], prompt: int) -> int | None:
         if events[i].kind == "lifecycle" and events[i].lifecycle in ("finished", "started"):
             return i + 1 if events[i].lifecycle == "finished" else i
     return None
-
-
-def _window(events: list[aside.Event]) -> tuple[float | None, float | None]:
-    """A child's part from its first timestamp, to the `started` of a turn after one it finished."""
-    stamps = [e.timestamp for e in events if e.timestamp]
-    done = next((i for i, e in enumerate(events) if e.kind == "lifecycle" and e.lifecycle == "finished"), None)
-    later = [] if done is None else [e.timestamp for e in events[done:]
-                                     if e.kind == "lifecycle" and e.lifecycle == "started" and e.timestamp]
-    return (stamps[0] / 1000 if stamps else None), (later[0] / 1000 if later else None)
 
 
 def _from(events: list[aside.Event], since: int) -> list[aside.Event]:

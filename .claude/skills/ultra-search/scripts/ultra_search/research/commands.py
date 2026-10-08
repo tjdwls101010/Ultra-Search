@@ -385,7 +385,7 @@ def search(root: Path, prompts: list[str], *, wait: float, background: bool, lab
 
 
 def resume(root: Path, target: str, prompt: str, *, wait: float, background: bool, label: str | None,
-           effort: str | None, model: str | None, speed: str | None, timeout: float | None, cli: str) -> Reply:
+           timeout: float | None, cli: str) -> Reply:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
@@ -419,7 +419,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
 
     _require_aside()
     new_run = _start_run(
-        root, prompt, cli, label=label, effort=effort, model=model, speed=speed, timeout=timeout, group=None,
+        root, prompt, cli, label=label, effort=None, model=None, speed=None, timeout=timeout, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,
     )
     return _await_and_report([new_run], "resume", root, None, wait=0.0 if background else wait, cli=cli)

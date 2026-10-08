@@ -1,4 +1,4 @@
-"""The aside binary: finding it, starting `aside exec`, and where its daemon answers.
+"""The aside binary: finding it, starting an agent turn, and where its daemon answers.
 
 `aside exec` is spawned detached, for the reason the supervisor is: the process that starts
 the work is a Bash tool call that will be cut off at a timeout the work does not respect,
@@ -22,8 +22,8 @@ SPEEDS = ("default", "fast")
 #: because they move independently and it is the daemon that decides what a run records:
 #: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
 #: entirely while still writing full transcripts to disk.
-VERIFIED_VERSION = "1.26.810.1915"
-VERIFIED_DAEMON_VERSION = "1.26.1002.1950"
+VERIFIED_VERSION = "1.26.1008.1938"
+VERIFIED_DAEMON_VERSION = "1.26.1008.1938"
 
 
 def aside_bin() -> str:
@@ -47,13 +47,19 @@ def aside_bin() -> str:
 def start_exec(prompt: str, *, stdout_path: str | os.PathLike[str], session: str | None = None,
                effort: str | None = None, model: str | None = None, speed: str | None = None,
                cwd: str | os.PathLike[str] | None = None) -> subprocess.Popen:
-    """Start `aside exec` detached, streaming its stdout to a file the supervisor tails.
+    """Start one agent turn detached -- `aside exec` for a new session, `aside session resume` to continue
+    ``session`` -- streaming its stdout to a file the supervisor tails.
 
-    The returned process's `args` is the argv it was started with.
+    The returned process's `args` is the argv it was started with. A continued session keeps the settings it
+    has: `session resume` takes no effort, model or speed, so passing one with ``session`` is refused rather
+    than dropped.
     """
-    argv = [aside_bin(), "exec"]
     if session:
-        argv += ["--session", session]
+        if effort or model or speed:
+            raise ValueError("a continued session takes no effort, model or speed")
+        argv = [aside_bin(), "session", "resume", session]
+    else:
+        argv = [aside_bin(), "exec"]
     if effort:
         argv += ["--effort", effort]
     if model:

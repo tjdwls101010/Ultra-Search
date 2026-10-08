@@ -136,7 +136,7 @@ def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) ->
 
     code, payload = cli(
         "resume", external["session_id"], "내 이름이 뭐라고 했지? 이름만 답해.",
-        "--effort", "low", "--wait", "120", "--runs-dir", str(tmp_path),
+        "--wait", "120", "--runs-dir", str(tmp_path),
     )
 
     assert code == 0

@@ -306,8 +306,8 @@ def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch)
 
 
 def test_a_search_whose_process_exits_mid_turn_hands_back_the_final_answer(cli, replay) -> None:
-    """`aside exec` exited 0 while its subagents were working, and the final answer came 12 seconds later -- past the supervisor's own settle window. Following `next` to the end still has to give the caller that answer, not an empty snapshot with orphans."""
-    replay(subagent_turn(gap=12))
+    """`aside exec` exited 0 while its subagents were working, and the final answer came 15 seconds later -- past the supervisor's own settle window and its poll after it. Following `next` to the end still has to give the caller that answer, not an empty snapshot with orphans."""
+    replay(subagent_turn(gap=15))
 
     _, payload, _ = search(cli, "질문", wait="0.5")
     final = follow_next(payload)
@@ -1034,6 +1034,24 @@ def test_an_unfamiliar_record_or_block_is_kept_and_a_torn_line_is_left_alone(cli
     assert len([line for line in text.splitlines() if line.startswith("raw[")]) == 1
     assert "[1 unrecognised block(s)]" in text
     assert "잘린 줄" not in text
+
+
+def test_log_and_show_stop_where_the_runs_turn_ends(cli, replay) -> None:
+    """The session can go on to a next turn while the supervisor still copies it. Its records are another run's: the log does not print them, and the numbers it prints are the ones `show --item` takes."""
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "이 턴의 페이지"), turn("final-started"),
+            answer("내 턴의 답"), turn("finished"), turn("started"), user("다음 질문"),
+            calling(("webfetch", {"url": "https://y.test"})), tool("webfetch", "다음 턴의 페이지"), turn("final-started"),
+            answer("다음 턴의 답"), turn("finished")])
+    _, payload, _ = search(cli, "질문")
+    run_id = first_run(payload)["run_id"]
+
+    _, _, text = cli("log", "--run", run_id, "--level", "steps")
+    code, _, _ = cli("show", "--run", run_id, "--item", "1")
+
+    assert first_run(payload)["answer"] == "내 턴의 답"
+    assert "#0 webfetch" in text
+    assert "#1" not in text and "다음 턴" not in text
+    assert code == 2
 
 
 # --- resume ------------------------------------------------------------------------------

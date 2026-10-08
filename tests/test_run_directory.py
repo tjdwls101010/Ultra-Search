@@ -232,16 +232,20 @@ def test_a_finished_turn_whose_process_lingers_is_judged_by_the_turn(
     assert result_of(run)["exit_code"] is None
 
 
-def test_a_turn_that_finished_and_then_exited_non_zero_failed(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+def test_a_turn_that_finished_with_an_answer_and_then_exited_non_zero_failed(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay, monkeypatch
 ) -> None:
-    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "fail")
+    """Winding down waits for the process; an exit code of its own, not the supervisor's, still decides. The turn is over before the process exits here, so this is the wind-down's judgement, not the watch's."""
+    monkeypatch.setenv("FAKE_ASIDE_EXIT", "1")
+    replay([calling(("webfetch", {"url": "https://x.test"})), tool("webfetch", "page"), turn("final-started"),
+            answer("최종 답"), turn("finished"), {"__sleep__": 1.0}])
     run = start(runs_dir)
 
-    meta = supervise(run, settle=0.5)
+    meta = supervise(run, settle=5.0)
 
     assert meta["state"] == "failed"
     assert meta["exit_code"] == 1
+    assert "terminated_by_supervisor" not in meta
 
 
 def test_an_error_that_ends_a_turn_after_its_process_exited_0_is_a_failure(

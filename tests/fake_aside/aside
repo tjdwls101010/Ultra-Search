@@ -284,7 +284,8 @@ def do_exec(prompt: str, session: str | None = None) -> int:
     sys.stdout.flush()
 
     if replay(d, prompt):
-        return 0
+        # FAKE_ASIDE_EXIT is the code a replayed run exits with, so an exit can disagree with the transcript.
+        return int(os.environ.get("FAKE_ASIDE_EXIT", "0"))
 
     if SCENARIO == "slow":
         delay = float(os.environ.get("FAKE_ASIDE_DELAY", "3"))

@@ -168,6 +168,8 @@ class Turn:
     observed: bool
     #: Line index of this run's prompt in the transcript.
     start_line: int = 0
+    #: Line index just past the turn's last record once something has ended it -- its `finished`, or a next turn's `started` -- and None while it is open.
+    end_line: int | None = None
     events: list[aside.Event] = field(default_factory=list)
     #: Children spawned in this turn, in spawn order.
     children: list[str] = field(default_factory=list)
@@ -253,11 +255,13 @@ def turn_of(run: runs.Run) -> Turn:
     if start is None:
         return Turn(observed=False)
     opened_at = events[start].timestamp
-    mine = events[_framed(events, start):_turn_end(events, start)]
+    end = _turn_end(events, start)
+    mine = events[_framed(events, start):end]
     children = child_session_ids(mine)
     return Turn(
         observed=True,
         start_line=mine[0].index,
+        end_line=None if end is None else mine[-1].index + 1,
         events=mine,
         children=children,
         child_events={cid: _from(aside.read_events(run.child_transcript(cid))[0], opened_at)
@@ -278,12 +282,12 @@ def _framed(events: list[aside.Event], prompt: int) -> int:
     return prompt
 
 
-def _turn_end(events: list[aside.Event], prompt: int) -> int:
-    """Where the turn that opens with the prompt at ``prompt`` ends: just past its `finished` record, or where a next turn's `started` begins. A session continued after this run appends that next turn to the same transcript, and without an end this run would take its answer, sources and children for its own."""
+def _turn_end(events: list[aside.Event], prompt: int) -> int | None:
+    """Where the turn that opens with the prompt at ``prompt`` ends: just past its `finished` record, or where a next turn's `started` begins; None while neither has come. A session continued after this run appends that next turn to the same transcript, and without an end this run would take its answer, sources and children for its own."""
     for i in range(prompt + 1, len(events)):
         if events[i].kind == "lifecycle" and events[i].lifecycle in ("finished", "started"):
             return i + 1 if events[i].lifecycle == "finished" else i
-    return len(events)
+    return None
 
 
 def _from(events: list[aside.Event], since: int) -> list[aside.Event]:

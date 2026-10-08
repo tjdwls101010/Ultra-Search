@@ -161,10 +161,12 @@ def supervise(
     exit_code: int | None = None
     exited_at = 0.0
     while True:
-        turn = watch.sync()
+        # The exit is read before the transcript, never after: whatever the process wrote before exiting is then
+        # on disk when this poll copies it, so an ending is never judged on a snapshot older than the exit.
         if exit_code is None:
             exit_code = proc.poll()
             exited_at = time.time()
+        turn = watch.sync()
         now = time.time()
         if _stop_requested(run):
             return _abandon(run, "stop requested", proc)
@@ -204,9 +206,9 @@ def _wind_down(run: runs.Run, watch: _Watch, proc, exit_code: int | None, *, pol
     """This turn has finished: give the process and the turn's children the settle window, then judge once."""
     deadline = time.time() + settle
     while True:
-        turn = watch.sync()
         if exit_code is None:
             exit_code = proc.poll()
+        turn = watch.sync()
         orphans = turn.unfinished_children()
         if (exit_code is not None and not orphans) or time.time() >= deadline:
             break

@@ -86,23 +86,23 @@ def _streams(run: runs.Run) -> list[tuple[str, Path]]:
 
 def _drain(run: runs.Run, cursors: dict[str, int], level: str, label: bool, numbering: dict[str, int]) -> list[str]:
     lines: list[str] = []
-    streams = _streams(run)
-    starts: dict[str, int] = {}
-    meta = run.meta()
-    if meta.get("resume_session_id"):
-        # 성진: resume은 턴 경계를 위해 부모 로그를 매번 읽는다; 긴 세션 감시가 병목이면 시작 바이트를 보존한다.
-        turn = evidence.turn_of(run)
-        if not turn.observed:
-            return lines
-        starts = {"": turn.start_line}
-        for cid, cev in turn.child_events.items():
-            starts[cid] = cev[0].index if cev else 0
-        streams = [(key, path) for key, path in streams if key in starts]
-    for key, path in streams:
+    # This run's turn and its children only, bounded the way `show` and `result` bound them: a resumed run's earlier
+    # turns, and a turn the session went on to afterwards, belong to other runs.
+    # 성진: 턴 경계를 위해 부모 로그를 매번 처음부터 읽는다; 긴 세션 감시가 병목이면 시작·끝 위치를 보존한다.
+    turn = evidence.turn_of(run)
+    if not turn.observed:
+        return lines
+    bounds: dict[str, tuple[int, int | None]] = {"": (turn.start_line, turn.end_line)}
+    for cid, cev in turn.child_events.items():
+        bounds[cid] = (cev[0].index if cev else 0, None)
+    for key, path in _streams(run):
+        if key not in bounds:
+            continue
+        start, end = bounds[key]
         events, cursor = aside.read_events(path, cursors.get(key, 0))
         cursors[key] = cursor
-        events = [event for event in events if event.index >= starts.get(key, 0)]
-        ordinals = _number(run, path, events, starts.get(key, 0), numbering) if not key and level in ("steps", "full") else {}
+        events = [event for event in events if event.index >= start and (end is None or event.index < end)]
+        ordinals = _number(run, path, events, start, numbering) if not key and level in ("steps", "full") else {}
         prefix = f"[{run.run_id}]" if label else ""
         if key:
             prefix += f"[child {key}]"

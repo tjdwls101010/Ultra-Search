@@ -462,6 +462,10 @@ def main(argv: list[str]) -> int:
             return 1
         return do_exec(positionals[-1] if positionals else "")
     if cmd == "session" and positionals[:1] == ["resume"] and len(positionals) >= 2:
+        unknown = sorted(flagged - {"--account"})
+        if unknown:
+            print(f"error: unknown option '{unknown[0]}'")
+            return 1
         return do_exec(positionals[2] if len(positionals) > 2 else "", positionals[1])
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")

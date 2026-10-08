@@ -143,10 +143,12 @@ def test_the_fake_continues_a_session_only_through_session_resume(tmp_path: Path
     sid = session.name.split("_", 1)[1]
 
     refused = run_fake(["exec", "--session", sid, "후속"], home, calls)
+    unsettable = run_fake(["session", "resume", sid, "후속", "--effort", "high"], home, calls)
     resumed = run_fake(["session", "resume", sid, "후속"], home, calls)
 
     assert refused.returncode == 1
     assert "unknown option '--session'" in refused.stdout + refused.stderr
+    assert unsettable.returncode == 1, "a continued session takes no effort, model or speed"
     assert resumed.returncode == 0
     assert lifecycle_frame(session / "messages.jsonl").count("started") == 2
 

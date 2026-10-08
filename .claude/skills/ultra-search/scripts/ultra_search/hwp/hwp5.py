@@ -26,11 +26,19 @@ _MAX_BODY = 256 << 20
 def text_of(path: str | os.PathLike[str]) -> str | None:
     """The body's paragraphs, a blank line between each; None when the file is not HWP 5.0. Raises once it is one: ValueError for a lock or a damaged body, whatever olefile or zlib raise for a damaged container."""
     data = Path(path).read_bytes()
-    if not _is_hwp(data):
+    if not data.startswith(_OLE):
         return None
-    # A truncated container is an error here, not a defect to read past: olefile would hand back short streams.
-    with olefile.OleFileIO(io.BytesIO(data), raise_defects=olefile.DEFECT_INCORRECT) as ole:
-        header = ole.openstream("FileHeader").read()
+    try:
+        # A truncated container is an error here, not a defect to read past: olefile would hand back short streams.
+        ole = olefile.OleFileIO(io.BytesIO(data), raise_defects=olefile.DEFECT_INCORRECT)
+    except Exception:
+        if _signed(data):
+            raise
+        return None
+    with ole:
+        header = ole.openstream("FileHeader").read() if ole.exists("FileHeader") else b""
+        if not header.startswith(SIGNATURE):
+            return None
         flags = int.from_bytes(header[36:40], "little")
         if flags & 2:
             raise ValueError("password-protected HWP")
@@ -41,23 +49,27 @@ def text_of(path: str | os.PathLike[str]) -> str | None:
         if not sections:
             raise ValueError("the HWP file has no body")
         paragraphs: list[str] = []
+        left = _MAX_BODY
         for entry in sections:
             raw = ole.openstream(entry).read()
-            body = _inflate(raw) if flags & 1 else raw
+            body = _inflate(raw, left) if flags & 1 else raw
+            left -= len(body)
+            if left < 0:
+                raise ValueError(f"the HWP body is larger than {_MAX_BODY >> 20} MB")
             paragraphs += [p for p in (_paragraph(r) for r in _records(body, _PARA_TEXT)) if p.strip()]
     return "\n\n".join(paragraphs)
 
 
-def _is_hwp(data: bytes) -> bool:
-    """An OLE file holding the HWP signature where a small stream's data starts -- read from the bytes, so a copy too damaged for olefile to open is still known for what it is."""
-    return data.startswith(_OLE) and any(data.startswith(SIGNATURE, i) for i in range(0, len(data), 64))
+def _signed(data: bytes) -> bool:
+    """Whether bytes olefile cannot open still hold the HWP signature where a small stream's data starts: a copy too damaged to read is still known for what it is."""
+    return any(data.startswith(SIGNATURE, i) for i in range(0, len(data), 64))
 
 
-def _inflate(raw: bytes) -> bytes:
+def _inflate(raw: bytes, limit: int) -> bytes:
     d = zlib.decompressobj(-15)
-    body = d.decompress(raw, _MAX_BODY)
-    if d.unconsumed_tail:
-        raise ValueError(f"the HWP body expands past {_MAX_BODY >> 20} MB")
+    body = d.decompress(raw, max(limit, 0) + 1)
+    if d.unconsumed_tail or len(body) > limit:
+        raise ValueError(f"the HWP body is larger than {_MAX_BODY >> 20} MB")
     if not d.eof:
         # A deflate stream cut short inflates to its first part without complaint.
         raise ValueError("the HWP body is cut short")
@@ -79,13 +91,17 @@ def _records(body: bytes, tag: int):
         if head & 0x3FF == tag:
             yield body[i:i + size]
         i += size
+    if i != len(body):
+        raise ValueError("the HWP body ends inside a record")
 
 
 def _paragraph(units: bytes) -> str:
     """A paragraph's text: plain stretches decoded whole, so a character outside the BMP keeps both halves, and each control replaced by the text it stands for."""
+    if len(units) % 2:
+        raise ValueError("an HWP paragraph ends inside a character")
     out: list[str] = []
     start = i = 0
-    end = len(units) - len(units) % 2
+    end = len(units)
     while i < end:
         code = units[i] | units[i + 1] << 8
         if code >= 32:
@@ -94,6 +110,8 @@ def _paragraph(units: bytes) -> str:
         out.append(units[start:i].decode("utf-16-le", "replace"))
         out.append(_AS_TEXT.get(code, ""))
         i += 16 if code in _EIGHT else 2
+        if i > end:
+            raise ValueError("an HWP paragraph ends inside a control")
         start = i
     out.append(units[start:end].decode("utf-16-le", "replace"))
     return "".join(out).rstrip()

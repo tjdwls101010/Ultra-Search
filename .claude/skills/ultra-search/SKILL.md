@@ -18,7 +18,7 @@ Each command's `--help` owns its inputs, outputs, states and recovery.
 
 **`search` when choosing sources or investigating is still the work; `fetch` when the page is already known.** `search` delegates judgment to a browsing agent and spends the user's subscription; `fetch` reads a page without that agent. A URL in the request does not rule out an investigation, and reading it does not justify one.
 
-Reuse evidence before acquiring it again: `result` holds a finished investigation's answer and sources, `show` what it already read. Fetch again when that evidence is missing, inadequate or stale, or a separate saved copy is needed. Map first when what it finds will decide the crawl's scope, and crawl from its manifest when that manifest is the scope, so the site is walked once; crawl directly when the scope is already settled.
+Reuse evidence before acquiring it again: `result` holds a finished investigation's answer, its sources and the files the agent saved, `show` what it already read. Fetch again when that evidence is missing, inadequate or stale, or a separate saved copy is needed. Map first when what it finds will decide the crawl's scope, and crawl from its manifest when that manifest is the scope, so the site is walked once; crawl directly when the scope is already settled.
 
 `resume` when an earlier conversation's findings are context for the next question, not merely because one exists; `sessions` lists what Aside still holds, including conversations begun in the app. A saved result outlives the session, so when a session is gone, reuse its `result` and start a new `search` only if the question needs more.
 
@@ -28,20 +28,18 @@ When content appears only after interaction -- a click, a scroll, a form the pag
 
 The browsing agent chooses its own searches and pages. Give it the question, the source constraints that matter and the evidence you need back; leave out a browsing sequence it may not need.
 
-> "Have there been reports of data loss with Postgres 17 logical replication? Prefer the pgsql-bugs list and release notes. Return the affected versions and source URLs; if no relevant report is found, say what you checked rather than substituting adjacent issues."
-
 Leave room for a negative finding when the question allows one. An explicit negative finding answers the question when what the agent checked supports it; empty output does not, and the CLI cannot judge that conclusion for you.
 
 ## Follow state, not silence
 
 Follow the latest response's `next`: a search that outlasts its wait hands back the command that waits for its result. Run it in the background only when something will receive its completion; a run that ends with its turn -- `claude -p`, a subagent, a scheduled job -- runs `next` in the foreground and collects the result before answering.
 
-`log` explains a source choice or a thin result after the fact; it is not a way to watch.
+`log` explains a source choice, a thin result or what a run has done so far; it does not wait -- `next` does.
 
 ## Boundaries that affect the answer
 
 - **Nothing here cancels delegated work.** Only Aside itself stops a run and its credit use; bound the objective before starting work you cannot stop here.
-- **Only acquired content is evidence.** A search source is a lead until the run opened it, and an acquisition that succeeded can still have returned a login wall or bot check, so judge each item's status rather than the command's success. When a claim rests on one page, read what was acquired (`show`, or `fetch` it) before citing it as read.
+- **Only acquired content is evidence.** A search source is a lead until the run opened it, and an acquisition that succeeded can still have returned a login wall or bot check, so judge each item's status rather than the command's success. When a claim rests on one page, read what was acquired (`show`, a file in `artifacts`, or `fetch` it) before citing it as read.
 - **Partial evidence is not a complete investigation.** The work is done when the question is answered from sourced evidence or the specific gaps are reported -- not when an agent was started or URLs were collected. Report unfinished children and missing sources with the findings instead of turning them into a confident absence.
 - **Requests act as the user.** Their cookies, sessions and browser are in use. Fetch and crawl only what the task needs; being able to reach a private source does not make its contents shareable.
 - **Without Aside, stop rather than substitute.** The user routes web work through their own browser so answers rest on pages acquired with their access; WebSearch and WebFetch cannot use it. When a command reports Aside unavailable, run `doctor`, tell the user what it found and how to fix it, and ask before using them, even for a fact that looks public; where no one can be asked, that report is the result.

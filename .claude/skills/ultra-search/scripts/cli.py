@@ -79,6 +79,38 @@ NEXT_HELP = (
 )
 
 
+#: What each run's entry in a search, resume or result reply holds, in order.
+ENTRY_HELP = (
+        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
+        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
+        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
+        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
+)
+#: The states a run ends in, for every command that reports a run.
+STATES_HELP = (
+        "Each run ends in one state:\n"
+        "completed: this run's turn finished in its session, and every child of it finished.\n"
+        "completed_with_orphans: as completed, but orphan_children were still running -- a saved snapshot; their "
+        "late results are not collected.\n"
+        "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
+        "sources come from stdout only.\n"
+        "failed: aside exited non-zero, or the turn ended on an error.\n"
+        f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
+        "finished, or its supervisor is gone; the daemon's work and its credit use did not.\n"
+)
+#: What each fetched page's status means, for every command that fetches.
+ITEM_STATUS_HELP = (
+        "ok: the text was extracted and saved.\n"
+        "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
+        "shell_escalated: still almost no text after opening it in a real tab.\n"
+        "challenge: a bot check answered instead of the page.\n"
+        "blocked: an HTTP error, or a challenge a real tab could not clear.\n"
+        "needs_ocr: a document with no text layer; nothing was sent anywhere for OCR.\n"
+        "unsupported: a response or document that could not be converted.\n"
+        "error: the fetch failed (timeout, network), or the page could not be converted; the item's error says which.\n"
+)
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     """A parser whose refusals are JSON on stdout like every other answer, not usage on stderr."""
 
@@ -150,7 +182,8 @@ def _add_runs_dir(p: argparse.ArgumentParser) -> None:
 def _add_target(p: argparse.ArgumentParser) -> None:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--run", metavar="ID", help="A run id as returned by `search`, or any beginning of one that only that run has.")
-    g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`.")
+    g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`. With neither "
+                   "--run nor --group: the newest run's group, or that run alone when it has none.")
     # No --last flag: with neither --run nor --group this already targets the most recent
     # run's group, and a flag that only restates the default is one more thing to be wrong
     # about.
@@ -162,8 +195,9 @@ def _add_wait_opts(p: argparse.ArgumentParser) -> None:
         type=_seconds(),
         default=100.0,
         metavar="SEC",
-        help="Seconds to stay attached before handing back a handle. Never kills the run. "
-        "Default 100, which sits under the Bash tool's 120s default so the handle is never lost.",
+        help="Seconds to wait for the runs once started, before handing back their handles. Never stops a run. "
+        "Default 100: under the Bash tool's 120 s default timeout, so the call answers before the tool gives up; "
+        "a longer wait needs a longer Bash timeout.",
     )
     p.add_argument("--background", action="store_true", help="Return the handle immediately instead of waiting.")
 
@@ -183,7 +217,8 @@ def _add_fetch_opts(p: argparse.ArgumentParser) -> None:
 
 def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-urls", type=_count(1), metavar="N", help="Stop discovering after this many URLs. Default 200.")
-    p.add_argument("--depth", type=_count(0), metavar="N", help="Rounds of link-following from the root. Default 2.")
+    p.add_argument("--depth", type=_count(0), metavar="N", help="Rounds of link-following from URL. Default 2. Unused when "
+                   "a sitemap is found, which replaces link-following.")
     p.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
     p.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
     p.add_argument("--no-sitemap", action="store_true", help="Skip sitemap discovery and follow links only.")
@@ -219,12 +254,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run an autonomous web investigation (Aside's in-browser agent).",
         description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
         "as one group. Synchronous by default: if the work finishes within --wait its entry carries the answer; "
-        "if it does not, the run is left alive and the reply carries a `next` action for watching it. "
+        "if it does not, the run is left alive and the reply carries a `next` action that waits for it. "
         "A partial snapshot is not a complete investigation.\n"
-        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
-        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
-        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
+        + ENTRY_HELP + STATES_HELP +
         "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
         epilog=NEXT_HELP,
     )
@@ -243,7 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
         "turn and cannot steer it. The session keeps its own effort, model and speed; Aside takes none for a "
         "continued one. The returned run's log and result describe only this new turn. "
         "The follow-up is sent with one more line, as in `search`: \"Read-only research: do not post, purchase, "
-        "sign up, or change account settings.\"",
+        "sign up, or change account settings.\"\n"
+        + ENTRY_HELP + STATES_HELP.rstrip("\n"),
         epilog=NEXT_HELP,
     )
     r.add_argument(
@@ -288,21 +321,10 @@ def build_parser() -> argparse.ArgumentParser:
         "or with the result its supervisor wrote before it died. Results are saved in the runs directory and "
         "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
-        "Each run's entry leads with run_id, state, empty, sources_total and sources_opened, then the answer with its citation "
-        "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
-        "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
-        "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
+        + ENTRY_HELP +
         "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
         "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
-        "Each run ends in one state:\n"
-        "completed: this run's turn finished in its session, and every child of it finished.\n"
-        "completed_with_orphans: as completed, but orphan_children were still running -- a saved snapshot; their "
-        "late results are not collected.\n"
-        "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
-        "sources come from stdout only.\n"
-        "failed: aside exited non-zero, or the turn ended on an error.\n"
-        f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
-        "finished, or its supervisor is gone; the daemon's work and its credit use did not.",
+        + STATES_HELP.rstrip("\n"),
         epilog=NEXT_HELP,
     )
     _add_target(rs)
@@ -346,14 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave. Full text always goes to a file; use --print "
         "to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
-        "ok: the text was extracted and saved.\n"
-        "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
-        "shell_escalated: still almost no text after opening it in a real tab.\n"
-        "challenge: a bot check answered instead of the page.\n"
-        "blocked: an HTTP error, or a challenge a real tab could not clear.\n"
-        "needs_ocr: a document with no text layer; nothing was sent anywhere for OCR.\n"
-        "unsupported: a response or document that could not be converted.\n"
-        "error: the fetch itself failed (timeout, network).\n"
+        + ITEM_STATUS_HELP +
         "Markdown conversion can lose tables, figures and layout: --format html saves the document itself, and a "
         "converted document's original file is kept at original_path.",
     )
@@ -389,7 +404,8 @@ def build_parser() -> argparse.ArgumentParser:
         "first 10 of them, and whether a budget or --max-urls cut discovery short), the first 10 URLs, and "
         "manifest_path, the file holding every URL and the full coverage.",
     )
-    m.add_argument("url", type=_web_url, metavar="URL", help="Site or section root.")
+    m.add_argument("url", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole origin -- its "
+                   "sitemap, else same-origin links from URL -- not only URL's path: select a section with --include.")
     _add_discovery_opts(m)
     m.add_argument("--out", type=_user_path, metavar="FILE", help="Write the manifest here instead of .ultra-search/maps/<host>-<timestamp>.json.")
     m.add_argument("--list-all", action="store_true", help="Also print every URL in the reply, not only the first 10.")
@@ -403,10 +419,14 @@ def build_parser() -> argparse.ArgumentParser:
         "status and via for each page. The reply counts pages by status and lists the first 10 that are not ok; the "
         "manifest has every page.\n"
         "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "
-        "crawled as it is, so discovery flags are refused.",
+        "crawled as it is, so discovery flags are refused.\n"
+        "Each page's status says what it turned out to be; only an ok page's file is its text:\n"
+        + ITEM_STATUS_HELP.rstrip("\n"),
     )
     src = c.add_mutually_exclusive_group(required=True)
-    src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Site root to crawl.")
+    src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole "
+                     "origin -- its sitemap, else same-origin links from URL -- not only URL's path: select a section with "
+                     "--include.")
     src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
     c.add_argument("--max-pages", type=_count(1), default=25, metavar="N", help="Stop after this many pages. Default 25.")
     _add_discovery_opts(c)

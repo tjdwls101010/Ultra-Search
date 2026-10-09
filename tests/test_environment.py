@@ -302,7 +302,7 @@ def test_the_version_is_the_packages() -> None:
     code, _, text = run_cli("--version")
 
     assert code == 0
-    assert text.strip() == "ultra-search 1.0.0"
+    assert text.strip() == "ultra-search 2.0.0"
 
 
 def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:

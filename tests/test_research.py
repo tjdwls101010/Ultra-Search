@@ -1104,6 +1104,24 @@ def test_log_and_show_stop_where_the_runs_turn_ends(cli, replay) -> None:
     assert code == 2
 
 
+def test_log_stops_where_a_childs_part_in_the_run_ends(cli, replay, aside_home: Path) -> None:
+    """The session's next turn gave the same child a new task while the supervisor was still copying. That task is the next run's: `result` leaves it out, and so does the log."""
+    aside_session(aside_home, "ReusedNextKid001", user("이 턴의 과제"), answer("이 턴의 자식 답"))
+    replay([tool("subagent", "spawned", taskId="ReusedNextKid001"), turn("final-started"), answer("내 턴의 답"),
+            turn("finished"), {**turn("started"), "timestamp": "__NOW__"}, user("다음 질문"),
+            {"__session__": "ReusedNextKid001", **turn("started"), "timestamp": "__NOW__"},
+            {"__session__": "ReusedNextKid001", **user("다음 턴의 과제")},
+            {"__session__": "ReusedNextKid001", **answer("다음 턴의 자식 답")}])
+    run_id = finished_run_id(cli)
+
+    _, _, text = cli("log", "--run", run_id)
+    _, collected, _ = cli("result", "--run", run_id)
+
+    assert "[child ReusedNextKid001] answer: 이 턴의 자식 답" in text
+    assert "다음 턴" not in text
+    assert "다음 턴" not in first_run(collected)["answer"]
+
+
 # --- resume ------------------------------------------------------------------------------
 
 

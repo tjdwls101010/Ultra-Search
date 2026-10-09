@@ -69,7 +69,10 @@ def _drain(run: runs.Run, cursors: dict[str, int], level: str, label: bool, numb
     for cid in sorted(turn.children):
         path = run.child_transcript(cid)
         events, cursors[cid] = aside.read_events(path, cursors.get(cid, 0))
-        streams.append((cid, path, events, turn.child_events[cid][0].index if turn.child_events[cid] else 0, None))
+        part = turn.child_events[cid]
+        # A child's part ends where the session's next turn gave it a task, as `turn_of` cut it.
+        end = part[-1].index + 1 if part and cid in turn.child_next_started_at else None
+        streams.append((cid, path, events, part[0].index if part else 0, end))
     for key, path, events, start, end in streams:
         events = [event for event in events if event.index >= start and (end is None or event.index < end)]
         ordinals = _number(run, path, events, start, numbering) if not key and level in ("steps", "full") else {}

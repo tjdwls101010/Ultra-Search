@@ -286,7 +286,7 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
         payload["content"] = turn.read_text(hit["url"])
     if file:
         payload["file"] = file
-        payload["note"] = "file is a copy of the document the agent downloaded from this URL; the transcript holds only where it was saved"
+        payload["note"] = "file is the document the agent downloaded from this URL; the transcript holds only where it was saved"
     if not turn.observed:
         payload["note"] = ("no page text: this run's session transcript was never read, so all it has is what "
                            "`aside exec` printed on stdout")

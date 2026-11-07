@@ -468,6 +468,19 @@ def test_a_download_that_cannot_be_copied_is_reported(runs_dir: Path, aside_home
     assert [Path(m["path"]).name for m in result["artifacts_missing"]] == ["locked.pdf"]
 
 
+def test_a_download_among_the_agents_own_files_that_cannot_be_copied_is_reported_once(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    replay([{"__artifact__": "tmp/locked.hwpx", "text": "x", "mode": 0},
+            webfetch("https://e.test/a", "\n\nDownloaded to: __SESSION_DIR__/artifacts/tmp/locked.hwpx\n"
+                     "MIME type: application/octet-stream\nFile size: 1 bytes", sid="a1"), answer("답")])
+    run = start(runs_dir)
+
+    supervise(run)
+
+    assert [Path(m["path"]).name for m in result_of(run)["artifacts_missing"]] == ["locked.hwpx"]
+
+
 def test_a_long_result_that_cannot_be_copied_is_reported(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
     pointer = ("[Output too large (12.0KB). Full output saved to: __SESSION_DIR__/tmp/webfetch-result-L.txt — read it "
                "with read_file({ path, offset: 1 }), 36.0KB per read.]\n\nPreview (first 4.0KB):\nText")

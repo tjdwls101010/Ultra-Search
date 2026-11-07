@@ -262,7 +262,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     if turn.observed:
         sources = turn.sources()
         if session_id:
-            originals: dict[Path, Path] = {}
+            originals: dict[Path, Path | None] = {}
             kept, missing = _keep_artifacts(run, session_id, turn, sources, originals)
             lost, documents = _keep_downloads(run, turn, sources, originals)
             missing += lost
@@ -326,7 +326,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
 
 
 def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn, sources: list[evidence.Source],
-                    originals: dict[Path, Path]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
+                    originals: dict[Path, Path | None]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
     """Copy into the run the files this turn's sessions saved -- each session's under its own id, since a parent's folder can be named like a child -- and say which could not be copied.
 
     A session keeps every turn's saved files together. This turn's are the ones changed since its part in the turn began and before its session's next turn did; an older one is kept only when an answer names it, as a run collecting an earlier child's late result names what that child saved, and where the transcript gives no start only a named file is. A file a later turn changed is no longer the one this turn's answer meant, so it is reported rather than copied. The copies are taken now, so a child still at work, or an abandoned turn, leaves them as they were at this moment.
@@ -357,6 +357,7 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn, sources
                 if later(mtime):
                     if rel in named:
                         missing.append({"path": str(path), "error": "changed after a later turn began"})
+                        originals[path.resolve()] = None
                     continue
                 if rel not in named and (began is None or mtime < began):
                     continue
@@ -365,11 +366,13 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn, sources
                     copied = runs.copy_snapshot(path, dst)
                 except OSError as e:
                     missing.append({"path": str(path), "error": str(e)})
+                    originals[path.resolve()] = None
                     continue
                 if later(copied.st_mtime):  # rewritten between the listing and the copy
                     dst.unlink(missing_ok=True)
                     if rel in named:
                         missing.append({"path": str(path), "error": "changed after a later turn began"})
+                        originals[path.resolve()] = None
                     continue
                 kept.setdefault(cid, {})[rel] = dst
                 originals[path.resolve()] = dst
@@ -379,22 +382,26 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn, sources
 
 
 def _keep_downloads(run: runs.Run, turn: evidence.Turn, sources: list[evidence.Source],
-                    originals: dict[Path, Path]) -> tuple[list[dict], list[str]]:
+                    originals: dict[Path, Path | None]) -> tuple[list[dict], list[str]]:
     """Copy into the run the files Aside saved for this turn's tool results, and point each source at its copy: a document a fetch downloaded as ``file``, a result too large to keep inline as ``text_file`` -- the latest of each, when a URL was fetched more than once. Return the files that could not be copied, and the copies of documents.
 
-    Aside deletes a session's folder on its own schedule, and the transcript names these files only there. They go under the run's `downloads/<session>/`, apart from the copies of the files the agent saved itself, whatever either is called; a second file of one name in a session gets `-2`, and one already copied among the agent's own files (``originals``) is not copied again. One a later turn of the session changed is no longer the one this run read, so it is reported rather than copied.
+    Aside deletes a session's folder on its own schedule, and the transcript names these files only there. They go under the run's `downloads/<session>/`, apart from the copies of the files the agent saved itself, whatever either is called; a second file of one name in a session gets `-2`, and one the agent's own files already dealt with (``originals``: its copy, or None when that copy was refused and reported) is not copied or reported again. One a later turn of the session changed is no longer the one this run read, so it is reported rather than copied.
     """
     by_url = {s.url: s for s in sources}
     missing: list[dict] = []
     documents: list[str] = []
     taken: set[Path] = set()
     try:
-        for cid, sid, saved in turn.saved_files():
+        # Oldest first, whichever stream wrote it, so a URL fetched twice ends on its latest file.
+        for cid, sid, saved in sorted(turn.saved_files(), key=lambda found: found[2].mtime):
+            resolved = saved.path.resolve()
+            if resolved in originals and originals[resolved] is None:
+                continue
             _, next_began = turn.window(cid)
             if next_began is not None and saved.mtime >= next_began:
                 missing.append({"path": str(saved.path), "error": "changed after a later turn began"})
                 continue
-            dst = originals.get(saved.path.resolve())
+            dst = originals.get(resolved)
             if dst is None:
                 dst = _unused(run.path / "downloads" / sid / saved.path.name, taken)
                 try:

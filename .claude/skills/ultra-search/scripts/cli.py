@@ -351,7 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
         "the fullest text a tool returned for it -- the page, or a notice that a tab opened on it or a document was "
         "saved -- and for a source never opened, the excerpt a result gave it, else what a request for it alone "
         "returned, such as an HTTP error. A result too large for the transcript gives its whole text; a downloaded "
-        "document gives file, a copy of it, and no content. An item's content is that tool result's text. A run still "
+        "document gives file, a copy of it, beside the text of any page a tool read at that URL. An item's content is that tool result's text. A run still "
         "going, or abandoned, is read from its transcript so far, and its files from the session's folder.",
     )
     sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")

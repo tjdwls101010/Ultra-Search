@@ -645,6 +645,23 @@ def test_a_document_downloaded_twice_keeps_both_and_points_at_the_later(cli, rep
     assert sorted(Path(p).read_bytes() for p in run["artifacts"]) == [b"first", b"second"]
 
 
+def test_the_later_download_of_a_url_wins_whichever_stream_made_it(cli, replay) -> None:
+    kid = "EarlierKid000001"
+    url = "https://docs.test/a.pdf"
+    replay([calling(("subagent", {"action": "spawn", "description": "c1"})),
+            {"__session__": kid, **turn("started")}, {"__session__": kid, **user("child task")},
+            *downloaded(url, "kid.pdf", b"child, earlier", sid="k1", session=f"__SESSION_DIR:{kid}__"),
+            {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer("자식 답")},
+            {"__session__": kid, **turn("finished")}, tool("subagent", "spawned", taskId=kid),
+            {"__sleep__": 0.05}, *downloaded(url, "parent.pdf", b"parent, later", sid="p1"),
+            turn("final-started"), answer("답"), turn("finished")])
+
+    _, payload, _ = search(cli, "질문")
+
+    (file,) = [s["file"] for s in first_run(payload)["opened_sources"] if "file" in s]
+    assert Path(file).read_bytes() == b"parent, later"
+
+
 def test_show_reads_a_download_from_the_session_while_the_run_is_still_going(cli, replay) -> None:
     replay([*downloaded("https://docs.test/a.pdf", "a.pdf", b"%PDF-1.7 a", sid="d1"), {"__sleep__": 4}, answer("답")])
     _, payload, _ = search(cli, "질문", wait="0")

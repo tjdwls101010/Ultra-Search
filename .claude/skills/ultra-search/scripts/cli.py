@@ -104,8 +104,9 @@ STATES_HELP = (
 )
 #: What each fetched page's status means, for every command that fetches.
 ITEM_STATUS_HELP = (
-        "ok: the text was extracted and saved.\n"
-        "shell: almost no text -- the page renders in the browser, or the body was empty.\n"
+        "ok: text was saved -- not proof it is the text you wanted: a long enough login notice passes, and JSON, XML "
+        "and plain text are saved as they came, not extracted.\n"
+        "shell: almost no text -- the page renders in the browser, the body was empty, or its bytes are not UTF-8.\n"
         "shell_escalated: still almost no text after opening it in a real tab.\n"
         "challenge: a bot check answered instead of the page.\n"
         "blocked: an HTTP error, or a challenge a real tab could not clear.\n"
@@ -371,8 +372,9 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch",
         help="Read one or more URLs into clean markdown files.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
-        "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave. Full text always goes to a file; use --print "
-        "to also get it inline.\n"
+        "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave; "
+        "a JSON or XML response is saved as it came, as .json or .xml. Full text always goes to a file, whose path is "
+        "absolute; use --print to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         + ITEM_STATUS_HELP +
         "Markdown conversion can lose tables, figures and layout: --format html saves the document itself, and a "

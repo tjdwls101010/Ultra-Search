@@ -50,6 +50,16 @@ def daemon_status() -> dict:
         return {"ok": False, "version": None, "detail": f"no answer from {url} ({e})"}
 
 
+def require_ready() -> None:
+    """Refuse before any work when Aside cannot take it -- the binary missing, the daemon not answering or not ready.
+    Work started anyway fails in shapes that read as findings: a fetch's `no response`, a map of an empty site, a failed
+    investigation whose answer is the error text."""
+    aside_bin()
+    status = daemon_status()
+    if not status["ok"]:
+        raise AsideUnavailable(f"the Aside daemon is not ready: {status['detail']}")
+
+
 def account_status() -> dict:
     """{ok, detail}: whether an account is signed in. A signed-out browser fetches public pages
     fine and silently loses every logged-in one, which is the capability this tool exists for."""

@@ -1,6 +1,6 @@
 """Aside, which someone else owns: its CLI, its daemon, its session storage and transcript format, its stdout and its browser REPL. When Aside changes, this is where the fix goes."""
 from ultra_search.aside.browser import fetch_pages, open_tab, read_links, read_sitemaps
-from ultra_search.aside.daemon import account_status, daemon_status, mcp_tools
+from ultra_search.aside.daemon import account_status, daemon_status, mcp_tools, require_ready
 from ultra_search.aside.exec_output import parse_exec_output
 from ultra_search.aside.process import (
     EFFORTS,
@@ -55,6 +55,7 @@ __all__ = [
     "read_sitemaps",
     "referenced_artifacts",
     "repl_probe",
+    "require_ready",
     "resolve_answer_tags",
     "rewrite_artifact_refs",
     "run_code",

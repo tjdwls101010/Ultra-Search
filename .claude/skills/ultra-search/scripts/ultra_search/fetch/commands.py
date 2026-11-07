@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ultra_search import outcome, saved
+from ultra_search import aside, outcome, saved
 from ultra_search.fetch import acquire
 from ultra_search.outcome import ArgumentError, Reply
 
@@ -15,6 +15,7 @@ from ultra_search.outcome import ArgumentError, Reply
 def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, concurrency: int,
           frontmatter: bool, print_content: bool, max_chars: int) -> Reply:
     out_file, out_dir = _destinations(urls, out, root)
+    aside.require_ready()
     envelope = acquire.fetch_urls(
         urls,
         out_dir=out_dir,
@@ -48,7 +49,8 @@ def _destinations(urls: list[str], out: str | None, root: Path) -> tuple[Path | 
     """
     if not out:
         return None, saved.pages_dir(root)
-    p = Path(out).expanduser()
+    # Absolute, as the reply reports it: a path relative to this process means nothing to a caller elsewhere.
+    p = Path(out).expanduser().absolute()
     looks_like_file = p.is_file() or (bool(p.suffix) and not p.is_dir() and not out.endswith("/"))
     if looks_like_file:
         if len(urls) > 1:

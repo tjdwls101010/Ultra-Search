@@ -237,6 +237,99 @@ def test_plain_text_is_passed_through(cli, routes) -> None:
     assert "just some text" in saved(item_of(payload))
 
 
+@pytest.mark.parametrize("ct,ext", [
+    ("application/json; charset=utf-8", ".json"), ("application/ld+json", ".json"),
+    ("application/xml", ".xml"), ("text/xml; charset=utf-8", ".xml"), ("application/rss+xml", ".xml"),
+])
+def test_a_data_response_is_saved_as_it_came(cli, routes, tmp_path: Path, ct: str, ext: str) -> None:
+    """An API's JSON or a feed's XML is not an article: run through the article extractor it came back empty or as a
+    shell sent on to a tab. Its own bytes are the thing worth keeping."""
+    body = '{"name": "ultra", "tags": ["a", "b"]}' if ext == ".json" else '<?xml version="1.0"?><rss><item>a</item></rss>'
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    code, payload, _ = cli("fetch", "https://api.test/x", "--out", str(tmp_path / "out"))
+
+    item = item_of(payload)
+    assert (code, item["status"], Path(item["path"]).suffix) == (0, "ok", ext)
+    assert Path(item["path"]).read_text(encoding="utf-8") == body
+
+
+def test_xhtml_is_still_a_page(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE, ct="application/xhtml+xml")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a")
+
+    assert (item_of(payload)["status"], Path(item_of(payload)["path"]).suffix) == ("ok", ".md")
+
+
+def test_format_html_still_refuses_a_data_response(cli, routes) -> None:
+    routes({"fetch_batch": {"https://api.test/x": page('{"a": 1}', ct="application/json")}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x", "--format", "html")
+
+    assert item_of(payload)["status"] == "unsupported" and item_of(payload)["path"] is None
+
+
+def mis_decoded(html: str) -> str:
+    """A page served in EUC-KR as the browser's fetch hands it over: its bytes read as UTF-8."""
+    return html.encode("euc-kr").decode("utf-8", "replace")
+
+
+KOREAN_ARTICLE = "<html><head><title>글</title></head><body><article><p>" + ("한국어 문장입니다 " * 120) + "</p></article></body></html>"
+#: Markup-heavy pages, where the broken characters are a small share of the whole: 0.1% and 0.33% of it here.
+MARKUP = '<div class="nav"><a href="/category/item?id=1&amp;ref=menu">menu entry</a></div>\n'
+SPARSE = [MARKUP * 2000 + "<p>" + "가" * 80 + "</p>", MARKUP * 600 + "<p>" + "가" * 80 + "</p>"]
+
+
+@pytest.mark.parametrize("body", [mis_decoded(KOREAN_ARTICLE)] + [mis_decoded(b) for b in SPARSE],
+                         ids=["prose", "markup-0.1%", "markup-0.33%"])
+def test_a_page_not_in_utf8_is_not_saved_broken(cli, routes, fake_aside: Path, body: str) -> None:
+    """The browser's fetch decodes every body as UTF-8. An EUC-KR page came back with half its characters replaced and
+    was saved as ok; a tab reads it with the charset the page declares."""
+    assert body.count("\ufffd") >= 20
+    routes({"fetch_batch": {"https://ko.test/a": page(body)}, "tab_one": {"https://ko.test/a": page(KOREAN_ARTICLE)}})
+
+    _, auto, _ = cli("fetch", "https://ko.test/a")
+    _, forced, _ = cli("fetch", "https://ko.test/a", "--via", "fetch")
+    _, as_html, _ = cli("fetch", "https://ko.test/a", "--via", "fetch", "--format", "html")
+
+    assert (item_of(auto)["status"], item_of(auto)["via"]) == ("ok", "tab")
+    assert "\ufffd" not in saved(item_of(auto))
+    for reply in (forced, as_html):
+        assert (item_of(reply)["status"], item_of(reply)["path"]) == ("shell", None)
+        assert item_of(reply)["error"] == "the response is not UTF-8"
+
+
+def test_markup_heavy_cases_really_are_a_small_share() -> None:
+    assert [round(mis_decoded(b).count("\ufffd") / len(mis_decoded(b)), 4) for b in SPARSE] == [0.001, 0.0033]
+
+
+def test_a_page_with_a_few_replacement_characters_is_still_a_page(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE.replace("단어 ", "단어\ufffd ", 5))}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "ok"
+
+
+@pytest.mark.parametrize("argv", [["fetch", "https://e.test/a"], ["map", "https://e.test/"], ["crawl", "https://e.test/"]],
+                         ids=["fetch", "map", "crawl"])
+def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv) -> None:
+    """With the Aside app closed, a fetch came back as `error: no response` and a map as an empty site."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+
+    code, payload, _ = cli(*argv)
+
+    assert (code, payload["error"]) == (3, "aside_unavailable")
+    assert "doctor" in payload["fix"]
+    assert not (fake_aside / "calls.jsonl").exists()
+
+
 # --- escalating to a real tab ------------------------------------------------------------
 
 
@@ -1199,6 +1292,23 @@ def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Pat
 
 
 # --- where saved work goes ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv,key", [
+    (["fetch", "https://example.org/a", "--out", "notes/a.md"], "path"),
+    (["fetch", "https://example.org/a", "--out", "notes/"], "path"),
+    (["map", "https://example.org/", "--depth", "0", "--out", "maps/site.json"], "manifest_path"),
+    (["crawl", "https://example.org/", "--depth", "0", "--out", "crawled"], "out_dir"),
+], ids=["fetch-file", "fetch-dir", "map", "crawl"])
+def test_a_relative_out_is_reported_as_the_path_it_became(cli, routes, argv: list[str], key: str) -> None:
+    """A path relative to the CLI's working directory means nothing to a caller somewhere else."""
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE), "https://example.org/": page(ARTICLE)},
+            "links": {"https://example.org/": []}})
+
+    _, payload, _ = cli(*argv)
+
+    reported = payload["items"][0][key] if key == "path" else payload[key]
+    assert Path(reported).is_absolute() and Path(reported).exists()
 
 
 def test_the_default_store_keeps_itself_out_of_git(routes, fake_aside: Path, aside_home: Path, tmp_path: Path) -> None:

@@ -199,6 +199,8 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     if fmt == "html":
         # Saving the document needs no article extractor, so a converter that is missing or
         # that failed does not stand between the caller and the bytes already in hand.
+        if doc.kind == "undecoded":
+            return item  # its bytes were lost in decoding, which is the thing to report
         if not (doc.raw or "").strip():
             item["status"] = "unsupported"
             item["error"] = f"--format html needs an HTML response; this one was {doc.kind}"
@@ -206,8 +208,11 @@ def _save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, 
     elif doc.status != "ok" or not (doc.markdown or "").strip():
         return item
 
-    path = out_file or saved.unique_path(dest, stem, used_names, {"md": ".md", "html": ".html"}.get(fmt, ".md"))
-    text = doc.raw if fmt == "html" else classify.render_markdown(doc, frontmatter=frontmatter)
+    # A data response is kept as it came, under its own extension and without frontmatter, which would make it invalid.
+    data = doc.kind == "data" and fmt != "html"
+    suffix = f".{doc.ext}" if data else {"md": ".md", "html": ".html"}.get(fmt, ".md")
+    path = out_file or saved.unique_path(dest, stem, used_names, suffix)
+    text = doc.raw if fmt == "html" else doc.markdown if data else classify.render_markdown(doc, frontmatter=frontmatter)
     body_for_print = text
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

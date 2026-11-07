@@ -107,6 +107,20 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
 
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
 
+    if _not_utf8(text):
+        # A tab reads the page with the charset it declares; nothing here can undo the replacement.
+        return Document(url=url, status="shell", kind="undecoded", http_status=status,
+                        error="the response is not UTF-8")
+
+    ext = _data_ext(ct, text)
+    if ext:
+        # An API's JSON or a feed's XML is not an article: its own bytes are what is worth keeping.
+        if not text.strip():
+            return Document(url=url, status="shell", kind="data", ext=ext, http_status=status,
+                            error="the response body is empty")
+        return Document(markdown=text, url=url, status="ok", kind="data", ext=ext, words=count_words(text),
+                        http_status=status)
+
     if ("markdown" in ct or ct.startswith("text/")) and "html" not in ct and "xml" not in ct and not count_words(text):
         # Nothing to read is not a page that was read. Called a shell, it is also worth the
         # real tab a JavaScript shell gets.
@@ -126,6 +140,27 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
     doc = extract_html(text, url)
     doc.http_status = status
     return doc
+
+
+def _data_ext(content_type: str, text: str) -> str:
+    """"json" or "xml" for a data response -- any JSON or XML type, XHTML and a body that is an HTML page aside -- else ""."""
+    if "json" in content_type:
+        return "json"
+    if "xml" in content_type and "xhtml" not in content_type and "<html" not in text[:4096].lower():
+        return "xml"
+    return ""
+
+
+#: A body the browser's fetch decoded as UTF-8 though it was not: each byte it could not read became U+FFFD.
+# 성진: 임계값(U+FFFD 20자 이상이면서 비ASCII 문자의 과반)은 실제 EUC-KR 페이지 하나(6,943자 중 3,451자가 U+FFFD)와 마크업이 많아 전체의 0.1%에 그치는 합성 페이지로 잡았다; 전체 길이 대비 비율은 마크업에 묻혀 못 쓴다. JS에서 charset으로 다시 디코딩하지 않는 것은 샌드박스의 TextDecoder("euc-kr")가 틀린 값을 냈기 때문이다. 정상 페이지가 여기 걸리는 것이 보이면 기준을 바꾸고, 샌드박스 디코더가 맞아지면 스니펫에서 푼다.
+_NOT_UTF8_MIN = 20
+
+
+def _not_utf8(text: str) -> bool:
+    bad = text.count("\ufffd")
+    if bad < _NOT_UTF8_MIN:
+        return False
+    return bad * 2 > sum(1 for ch in text if ord(ch) > 127)
 
 
 def _is_document_type(content_type: str, body: bytes) -> bool:

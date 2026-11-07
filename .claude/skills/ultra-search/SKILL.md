@@ -1,12 +1,12 @@
 ---
 name: ultra-search
-description: Search the web, read full pages and documents, and map or crawl sites through the user's logged-in Aside browser, including sources anonymous web tools cannot reach. Use instead of WebSearch/WebFetch for web research, current versions, news, docs, prices, reading a URL, PDFs or Office documents at a URL, and saving pages as markdown. Triggers include search, fetch, crawl, scrape, 검색해봐, 찾아봐, 웹에서, 최신 버전, 원문 읽어와, 크롤링, 마크다운으로 저장, 사이트 전체, 로그인해야 보이는 페이지. Not for local files or codebase search, facts already known, browser actions unrelated to acquiring web content, or delegating non-web work to another model (codex).
+description: Search the web, read full pages and documents, map or crawl sites, and work a page directly (click, script, inspect its DOM or back-end calls) through the user's logged-in Aside browser, including sources anonymous web tools cannot reach. Use instead of WebSearch/WebFetch for web research, current versions, news, docs, prices, reading a URL, PDFs, HWP or Office documents at a URL, and saving pages as markdown. Triggers include search, fetch, crawl, scrape, 검색해봐, 찾아봐, 웹에서, 최신 버전, 원문 읽어와, 크롤링, 마크다운으로 저장, 사이트 전체, 로그인해야 보이는 페이지. Not for local files or codebase search, or facts already known.
 allowed-tools: Bash(uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" *)
 ---
 
 # Web work through the user's own browser
 
-Every command goes through one CLI in this skill's directory. Call it by its expanded absolute path, double-quoted, on one shell line: the pre-approved permission rule matches the command text, so a path built from a variable or a command continued with `\` stops at an approval prompt.
+This skill's commands go through one CLI in its directory. The pre-approved permission rule covers that CLI alone and matches the command text: a path built from a variable, a command continued with `\`, and `aside` itself stop at an approval prompt.
 
 ```bash
 uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" --help
@@ -14,34 +14,15 @@ uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" --help
 
 Each command's `--help` owns its inputs, outputs, states and recovery.
 
-## Choose by the work still needed
+## What each path is
 
-**`search` when choosing sources or investigating is still the work; `fetch` when the page is already known.** `search` delegates judgment to a browsing agent and spends the user's subscription; `fetch` reads a page without that agent. A URL in the request does not rule out an investigation, and reading it does not justify one.
+`search` hands an objective to a browsing agent that chooses its own searches and pages, spends the user's subscription, and reports back in another model's words. `fetch` reads a URL you already have into a file with no agent, and turns PDF, HWP and Office documents into text with the original kept.
 
-Reuse evidence before acquiring it again: `result` holds a finished investigation's answer, its sources and the files the agent saved, `show` what it already read. Fetch again when that evidence is missing, inadequate or stale, or a separate saved copy is needed. Map first when what it finds will decide the crawl's scope, and crawl from its manifest when that manifest is the scope, so the site is walked once; crawl directly when the scope is already settled.
+`aside repl` is the page in your own hands: click, drag and fill, run a script in it, read its DOM, watch the calls it makes to its back end, attach to a tab the user has open. `aside guide repl` documents the installed version; a snippet running past 120 seconds is killed and reported as the daemon being unreachable, though the daemon is fine. Queries automated against a search engine draw bot challenges; `search`'s agent does its own searching.
 
-`resume` when an earlier conversation's findings are context for the next question, not merely because one exists; `sessions` lists what Aside still holds, including conversations begun in the app. A saved result outlives the session, so when a session is gone, reuse its `result` and start a new `search` only if the question needs more.
+## What you cannot see from here
 
-When content appears only after interaction -- a click, a scroll, a form the page needs, a chosen site's own search box -- script the browser directly with `aside repl`; `aside guide repl` documents the installed version. Finding sources across the web stays `search`'s job: queries automated against a search engine draw bot challenges.
-
-## Delegate an objective, not keywords
-
-The browsing agent chooses its own searches and pages. Give it the question, the source constraints that matter and the evidence you need back; leave out a browsing sequence it may not need.
-
-Leave room for a negative finding when the question allows one. An explicit negative finding answers the question when what the agent checked supports it; empty output does not, and the CLI cannot judge that conclusion for you.
-
-## Follow state, not silence
-
-`search` and `resume` return at once; the response's `next` is the one call that waits for the result, and its `note` says when a call run in the background announces its completion to anyone.
-
-`log` explains a source choice, a thin result or what a run has done so far; it does not wait -- `next` does.
-
-## Boundaries that affect the answer
-
-- **Nothing here cancels delegated work.** Only Aside itself stops a run and its credit use; bound the objective before starting work you cannot stop here.
-- **Only acquired content is evidence.** A search source is a lead until the run opened it, and an acquisition that succeeded can still have returned a login wall or bot check, so judge each item's status rather than the command's success. When a claim rests on one page, read what was acquired (`show`, a file in `artifacts`, or `fetch` it) before citing it as read.
-- **Partial evidence is not a complete investigation.** The work is done when the question is answered from sourced evidence or the specific gaps are reported -- not when an agent was started or URLs were collected. Report unfinished children and missing sources with the findings instead of turning them into a confident absence.
-- **Requests act as the user.** Their cookies, sessions and browser are in use. Fetch and crawl only what the task needs; being able to reach a private source does not make its contents shareable.
-- **Without Aside, stop rather than substitute.** The user routes web work through their own browser so answers rest on pages acquired with their access; WebSearch and WebFetch cannot use it. When a command reports Aside unavailable, run `doctor`, tell the user what it found and how to fix it, and ask before using them, even for a fact that looks public; where no one can be asked, that report is the result.
-
-When a command fails, recover from what it reports; run `doctor` when the environment is in doubt rather than repeating a failing investigation.
+- `opened` means a tool returned that URL without an error, not that the page says what the answer claims; `opened_sources` holds only those, so an answer can cite pages a search merely listed or that the agent read through a script, which no record shows.
+- Nothing here cancels delegated work: only Aside itself stops a run and its credit use, so a `search`'s scope is settled when it starts.
+- Requests act as the user, with their cookies, sessions and browser. A private source being reachable does not make its contents shareable.
+- WebSearch and WebFetch cannot use the user's access, and WebFetch returns a summary rather than the page; the user grounds answers in pages acquired with their own access.

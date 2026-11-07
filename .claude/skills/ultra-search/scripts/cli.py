@@ -209,8 +209,8 @@ def _add_fetch_opts(p: argparse.ArgumentParser) -> None:
         default="auto",
         help="auto fetches first and promotes to a real browser tab when the response is a JavaScript shell "
         "or a bot challenge, or the fetch fails other than by timing out -- the tab runs the page's JavaScript, "
-        "clears the check, or opens a site that refuses the browser's fetch -- once per host, if that tab fails too; "
-        "fetch and tab force one path. Default auto.",
+        "clears the check, or opens a site that refuses the browser's fetch, and a host whose tab failed too gets no "
+        "further tab in the same call; fetch and tab force one path. Default auto.",
     )
     p.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
     p.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")

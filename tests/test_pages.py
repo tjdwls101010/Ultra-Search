@@ -340,8 +340,10 @@ def test_a_page_that_is_still_a_shell_after_the_tab_says_so(cli, routes) -> None
     routes({"fetch_batch": {"https://x.com/a": page(SHELL)}, "tab_one": {"https://x.com/a": page(SHELL)}})
 
     _, payload, _ = cli("fetch", "https://x.com/a")
+    _, forced, _ = cli("fetch", "https://x.com/a", "--via", "tab")
 
-    assert item_of(payload)["status"] == "shell_escalated"
+    assert item_of(payload)["status"] == item_of(forced)["status"] == "shell_escalated"
+    assert item_of(forced)["error"].startswith("only 0 words extracted")
 
 
 # --- the batch failure mode this whole shape exists for ----------------------------------

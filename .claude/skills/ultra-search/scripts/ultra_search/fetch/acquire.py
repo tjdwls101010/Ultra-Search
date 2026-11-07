@@ -166,7 +166,7 @@ def _escalate(url: str, doc: classify.Document) -> classify.Document:
 
     promoted.status = "shell_escalated" if promoted.status == "shell" else "blocked"
     # A fetch that failed outright said something the tab's verdict does not repeat.
-    promoted.error = (f"{doc.error}; in a tab: {promoted.error}" if doc.status == "error" and promoted.error
+    promoted.error = (f"{doc.error}; in a tab: {promoted.error}" if doc.status == "error" and doc.error and promoted.error
                       else promoted.error or doc.error)
     return promoted
 

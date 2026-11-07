@@ -370,10 +370,10 @@ def build_parser() -> argparse.ArgumentParser:
     # --- fetch --------------------------------------------------------------
     f = sub.add_parser(
         "fetch",
-        help="Read one or more URLs into clean markdown files.",
+        help="Read one or more URLs into files: markdown, or JSON and XML as they came.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
         "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave; "
-        "a JSON or XML response is saved as it came, as .json or .xml. Full text always goes to a file, whose path is "
+        "a JSON or XML response is saved as it came, as .json, .jsonl or .xml. Full text always goes to a file, whose path is "
         "absolute; use --print to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         + ITEM_STATUS_HELP +
@@ -422,8 +422,8 @@ def build_parser() -> argparse.ArgumentParser:
     # --- crawl --------------------------------------------------------------
     c = sub.add_parser(
         "crawl",
-        help="Map a site and save every page as markdown.",
-        description="map + fetch. Writes NNN-slug.md files and a manifest.json recording url, file, title, "
+        help="Map a site and save every page, as fetch saves one.",
+        description="map + fetch. Writes NNN-slug files -- .md, or .json, .jsonl or .xml for data -- and a manifest.json recording url, file, title, "
         "status and via for each page. The reply counts pages by status and lists the first 10 that are not ok; the "
         "manifest has every page.\n"
         "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "

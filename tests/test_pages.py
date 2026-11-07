@@ -254,6 +254,35 @@ def test_a_data_response_is_saved_as_it_came(cli, routes, tmp_path: Path, ct: st
     assert Path(item["path"]).read_text(encoding="utf-8") == body
 
 
+@pytest.mark.parametrize("ct,body", [
+    ("application/json; charset=utf-8", "<!doctype html><html><body><form>Please sign in</form></body></html>"),
+    ("text/xml", '<!DOCTYPE html><html lang="en"><body><div id=root></div></body></html>'),
+], ids=["json-typed-html", "xml-typed-html"])
+def test_an_html_page_served_as_data_is_still_a_page(cli, routes, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://s.test/login": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://s.test/login", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "shell"
+
+
+def test_xml_that_only_names_html_is_still_data(cli, routes) -> None:
+    body = '<?xml version="1.0"?><feeds><feed><htmlUrl>https://e.test/</htmlUrl></feed></feeds>'
+    routes({"fetch_batch": {"https://e.test/feeds.opml": page(body, ct="application/xml")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/feeds.opml")
+
+    assert (item_of(payload)["status"], Path(item_of(payload)["path"]).suffix) == ("ok", ".xml")
+
+
+def test_newline_delimited_json_is_kept_as_jsonl(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/log": page('{"a": 1}\n{"a": 2}\n', ct="application/x-ndjson")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/log")
+
+    assert Path(item_of(payload)["path"]).suffix == ".jsonl"
+
+
 def test_xhtml_is_still_a_page(cli, routes) -> None:
     routes({"fetch_batch": {"https://e.test/a": page(ARTICLE, ct="application/xhtml+xml")}})
 
@@ -300,6 +329,32 @@ def test_a_page_not_in_utf8_is_not_saved_broken(cli, routes, fake_aside: Path, b
         assert item_of(reply)["error"] == "the response is not UTF-8"
 
 
+@pytest.mark.parametrize("ct,body,status", [
+    ("text/html; charset=utf-8", ARTICLE.replace("단어 ", "단어\ufffd ", 25), "ok"),
+    ("text/html; charset=iso-8859-1", ARTICLE.replace("단어", "word").replace("word ", "caf\ufffd ", 3), "shell"),
+    ("text/html", '<html><head><meta charset="euc-kr"></head><body><article><p>' + ("word " * 200)
+     + "caf\ufffd</p></article></body></html>", "shell"),
+], ids=["declared-utf8-with-real-replacement-characters", "declared-latin1", "meta-euc-kr"])
+def test_a_declared_charset_decides_before_the_count(cli, routes, ct: str, body: str, status: str) -> None:
+    """A page that says it is UTF-8 is, whatever replacement characters it carries; one that names another charset was
+    decoded wrongly the moment it held a character outside ASCII."""
+    routes({"fetch_batch": {"https://e.test/a": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
+
+    assert item_of(payload)["status"] == status
+
+
+def test_data_not_in_utf8_is_not_sent_to_a_tab_that_cannot_read_it(cli, routes, fake_aside: Path) -> None:
+    feed = '<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>"
+    routes({"fetch_batch": {"https://ko.test/rss": page(mis_decoded(feed), ct="application/rss+xml")}})
+
+    _, payload, _ = cli("fetch", "https://ko.test/rss")
+
+    assert repl_calls(fake_aside, "tab_one") == []
+    assert (item_of(payload)["status"], item_of(payload)["error"]) == ("unsupported", "the response is not UTF-8")
+
+
 def test_markup_heavy_cases_really_are_a_small_share() -> None:
     assert [round(mis_decoded(b).count("\ufffd") / len(mis_decoded(b)), 4) for b in SPARSE] == [0.001, 0.0033]
 
@@ -314,7 +369,8 @@ def test_a_page_with_a_few_replacement_characters_is_still_a_page(cli, routes) -
 
 @pytest.mark.parametrize("argv", [["fetch", "https://e.test/a"], ["map", "https://e.test/"], ["crawl", "https://e.test/"]],
                          ids=["fetch", "map", "crawl"])
-def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv) -> None:
+def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv,
+                                                                runs_dir: Path) -> None:
     """With the Aside app closed, a fetch came back as `error: no response` and a map as an empty site."""
     import socket
 
@@ -328,6 +384,9 @@ def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake
     assert (code, payload["error"]) == (3, "aside_unavailable")
     assert "doctor" in payload["fix"]
     assert not (fake_aside / "calls.jsonl").exists()
+    assert list(runs_dir.iterdir()) == [], "nothing was made before the refusal"
+    code, _, _ = run_cli(*argv, "--out", "made/")
+    assert code == 3 and list(Path.cwd().iterdir()) == []
 
 
 # --- escalating to a real tab ------------------------------------------------------------

@@ -23,8 +23,17 @@ SCRIPT = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "ultra-sea
 
 def cli(*args: str, timeout: float = 300) -> tuple[int, dict]:
     p = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=timeout)
-    lines = [l for l in p.stdout.splitlines() if l.startswith("{")]
+    lines = [l for l in p.stdout.split("\n") if l.startswith("{")]
     return p.returncode, (json.loads(lines[-1]) if lines else {})
+
+
+def waited(started: tuple[int, dict], runs_dir: Path, seconds: str = "300") -> tuple[int, dict]:
+    """`result --wait` on what a search or resume reply started -- the one wait there is."""
+    code, payload = started
+    if "next" not in payload:
+        return code, payload
+    return cli("result", payload["runs"][0]["run_id"], "--wait", seconds, "--runs-dir", str(runs_dir),
+               timeout=float(seconds) + 60)
 
 
 def test_doctor_reports_a_working_environment() -> None:
@@ -39,17 +48,16 @@ def test_a_simple_search_answers_with_sources(tmp_path: Path) -> None:
     own session is not found, the run still ends, as `completed_unstructured`, with an answer
     cut from stdout and no usage. The page it was asked to open is a source it opened, whichever
     tool the agent chose to open it with."""
-    code, payload = cli(
+    code, payload = waited(cli(
         "search",
         "현재 Python 3의 최신 안정 버전은 무엇인가? python.org 다운로드 페이지를 직접 열어 확인하고 한 줄로 답해라.",
         "--effort", "low",
-        "--wait", "120",
         "--runs-dir", str(tmp_path),
-    )
+    ), tmp_path)
 
     assert code == 0
     run = payload["runs"][0]
-    _, mine = cli("sessions", "--mine", "--limit", "50", "--runs-dir", str(tmp_path))
+    _, mine = cli("sessions", "--mine", "--limit", "50")
     assert run["state"] == "completed", run.get("note")
     assert run["run_id"] in [s["run_id"] for s in mine["sessions"]], "the run found its own session by its marker"
     assert run["answer"].strip()
@@ -163,15 +171,14 @@ def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) ->
         capture_output=True, text=True, timeout=180,
     )
 
-    code, listing = cli("sessions", "--limit", "10", "--runs-dir", str(tmp_path))
+    code, listing = cli("sessions", "--limit", "10")
     assert code == 0
     external = next(s for s in listing["sessions"] if "성진" in s["prompt"])
     assert external["started_by_ultra_search"] is False
 
-    code, payload = cli(
-        "resume", external["session_id"], "내 이름이 뭐라고 했지? 이름만 답해.",
-        "--wait", "120", "--runs-dir", str(tmp_path),
-    )
+    code, payload = waited(cli(
+        "resume", external["session_id"], "내 이름이 뭐라고 했지? 이름만 답해.", "--runs-dir", str(tmp_path),
+    ), tmp_path)
 
     assert code == 0
     run = payload["runs"][0]
@@ -180,19 +187,12 @@ def test_a_session_started_outside_this_tool_can_be_continued(tmp_path: Path) ->
     assert "성진" in run["answer"]
 
 
-def test_repl_api_reports_the_installed_browser_api() -> None:
-    code, payload = cli("repl-api")
-
-    assert code == 0
-    assert payload["tool"]["name"] == "repl"
-
-
 def test_a_missing_binary_fails_fast_rather_than_hanging(tmp_path: Path, monkeypatch) -> None:
     import os
 
     env = dict(os.environ, ULTRA_SEARCH_ASIDE_BIN="/nonexistent/aside")
     p = subprocess.run(
-        [sys.executable, str(SCRIPT), "search", "질문", "--wait", "5", "--runs-dir", str(tmp_path)],
+        [sys.executable, str(SCRIPT), "search", "질문", "--runs-dir", str(tmp_path)],
         capture_output=True, text=True, env=env, timeout=60,
     )
 

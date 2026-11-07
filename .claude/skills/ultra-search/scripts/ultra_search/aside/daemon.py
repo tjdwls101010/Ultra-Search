@@ -1,4 +1,4 @@
-"""The daemon as the app runs it: its health endpoint, the signed-in account, and its MCP tool list."""
+"""The daemon as the app runs it: its health endpoint and the signed-in account."""
 from __future__ import annotations
 
 import json
@@ -85,44 +85,3 @@ def account_status() -> dict:
     signed_in = "signed in" in flat.lower() or bool(re.search(r"^\s*\*?\s*u\d", out, re.M))
     return {"ok": signed_in, "detail": flat[:200] or "no accounts listed"}
 
-
-def mcp_tools() -> list[dict]:
-    """Every tool the running daemon lists over MCP, as it describes them."""
-    request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
-    })
-    init = json.dumps({
-        "jsonrpc": "2.0", "id": 0, "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "ultra-search", "version": "1.0"}},
-    })
-    notify = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    try:
-        proc = subprocess.run(
-            [aside_bin(), "mcp"],
-            input=f"{init}\n{notify}\n{request}\n",
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        raise AsideUnavailable(f"could not run `aside mcp`: {e}") from e
-
-    tools = []
-    for line in (proc.stdout or "").split("\n"):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
-        found = ((msg.get("result") or {}).get("tools")) or []
-        if found:
-            tools = found
-    if not tools:
-        raise AsideUnavailable(
-            "the daemon returned no tool list",
-            fix="Check the Aside app is running, then re-run `doctor`.",
-            stderr=(proc.stderr or "").strip()[-400:],
-        )
-    return tools

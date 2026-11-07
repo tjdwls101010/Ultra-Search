@@ -22,7 +22,7 @@ Reuse evidence before acquiring it again: `result` holds a finished investigatio
 
 `resume` when an earlier conversation's findings are context for the next question, not merely because one exists; `sessions` lists what Aside still holds, including conversations begun in the app. A saved result outlives the session, so when a session is gone, reuse its `result` and start a new `search` only if the question needs more.
 
-When content appears only after interaction -- a click, a scroll, a form the page needs, a chosen site's own search box -- script the browser directly: `repl-api` gives the installed REPL's API and how to call it. Finding sources across the web stays `search`'s job: queries automated against a search engine draw bot challenges.
+When content appears only after interaction -- a click, a scroll, a form the page needs, a chosen site's own search box -- script the browser directly with `aside repl`; `aside guide repl` documents the installed version. Finding sources across the web stays `search`'s job: queries automated against a search engine draw bot challenges.
 
 ## Delegate an objective, not keywords
 
@@ -32,7 +32,7 @@ Leave room for a negative finding when the question allows one. An explicit nega
 
 ## Follow state, not silence
 
-Follow the latest response's `next`: a search that outlasts its wait hands back the command that waits for its result. Run it in the background only when something will receive its completion; a run that ends with its turn -- `claude -p`, a subagent, a scheduled job -- runs `next` in the foreground and collects the result before answering.
+`search` and `resume` return at once; the response's `next` is the one call that waits for the result, and its `note` says when a call run in the background announces its completion to anyone.
 
 `log` explains a source choice, a thin result or what a run has done so far; it does not wait -- `next` does.
 

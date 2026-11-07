@@ -58,7 +58,22 @@ def first_run(payload: dict) -> dict:
 
 
 def search(cli, *prompts: str, wait: str = "30", extra: tuple = ()) -> tuple[int, dict, str]:
-    return cli("search", *prompts, "--wait", wait, *extra)
+    """Start a search and wait for it with `result --wait` -- the one wait there is -- unless ``wait`` is "0": the
+    reply a caller ends with. A search refused at the start is that refusal."""
+    code, payload, text = cli("search", *prompts, *extra)
+    return (code, payload, text) if wait == "0" or "next" not in payload else waited(cli, payload, wait)
+
+
+def resume(cli, target: str, prompt: str, *extra: str, wait: str = "30") -> tuple[int, dict, str]:
+    """As `search`, for a follow-up."""
+    code, payload, text = cli("resume", target, prompt, *extra)
+    return (code, payload, text) if wait == "0" or "next" not in payload else waited(cli, payload, wait)
+
+
+def waited(cli, started: dict, wait: str) -> tuple[int, dict, str]:
+    """`result --wait` on the runs a search or resume reply started."""
+    target = ["--group", started["group"]] if started.get("group") else [first_run(started)["run_id"]]
+    return cli("result", *target, "--wait", wait)
 
 
 def finished_run_id(cli, *extra: str) -> str:
@@ -68,19 +83,18 @@ def finished_run_id(cli, *extra: str) -> str:
 
 
 def lines_of(text: str) -> list[str]:
-    """What a command printed before its JSON response, which is always the last line."""
-    lines = text.splitlines()
-    return lines[:-1] if lines and lines[-1].startswith("{") else lines
+    """The event lines a `log` reply holds, every run's in turn."""
+    return [line for run in json.loads(text.strip().split("\n")[-1])["runs"] for line in run["lines"]]
 
 
 def rendered(text: str) -> str:
-    """Only the event lines of a log, without its response."""
+    """The event lines of a log, as one text."""
     return "\n".join(lines_of(text))
 
 
 def every_source(cli, run_id: str) -> list[dict]:
     """All the sources of a run, as `result --sources` lists them."""
-    return first_run(cli("result", "--run", run_id, "--sources")[1])["sources"]
+    return first_run(cli("result", run_id, "--sources")[1])["sources"]
 
 
 def session_of(cli, run_id: str) -> str | None:
@@ -157,12 +171,14 @@ def start_isolated(base: Path, records, *, daemon: str, children: dict | None = 
         FAKE_ASIDE_FORMAT=fmt,
         ULTRA_SEARCH_DAEMON_URL=daemon,
     )
-    p = subprocess.run(
-        [sys.executable, str(SCRIPTS / "cli.py"), "search", prompt, "--label", label,
-         "--wait", wait, "--runs-dir", str(runs)],
+    started = subprocess.run(
+        [sys.executable, str(SCRIPTS / "cli.py"), "search", prompt, "--label", label, "--runs-dir", str(runs)],
         capture_output=True, text=True, env=env, timeout=120,
     )
-    return runs, json.loads(p.stdout.splitlines()[-1])
+    run_id = json.loads(started.stdout)["runs"][0]["run_id"]
+    p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "result", run_id, "--wait", wait, "--runs-dir", str(runs)],
+                       capture_output=True, text=True, env=env, timeout=120)
+    return runs, json.loads(p.stdout)
 
 
 @pytest.fixture(scope="module")
@@ -215,7 +231,7 @@ def eventful(tmp_path_factory, ready_daemon: str) -> tuple[Path, str]:
 def log_of(run: tuple[Path, str], *args: str) -> tuple[int, dict, str]:
     """The log of a module-scoped run; the text is the rendered lines, without the response."""
     runs, run_id = run
-    code, payload, text = run_cli("log", "--run", run_id, *args, "--runs-dir", str(runs))
+    code, payload, text = run_cli("log", run_id, *args, "--runs-dir", str(runs))
     return code, payload, "\n".join(lines_of(text))
 
 
@@ -254,6 +270,82 @@ def test_several_prompts_run_as_one_group(cli) -> None:
     assert all(i.endswith("-same") for i in ids)
 
 
+# --- one wait: search starts, result waits ------------------------------------------------------
+
+
+def test_search_hands_back_its_wait_at_once(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch) -> None:
+    """Measured: a search ran p50 6 minutes, and the old built-in wait ended in time once in 22 real searches."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "5")
+
+    began = time.time()
+    code, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
+
+    assert time.time() - began < 1.5
+    run_id = first_run(payload)["run_id"]
+    assert (code, first_run(payload)["state"]) == (0, "starting")
+    assert f" result {shlex.quote(run_id)} " in payload["next"]["command"]
+    assert payload["next"]["command"].endswith(" --wait 570")
+    assert "claude -p" in payload["note"], "who will receive a background call's completion is said where it applies"
+
+
+def test_the_wait_prints_one_json_document_whatever_it_is_read_with(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+) -> None:
+    """A background call's output file holds stderr and stdout together; progress lines there broke json.load in 9
+    real reads."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "2")
+    _, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
+    # uv says on stderr when it builds the script's environment, which is uv's line, not this CLI's: built first.
+    subprocess.run(payload["next"]["command"].split(" result ", 1)[0] + " --version", shell=True, capture_output=True)
+
+    began = time.time()
+    done = subprocess.run(payload["next"]["command"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, timeout=180)
+
+    finished = json.loads(done.stdout)
+    assert time.time() - began > 1.0, "it waited for the run"
+    assert (done.returncode, finished["command"], first_run(finished)["answer"]) == (0, "result", "느린 답.")
+    assert "next" not in finished
+
+
+@pytest.mark.parametrize("command,extra", [("result", ()), ("log", ()), ("show", ("--item", "0"))])
+def test_a_run_is_named_by_its_position(cli, command: str, extra: tuple) -> None:
+    run_id = finished_run_id(cli)
+
+    code, payload, _ = cli(command, run_id[:-1], *extra)
+
+    assert code == 0 and payload.get("run_id", first_run(payload)["run_id"] if "runs" in payload else None) == run_id
+
+
+@pytest.mark.parametrize("argv,said", [
+    (["result", "--run", "x"], "--run"), (["log", "--run", "x"], "--run"), (["show", "--run", "x", "--item", "0"], "--run"),
+    (["result", "x", "--group", "g"], "not allowed with"),
+    (["search", "q", "--wait", "5"], "--wait"), (["search", "q", "--background"], "--background"),
+    (["resume", "x", "q", "--wait", "5"], "--wait"), (["resume", "x", "q", "--background"], "--background"),
+    (["sessions", "--runs-dir", "x"], "--runs-dir"), (["repl-api"], "repl-api"),
+], ids=lambda a: " ".join(a) if isinstance(a, list) else "")
+def test_retired_flags_and_commands_are_refused(argv: list[str], said: str, fake_aside: Path) -> None:
+    code, payload, _ = run_cli(*argv)
+
+    assert (code, payload["error"]) == (2, "bad_arguments")
+    assert said in payload["message"]
+    assert exec_calls(fake_aside) == []
+
+
+def test_log_answers_in_one_json_document_numbered_as_show_counts(cli, runs_dir: Path) -> None:
+    run_id = finished_run_id(cli)
+
+    code, out, err = run_cli_streams("log", run_id, "--level", "steps", "--runs-dir", str(runs_dir))
+
+    payload = json.loads(out)
+    assert (code, err) == (0, "")
+    (run,) = payload["runs"]
+    assert run["run_id"] == run_id and run["state"] == "completed"
+    assert any(line.startswith("#0 websearch") for line in run["lines"])
+
+
 def test_a_background_search_hands_back_the_command_that_will_wake_you(
     runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
 ) -> None:
@@ -266,7 +358,7 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
     the run has to still be going when it starts, and it has to be the thing that waits."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "5")
-    code, payload, _ = run_cli("search", "질문", "--background", "--runs-dir", str(runs_dir))
+    code, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == 0
     assert first_run(payload)["state"] in ("starting", "running")
@@ -284,7 +376,6 @@ def test_a_background_search_hands_back_the_command_that_will_wake_you(
 
     assert done.returncode == 0
     assert waited > 1.0, "it has to wait for the run, not return on a run already over"
-    assert "answer: 느린 답." in done.stderr, "what the run does while it is waited on is shown as it happens"
     finished = json.loads(done.stdout)
     assert finished["command"] == "result"
     assert "next" not in finished, "a finished run hands back nothing more to do"
@@ -300,16 +391,18 @@ def test_a_search_that_outlasts_the_wait_keeps_running_and_hands_back_a_handle(c
 
     assert code == 0
     assert first_run(payload)["state"] in ("starting", "running")
-    assert " result --run " in payload["next"]["command"] and payload["next"]["command"].endswith(" --wait 570")
+    run_id = first_run(payload)["run_id"]
+    assert f" result {shlex.quote(run_id)} " in payload["next"]["command"]
+    assert payload["next"]["command"].endswith(" --wait 570")
 
 
 def test_the_handed_back_run_can_be_collected_once_it_finishes(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "1")
-    _, payload, _ = search(cli, "느린 질문", wait="0.3")
+    _, payload, _ = search(cli, "느린 질문", wait="0")
     run_id = first_run(payload)["run_id"]
 
-    code, result, _ = cli("result", "--run", run_id, "--wait", "30")
+    code, result, _ = cli("result", run_id, "--wait", "30")
 
     result = result["runs"][0]
     assert code == 0
@@ -321,10 +414,10 @@ def test_a_wait_that_runs_out_hands_back_the_wait_again(cli, monkeypatch) -> Non
     """Running out of time to wait is not an ending: the run is reported as it stands, with the same wait to continue."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "20")
-    _, payload, _ = search(cli, "느린 질문", wait="0.3")
+    _, payload, _ = search(cli, "느린 질문", wait="0")
 
     began = time.time()
-    code, waited, _ = cli("result", "--run", first_run(payload)["run_id"], "--wait", "1")
+    code, waited, _ = cli("result", first_run(payload)["run_id"], "--wait", "1")
 
     assert code == 0
     assert 1.0 <= time.time() - began < 10
@@ -343,7 +436,7 @@ SLOW = [{"__if_prompt__": "느린", **calling(("webfetch", {"url": "https://x.te
 def test_a_group_still_going_is_handed_back_whatever_its_ended_members_say(cli, replay, ended, code) -> None:
     """A failure is reported as soon as it is known, with the wait for the rest; an empty result is not the group's verdict while a member is still going."""
     replay(ended + SLOW)
-    _, started, _ = cli("search", "실패 빈 질문", "느린 질문", "--wait", "3")
+    _, started, _ = search(cli, "실패 빈 질문", "느린 질문", wait="3")
 
     got, waited, _ = cli("result", "--group", started["group"], "--wait", "0.5")
 
@@ -354,7 +447,7 @@ def test_a_group_still_going_is_handed_back_whatever_its_ended_members_say(cli, 
 
 def test_a_group_whose_members_all_ended_empty_exits_five(cli, replay) -> None:
     replay([answer("")])
-    _, started, _ = cli("search", "하나", "둘", "--wait", "30")
+    _, started, _ = search(cli, "하나", "둘")
 
     code, collected, _ = cli("result", "--group", started["group"])
 
@@ -374,7 +467,7 @@ def test_a_run_whose_supervisor_is_gone_is_abandoned_not_waited_on_forever(cli, 
     run = runs.create_run(runs_dir, label="orphaned", prompt="질문")
     run.update_meta(state="running", supervisor_pid=dead_pid())
 
-    code, payload, _ = cli("result", "--run", run.run_id)
+    code, payload, _ = cli("result", run.run_id)
 
     assert code == 4
     assert first_run(payload)["state"] == "abandoned"
@@ -390,8 +483,8 @@ def test_a_run_whose_supervisor_never_started_is_abandoned_and_a_late_one_starts
     stale = runs.create_run(runs_dir, label="stale", prompt="질문")
     stale.update_meta(created_at=time.time() - 120)
 
-    _, young, _ = cli("result", "--run", fresh.run_id)
-    code, old, _ = cli("result", "--run", stale.run_id)
+    _, young, _ = cli("result", fresh.run_id)
+    code, old, _ = cli("result", stale.run_id)
     research.supervise(stale, poll=0.05)
 
     assert first_run(young)["state"] == "starting" and "next" in young
@@ -408,7 +501,7 @@ def test_a_result_written_by_a_supervisor_that_died_before_recording_it_is_kept(
         "run_id": run.run_id, "state": "completed_with_orphans", "answer": "부분 답", "sources": [], "usage": {},
         "children": ["StillGoingKid001"], "orphan_children": ["StillGoingKid001"], "empty": False, "exit_code": 0})
 
-    code, payload, _ = cli("result", "--run", run.run_id)
+    code, payload, _ = cli("result", run.run_id)
 
     entry = first_run(payload)
     assert code == 0
@@ -423,7 +516,7 @@ def test_a_finished_run_is_never_rewritten_as_abandoned(cli, runs_dir: Path) -> 
     run = runs.create_run(runs_dir, label="done", prompt="질문")
     run.update_meta(state="completed", supervisor_pid=dead_pid())
 
-    code, payload, _ = cli("result", "--run", run.run_id)
+    code, payload, _ = cli("result", run.run_id)
 
     assert first_run(payload)["state"] == "completed"
     assert code in (0, 5)
@@ -445,18 +538,18 @@ def test_what_was_removed_is_refused(cli, argv: list[str], fake_aside: Path) -> 
 def test_log_reads_once_and_answers_without_a_cursor(cli, runs_dir: Path) -> None:
     run_id = finished_run_id(cli)
 
-    code, out, err = run_cli_streams("log", "--run", run_id, "--runs-dir", str(runs_dir))
+    code, out, err = run_cli_streams("log", run_id, "--runs-dir", str(runs_dir))
 
-    assert code == 0
-    assert "prompt: 질문" in err
+    assert (code, err) == (0, "")
     assert set(json.loads(out)) == {"ok", "command", "runs"}
+    assert any(line.startswith("prompt: 질문") for line in lines_of(out))
 
 
 def test_a_search_whose_process_exits_mid_turn_hands_back_the_final_answer(cli, replay) -> None:
     """`aside exec` exited 0 while its subagents were working, and the final answer came 15 seconds later -- past the supervisor's own settle window and its poll after it. Following `next` to the end still has to give the caller that answer, not an empty snapshot with orphans."""
     replay(subagent_turn(gap=15))
 
-    _, payload, _ = search(cli, "질문", wait="0.5")
+    _, payload, _ = search(cli, "질문", wait="0")
     final = follow_next(payload)
 
     run = first_run(final)
@@ -583,10 +676,10 @@ def test_show_gives_a_downloaded_documents_file_and_a_long_results_whole_text(cl
         answer("답"),
     ])
     run_id = finished_run_id(cli)
-    copied = {s["url"]: s.get("file") for s in first_run(cli("result", "--run", run_id)[1])["opened_sources"]}
+    copied = {s["url"]: s.get("file") for s in first_run(cli("result", run_id)[1])["opened_sources"]}
 
-    _, doc, _ = cli("show", "--run", run_id, "--source", "d1")
-    _, long, _ = cli("show", "--run", run_id, "--source", "w1")
+    _, doc, _ = cli("show", run_id, "--source", "d1")
+    _, long, _ = cli("show", run_id, "--source", "w1")
 
     assert doc["file"] == copied["https://docs.test/a.pdf"] and Path(doc["file"]).read_bytes() == b"%PDF-1.7 a"
     assert doc["content"] == "" and "file" in doc["note"]
@@ -602,7 +695,7 @@ def test_a_document_also_read_as_a_page_shows_both(cli, replay) -> None:
             answer("답")])
     run_id = finished_run_id(cli)
 
-    _, shown, _ = cli("show", "--run", run_id, "--source", "d1")
+    _, shown, _ = cli("show", run_id, "--source", "d1")
 
     assert "본문" in shown["content"] and Path(shown["file"]).read_bytes() == b"PK hwpx"
 
@@ -667,8 +760,8 @@ def test_show_reads_a_download_from_the_session_while_the_run_is_still_going(cli
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
 
-    shown = poll(lambda: (lambda r: r if r.get("file") else None)(cli("show", "--run", run_id, "--source", "d1")[1]))
-    cli("result", "--run", run_id, "--wait", "30")
+    shown = poll(lambda: (lambda r: r if r.get("file") else None)(cli("show", run_id, "--source", "d1")[1]))
+    cli("result", run_id, "--wait", "30")
 
     assert Path(shown["file"]).read_bytes() == b"%PDF-1.7 a"
     assert "/tmp/" in shown["file"] and Path(shown["file"]).name == "a.pdf"
@@ -678,7 +771,7 @@ def test_a_failed_run_exits_four(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "fail")
 
     code, payload, _ = search(cli, "질문")
-    _, result, _ = cli("result", "--run", first_run(payload)["run_id"])
+    _, result, _ = cli("result", first_run(payload)["run_id"])
     result = result["runs"][0]
 
     assert code == 4
@@ -719,7 +812,7 @@ def test_a_daemon_that_does_not_answer_exits_three_before_reserving_a_run(
         port = sock.getsockname()[1]
     monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
 
-    code, payload, _ = run_cli("search", "질문", "--wait", "5", "--runs-dir", str(runs_dir))
+    code, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == 3
     assert payload["error"] == "aside_unavailable" and "doctor" in payload["fix"]
@@ -730,7 +823,7 @@ def test_a_daemon_that_does_not_answer_exits_three_before_reserving_a_run(
 def test_a_missing_aside_binary_exits_three_before_reserving_a_run(runs_dir: Path, aside_home: Path, monkeypatch) -> None:
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_BIN", "/nonexistent/aside")
 
-    code, payload, _ = run_cli("search", "질문", "--wait", "5", "--runs-dir", str(runs_dir))
+    code, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == 3
     assert payload["error"] == "aside_unavailable"
@@ -752,7 +845,7 @@ def test_next_commands_preserve_the_installed_path_and_run_store(
     collected_in.mkdir()
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "0.5")
-    argv = [sys.executable, str(script), "search", "path-test", "--background"]
+    argv = [sys.executable, str(script), "search", "path-test"]
     if runs_arg:
         argv += ["--runs-dir", runs_arg]
     started = subprocess.run(argv, cwd=started_in, capture_output=True, text=True, timeout=10)
@@ -820,7 +913,7 @@ def test_a_label_names_the_run_and_cannot_escape_the_registry(cli, runs_dir: Pat
     run_id = first_run(hostile)["run_id"]
     assert "/" not in run_id and ".." not in run_id
     assert (runs_dir / "runs" / run_id).is_dir()
-    code, collected, _ = cli("result", "--run", run_id)
+    code, collected, _ = cli("result", run_id)
     assert code == 0 and first_run(collected)["state"] == "completed"
 
 
@@ -835,8 +928,8 @@ def test_two_runs_of_the_same_prompt_keep_their_own_sessions(cli, monkeypatch) -
 
     assert None not in {session_of(cli, a), session_of(cli, b)} and session_of(cli, a) != session_of(cli, b)
     # Each run's transcript opens with its own marker and never holds the other's.
-    _, _, text_a = cli("log", "--run", a, "--level", "raw")
-    _, _, text_b = cli("log", "--run", b, "--level", "raw")
+    _, _, text_a = cli("log", a, "--level", "raw")
+    _, _, text_b = cli("log", b, "--level", "raw")
     assert f"ultra-search:{a}" in text_a and f"ultra-search:{b}" not in text_a
     assert f"ultra-search:{b}" in text_b and f"ultra-search:{a}" not in text_b
 
@@ -848,10 +941,10 @@ def test_the_transcript_outlives_asides_own_copy(cli, aside_home: Path) -> None:
 
     shutil.rmtree(aside_home / "u" / "0" / "sessions")
 
-    _, result, _ = cli("result", "--run", run_id)
+    _, result, _ = cli("result", run_id)
     result = result["runs"][0]
-    code, shown, _ = cli("show", "--run", run_id, "--item", "0")
-    _, _, logged = cli("log", "--run", run_id)
+    code, shown, _ = cli("show", run_id, "--item", "0")
+    _, _, logged = cli("log", run_id)
     assert result["answer"].startswith("Answer")
     assert code == 0 and shown["tool"] == "websearch"
     assert "answer: Answer" in logged
@@ -877,7 +970,7 @@ def test_children_are_collected_with_their_answers(cli, monkeypatch) -> None:
 
     _, payload, _ = search(cli, "질문")
     run = first_run(payload)
-    _, _, logged = cli("log", "--run", run["run_id"])
+    _, _, logged = cli("log", run["run_id"])
 
     assert run["state"] == "completed"
     assert "child 1 done." in run["answer"] and "child 2 done." in run["answer"]
@@ -925,7 +1018,7 @@ def test_log_defaults_to_the_supervisors_view(cli) -> None:
     arguments it used."""
     run_id = finished_run_id(cli)
 
-    _, _, text = cli("log", "--run", run_id)
+    _, _, text = cli("log", run_id)
 
     assert "prompt: 질문" in text
     assert "websearch×1[o]" in text
@@ -936,11 +1029,12 @@ def test_log_defaults_to_the_supervisors_view(cli) -> None:
 def test_group_members_are_labelled_so_interleaved_lines_stay_attributable(cli) -> None:
     _, payload, _ = search(cli, "A", "B")
 
-    _, _, text = cli("log", "--group", payload["group"])
+    _, logged, _ = cli("log", "--group", payload["group"])
 
-    for run in payload["runs"]:
-        assert f"[{run['run_id']}] answer: Answer" in text
-        assert f"[{run['run_id']}] prompt: {'A' if run is payload['runs'][0] else 'B'}" in text
+    by_run = {run["run_id"]: run["lines"] for run in logged["runs"]}
+    for run, prompt in zip(payload["runs"], ("A", "B")):
+        assert any(line.startswith("answer: Answer") for line in by_run[run["run_id"]])
+        assert any(line.startswith(f"prompt: {prompt}") for line in by_run[run["run_id"]])
 
 
 def test_a_group_wait_returns_only_when_every_member_has_ended(cli, replay) -> None:
@@ -949,12 +1043,12 @@ def test_a_group_wait_returns_only_when_every_member_has_ended(cli, replay) -> N
     _, payload, _ = search(cli, "빠른", "느린", wait="0")
     quick, slow = (r["run_id"] for r in payload["runs"])
 
-    code, collected, text = cli("result", "--group", payload["group"], "--wait", "30")
+    code, collected, _ = cli("result", "--group", payload["group"], "--wait", "30")
 
     assert code == 0
-    assert [r["state"] for r in collected["runs"]] == ["completed", "completed"]
+    assert [(r["run_id"], r["state"], r["answer"]) for r in collected["runs"]] == [(quick, "completed", "답"),
+                                                                                  (slow, "completed", "답")]
     assert "next" not in collected
-    assert f"[{slow}] answer: 답" in text
 
 
 def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
@@ -963,7 +1057,7 @@ def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "subagent")
     run_id = finished_run_id(cli)
 
-    _, _, text = cli("log", "--run", run_id)
+    _, _, text = cli("log", run_id)
 
     assert any(line.startswith("[child ") and "answer: child 1 done." in line for line in lines_of(text))
 
@@ -972,7 +1066,7 @@ def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
 def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every_run(
     cli, replay, aside_home: Path, group: bool, tmp_path: Path
 ) -> None:
-    """A wait that ran out hands back the same wait, which prints only what happened since it began -- in the parent and in every child -- and then the result of every run it was waiting for."""
+    """A wait that ran out hands back the same wait, which prints nothing but the result of every run it was waiting for once each has ended -- what they did meanwhile, in the parent and in every child, is the log's."""
     kids = {"first-member": "KidOfFirst000001", "second-member-with-longer-prompt": "KidOfSecond00001"}
     for prompt, kid in kids.items():
         aside_session(aside_home, kid, user(f"seen-child of {prompt}"))
@@ -985,14 +1079,14 @@ def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every
     prompts = list(kids) if group else ["second-member-with-longer-prompt"]
     _, payload, _ = search(cli, *prompts, wait="0")
     run_ids = {r["run_id"]: prompt for r, prompt in zip(payload["runs"], prompts)}
-    target = ["--group", payload["group"]] if group else ["--run", next(iter(run_ids))]
+    target = ["--group", payload["group"]] if group else [next(iter(run_ids))]
     assert poll(lambda: rendered(cli("log", *target)[2]).count("seen-child") == len(run_ids), timeout=15)
 
     code, waiting, _ = cli("result", *target, "--wait", "0.5")
     following = subprocess.Popen(waiting["next"]["command"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     # Nothing new is written until the wait is running: its Python is up, and has had time for its first read.
     assert poll(lambda: "cli.py result" in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
-                and target[1] in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout, timeout=60)
+                and target[-1] in subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout, timeout=60)
     time.sleep(1)
     for prompt, kid in kids.items():
         with (aside_home / "u" / "0" / "sessions" / f"2026-09-25_{kid}" / "messages.jsonl").open("a") as f:
@@ -1004,12 +1098,11 @@ def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every
     assert set(waiting["next"]) == {"command", "bash_timeout_ms", "run_in_background"}
     assert waiting["next"]["run_in_background"] is True
     assert following.returncode == 0
-    assert "seen-" not in err, "what happened before the wait began is the log's, not the wait's"
-    lines = err.splitlines()
+    assert "answer:" not in err and "seen-" not in err, "a wait prints nothing of what the runs do"
+    logged = {run["run_id"]: run["lines"] for run in cli("log", *target)[1]["runs"]}
     for run_id, prompt in run_ids.items():
-        prefix = f"[{run_id}]" if group else ""
-        assert lines.count((f"{prefix} " if prefix else "") + "answer: new-parent") == 1
-        assert lines.count(f"{prefix}[child {kids[prompt]}] answer: new-child of {prompt}") == 1
+        assert logged[run_id].count("answer: new-parent") == 1
+        assert logged[run_id].count(f"[child {kids[prompt]}] answer: new-child of {prompt}") == 1
     result = json.loads(out)
     assert [e["run_id"] for e in result["runs"]] == list(run_ids)
     assert all(e["state"] == "completed" for e in result["runs"])
@@ -1024,9 +1117,9 @@ def test_every_line_of_a_child_event_carries_the_childs_prefix(cli, replay, asid
     replay([tool("subagent", "spawned", taskId="PrefixChild00001"), answer("부모 답")])
     run_id = finished_run_id(cli)
 
-    _, _, text = cli("log", "--run", run_id, "--level", "steps")
+    _, _, text = cli("log", run_id, "--level", "steps")
 
-    child_lines = [line for line in text.splitlines() if "x.test" in line]
+    child_lines = [line for line in lines_of(text) if "x.test" in line]
     assert len(child_lines) == 3
     assert all(line.startswith("[child PrefixChild00001] call webfetch(") for line in child_lines)
 
@@ -1140,7 +1233,7 @@ def test_steps_level_shows_call_arguments_and_result_sizes(simple_search) -> Non
 
 def test_a_recorded_answer_has_its_citations_resolved(simple_search) -> None:
     runs, run_id = simple_search
-    _, result, _ = run_cli("result", "--run", run_id, "--runs-dir", str(runs))
+    _, result, _ = run_cli("result", run_id, "--runs-dir", str(runs))
     result = result["runs"][0]
 
     assert "3.14.7" in result["answer"]
@@ -1154,7 +1247,7 @@ def test_a_recorded_answer_has_its_citations_resolved(simple_search) -> None:
 def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
     """This run only ran websearch -- it listed results and never opened one."""
     runs, run_id = simple_search
-    _, result, _ = run_cli("result", "--run", run_id, "--sources", "--runs-dir", str(runs))
+    _, result, _ = run_cli("result", run_id, "--sources", "--runs-dir", str(runs))
     listed = result["runs"][0]["sources"]
 
     assert listed
@@ -1164,7 +1257,7 @@ def test_sources_distinguish_seen_from_actually_read(simple_search) -> None:
 
 def test_usage_totals_across_every_assistant_turn(simple_search) -> None:
     store, run_id = simple_search
-    _, collected, _ = run_cli("result", "--run", run_id, "--runs-dir", str(store))
+    _, collected, _ = run_cli("result", run_id, "--runs-dir", str(store))
     usage = saved(first_run(collected))["usage"]
 
     assert usage["total_tokens"] == 10813 + 18580
@@ -1226,7 +1319,7 @@ def test_show_returns_the_fullest_read_of_a_page(cli, replay) -> None:
             for t in (opened, snapshot)] + [answer("답")])
     run_id = finished_run_id(cli)
 
-    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+    _, shown, _ = cli("show", run_id, "--source", "0")
 
     assert "Hi" in shown["content"]
 
@@ -1251,12 +1344,12 @@ def test_an_unfamiliar_record_or_block_is_kept_and_a_torn_line_is_left_alone(cli
     replay(replay_file)
 
     _, payload, _ = search(cli, "질문")
-    _, _, text = cli("log", "--run", first_run(payload)["run_id"], "--level", "steps")
+    _, _, text = cli("log", first_run(payload)["run_id"], "--level", "steps")
 
     assert first_run(payload)["answer"] == "끝."
-    assert len([line for line in text.splitlines() if line.startswith("raw[")]) == 1
-    assert "[1 unrecognised block(s)]" in text
-    assert "잘린 줄" not in text
+    assert len([line for line in lines_of(text) if line.startswith("raw[")]) == 1
+    assert "[1 unrecognised block(s)]" in rendered(text)
+    assert "잘린 줄" not in rendered(text)
 
 
 def test_log_and_show_stop_where_the_runs_turn_ends(cli, replay) -> None:
@@ -1268,8 +1361,8 @@ def test_log_and_show_stop_where_the_runs_turn_ends(cli, replay) -> None:
     _, payload, _ = search(cli, "질문")
     run_id = first_run(payload)["run_id"]
 
-    _, _, text = cli("log", "--run", run_id, "--level", "steps")
-    code, _, _ = cli("show", "--run", run_id, "--item", "1")
+    _, _, text = cli("log", run_id, "--level", "steps")
+    code, _, _ = cli("show", run_id, "--item", "1")
 
     assert first_run(payload)["answer"] == "내 턴의 답"
     assert "#0 webfetch" in text
@@ -1287,8 +1380,8 @@ def test_log_stops_where_a_childs_part_in_the_run_ends(cli, replay, aside_home: 
             {"__session__": "ReusedNextKid001", **answer("다음 턴의 자식 답")}])
     run_id = finished_run_id(cli)
 
-    _, _, text = cli("log", "--run", run_id)
-    _, collected, _ = cli("result", "--run", run_id)
+    _, _, text = cli("log", run_id)
+    _, collected, _ = cli("result", run_id)
 
     assert "[child ReusedNextKid001] answer: 이 턴의 자식 답" in text
     assert "다음 턴" not in text
@@ -1302,7 +1395,7 @@ def test_resume_continues_a_finished_run_in_its_own_session(cli, fake_aside: Pat
     run_id = finished_run_id(cli)
     session = session_of(cli, run_id)
 
-    code, payload, _ = cli("resume", run_id, "후속 질문", "--wait", "30")
+    code, payload, _ = resume(cli, run_id, "후속 질문")
 
     run = first_run(payload)
     assert code == 0
@@ -1320,7 +1413,7 @@ def test_a_resumed_run_reports_the_new_answer_not_the_previous_one(cli, monkeypa
     # Longer than one supervisor poll, so it sees the process exit before the answer lands.
     monkeypatch.setenv("FAKE_ASIDE_RESUME_DELAY", "4")
 
-    _, payload, _ = cli("resume", run_id, "후속 질문", "--wait", "30")
+    _, payload, _ = resume(cli, run_id, "후속 질문")
 
     assert first_run(payload)["state"] == "completed"
     assert first_run(payload)["answer"] == "이어서 답합니다."
@@ -1329,7 +1422,7 @@ def test_a_resumed_run_reports_the_new_answer_not_the_previous_one(cli, monkeypa
 def test_a_resumed_run_does_not_inherit_the_previous_turns_usage_and_sources(cli) -> None:
     _, first, _ = search(cli, "질문")
 
-    _, payload, _ = cli("resume", first_run(first)["run_id"], "후속 질문", "--wait", "30")
+    _, payload, _ = resume(cli, first_run(first)["run_id"], "후속 질문")
 
     assert first_run(payload)["sources_total"] == 0, "the earlier turn's sources belong to the earlier run"
     assert saved(first_run(payload))["usage"]["total_tokens"] < saved(first_run(first))["usage"]["total_tokens"]
@@ -1360,21 +1453,20 @@ def test_resume_log_shows_only_its_own_turn(cli, replay, aside_home: Path, monke
     aside_session(aside_home, "NewKid0000000001", user("new-child"), answer("new-child-answer"))
     replay([tool("subagent", "spawned", taskId="NewKid0000000001"), answer("new-answer")])
     monkeypatch.setenv("FAKE_ASIDE_PROMPT_DELAY", "8")
-    _, payload, _ = cli("resume", "OldTurnSession01", "new-prompt", "--background")
+    _, payload, _ = cli("resume", "OldTurnSession01", "new-prompt")
     run_id = first_run(payload)["run_id"]
     # The earlier turns are copied on the supervisor's first pass, before the prompt exists.
     time.sleep(4)
 
-    _, _, text = cli("log", "--run", run_id)
-    code, _, waited = cli("result", "--run", run_id, "--wait", "60")
-    _, _, from_start = cli("log", "--run", run_id)
+    _, _, text = cli("log", run_id)
+    code, _, _ = cli("result", run_id, "--wait", "60")
+    _, _, from_start = cli("log", run_id)
 
     assert rendered(text) == ""
     assert code == 0
-    assert "old-" not in rendered(waited)
+    assert "old-" not in rendered(from_start)
     for expected in ("prompt: new-prompt", "new-answer", "new-child"):
-        assert expected in rendered(waited)
-    assert "prompt: new-prompt" in rendered(from_start) and "old-" not in rendered(from_start)
+        assert expected in rendered(from_start)
 
 
 def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path, fake_aside: Path) -> None:
@@ -1383,7 +1475,7 @@ def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path,
     such sessions, and the transcript alone has to be enough."""
     assert not (aside_home / "u" / "0" / "state.db").exists()
 
-    code, payload, _ = cli("resume", "SimpleSearch00001", "그래서 결론은?", "--wait", "30")
+    code, payload, _ = resume(cli, "SimpleSearch00001", "그래서 결론은?")
 
     run = first_run(payload)
     assert code == 0
@@ -1397,7 +1489,7 @@ def test_a_session_this_tool_never_created_can_be_resumed(cli, aside_home: Path,
 def test_resuming_does_not_inherit_the_previous_turns_loose_ends(cli) -> None:
     """The recorded session's earlier turn left a subagent mid-tool. That child belongs to the
     turn that spawned it and was reported there."""
-    _, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--wait", "30")
+    _, payload, _ = resume(cli, "SubagentParent01", "그래서 결론은?")
 
     run = first_run(payload)
     assert run["state"] == "completed"
@@ -1447,7 +1539,7 @@ def test_a_database_without_the_expected_tables_is_ignored(cli, aside_home: Path
     con.commit()
     con.close()
 
-    code, payload, _ = cli("resume", "SimpleSearch00001", "후속", "--wait", "30")
+    code, payload, _ = resume(cli, "SimpleSearch00001", "후속")
 
     assert code == 0
     assert first_run(payload)["state"] == "completed"
@@ -1460,7 +1552,7 @@ def test_runs_are_found_by_id_by_group_and_by_default_the_latest(cli) -> None:
     _, single, _ = search(cli, "하나")
     _, group, _ = search(cli, "A", "B")
 
-    _, by_id, _ = cli("result", "--run", first_run(single)["run_id"])
+    _, by_id, _ = cli("result", first_run(single)["run_id"])
     _, by_group, _ = cli("result", "--group", group["group"])
     _, latest, _ = cli("result")
 
@@ -1475,7 +1567,7 @@ def test_a_run_that_does_not_exist_is_refused_not_guessed(cli) -> None:
     assert code == 2 and err["error"] == "bad_arguments"
 
     finished_run_id(cli)
-    code, err, _ = cli("result", "--run", "260101-000000-nope")
+    code, err, _ = cli("result", "260101-000000-nope")
     assert code == 2
     assert err["recent_runs"]
 
@@ -1511,7 +1603,7 @@ def test_log_and_result_preserve_failure_and_incompleteness(cli, runs_dir: Path,
 def test_sources_replaces_the_answer_with_every_source(cli) -> None:
     run_id = finished_run_id(cli)
 
-    _, result, _ = cli("result", "--run", run_id, "--sources")
+    _, result, _ = cli("result", run_id, "--sources")
     result = result["runs"][0]
 
     assert "answer" not in result
@@ -1522,7 +1614,7 @@ def test_show_returns_a_tool_results_text_without_fetching_it_again(cli, fake_as
     run_id = finished_run_id(cli)
     calls_before = len((fake_aside / "calls.jsonl").read_text().splitlines())
 
-    code, shown, _ = cli("show", "--run", run_id, "--item", "0")
+    code, shown, _ = cli("show", run_id, "--item", "0")
 
     assert code == 0
     assert shown["tool"] == "websearch"
@@ -1533,7 +1625,7 @@ def test_show_returns_a_tool_results_text_without_fetching_it_again(cli, fake_as
 def test_an_out_of_range_item_is_refused_with_the_count(cli) -> None:
     run_id = finished_run_id(cli)
 
-    code, err, _ = cli("show", "--run", run_id, "--item", "9")
+    code, err, _ = cli("show", run_id, "--item", "9")
 
     assert code == 2
     assert "1 tool result" in err["message"]
@@ -1546,8 +1638,8 @@ def test_show_prefers_the_page_that_was_read_over_the_snippet_that_listed_it(cli
     replay([tool("websearch", "검색 스니펫", sources=[src]), tool("webfetch", "페이지 전문", sources=[src]), answer("답")])
     run_id = finished_run_id(cli)
 
-    code, by_index, _ = cli("show", "--run", run_id, "--source", "0")
-    _, by_id, _ = cli("show", "--run", run_id, "--source", "s1")
+    code, by_index, _ = cli("show", run_id, "--source", "0")
+    _, by_id, _ = cli("show", run_id, "--source", "s1")
 
     assert code == 0
     assert by_index["content"] == by_id["content"] == "페이지 전문"
@@ -1608,7 +1700,7 @@ def test_a_run_id_that_names_a_path_outside_the_registry_is_refused(cli, tmp_pat
     (outside / "session" / "messages.jsonl").write_text(json.dumps(tool("webfetch", "private")) + "\n")
     extra = ["--item", "0"] if command == "show" else []
 
-    code, err, _ = cli(command, "--run", "../../outside", *extra)
+    code, err, _ = cli(command, "../../outside", *extra)
 
     assert code == 2
     assert err["error"] == "bad_arguments"
@@ -1649,9 +1741,9 @@ def test_an_abandoned_run_whose_session_is_still_working_is_not_resumed(cli, run
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
     # The run knows its session once its supervisor has copied it -- the log shows the prompt from that copy.
-    assert poll(lambda: "prompt: 질문" in cli("log", "--run", run_id)[2], timeout=15)
+    assert poll(lambda: "prompt: 질문" in cli("log", run_id)[2], timeout=15)
     kill_supervisors(runs.resolve_run(runs_dir, run_id))
-    assert first_run(cli("result", "--run", run_id)[1])["state"] == "abandoned"
+    assert first_run(cli("result", run_id)[1])["state"] == "abandoned"
     started = len(exec_calls(fake_aside))
 
     code, err, _ = cli("resume", run_id, "후속")
@@ -1689,14 +1781,14 @@ def test_every_view_of_a_resumed_run_covers_its_own_turn_only(cli, replay) -> No
     new = {"id": "n1", "url": "https://new.test/page", "title": "New"}
     replay([tool("webfetch", "새 페이지", sources=[new]), answer("new")])
 
-    _, payload, _ = cli("resume", first, "후속", "--wait", "30")
+    _, payload, _ = resume(cli, first, "후속")
     run_id = first_run(payload)["run_id"]
-    _, result, _ = cli("result", "--run", run_id)
+    _, result, _ = cli("result", run_id)
     result = result["runs"][0]
-    code, item, _ = cli("show", "--run", run_id, "--item", "0")
-    _, source, _ = cli("show", "--run", run_id, "--source", "0")
+    code, item, _ = cli("show", run_id, "--item", "0")
+    _, source, _ = cli("show", run_id, "--source", "0")
 
-    assert saved(result)["usage"]["total_tokens"] < saved(first_run(cli("result", "--run", first)[1]))["usage"]["total_tokens"]
+    assert saved(result)["usage"]["total_tokens"] < saved(first_run(cli("result", first)[1]))["usage"]["total_tokens"]
     assert code == 0 and item["content"] == "새 페이지"
     assert source["source"]["url"] == new["url"]
 
@@ -1705,14 +1797,14 @@ def test_a_resumed_run_does_not_count_the_earlier_turns_children(cli, monkeypatc
     """Checked while the run is going as well as after: the supervisor copies every child the
     transcript mentions, and the earlier turn's are not this run's."""
     monkeypatch.setenv("FAKE_ASIDE_PROMPT_DELAY", "6")
-    _, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?", "--background")
+    _, payload, _ = cli("resume", "SubagentParent01", "그래서 결론은?")
     run_id = first_run(payload)["run_id"]
     time.sleep(3)
 
-    _, running, _ = cli("result", "--run", run_id)
-    _, _, logged_running = cli("log", "--run", run_id)
-    _, finished, _ = cli("result", "--run", run_id, "--wait", "60")
-    _, _, logged = cli("log", "--run", run_id)
+    _, running, _ = cli("result", run_id)
+    _, _, logged_running = cli("log", run_id)
+    _, finished, _ = cli("result", run_id, "--wait", "60")
+    _, _, logged = cli("log", run_id)
 
     assert first_run(running)["state"] == "running"
     assert "[child " not in logged_running and "[child " not in logged
@@ -1734,7 +1826,7 @@ def test_what_a_child_read_is_evidence_of_the_run(cli, replay, aside_home: Path)
 
     _, payload, _ = search(cli, "질문")
     run = first_run(payload)
-    code, by_child_id, _ = cli("show", "--run", run["run_id"], "--source", "c2")
+    code, by_child_id, _ = cli("show", run["run_id"], "--source", "c2")
 
     merged = {s["url"]: s for s in saved(run)["sources"]}
     assert merged[listed["url"]]["opened"] is True
@@ -1748,7 +1840,7 @@ def test_an_empty_read_does_not_hide_what_a_search_already_showed(cli, replay) -
     replay([tool("websearch", "검색 본문", sources=[src]), tool("webfetch", "", sources=[src]), answer("답")])
     run_id = finished_run_id(cli)
 
-    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+    _, shown, _ = cli("show", run_id, "--source", "0")
 
     assert shown["content"] == "검색 본문"
 
@@ -1773,12 +1865,12 @@ def test_a_child_reused_by_a_resumed_run_counts_only_its_new_task(cli, replay, a
     )
     replay([tool("subagent", "resumed", taskId="ReusedKid0000001"), answer("new-answer")])
 
-    _, payload, _ = cli("resume", "ParentWithKid001", "new-prompt", "--wait", "30")
+    _, payload, _ = resume(cli, "ParentWithKid001", "new-prompt")
     run_id = first_run(payload)["run_id"]
-    _, result, _ = cli("result", "--run", run_id)
+    _, result, _ = cli("result", run_id)
     result = result["runs"][0]
 
-    _, _, logged = cli("log", "--run", run_id)
+    _, _, logged = cli("log", run_id)
 
     assert [s["url"] for s in every_source(cli, run_id)] == [new_src["url"]]
     assert saved(result)["usage"]["input"] == 10
@@ -1792,7 +1884,7 @@ def test_result_is_always_a_list_of_runs(cli) -> None:
     already answer in -- so a caller never branches on how many runs there were."""
     run_id = finished_run_id(cli)
 
-    _, one, _ = cli("result", "--run", run_id)
+    _, one, _ = cli("result", run_id)
     _, latest, _ = cli("result")
 
     for payload in (one, latest):
@@ -1809,12 +1901,12 @@ def test_steps_numbers_tool_results_the_way_show_counts_them(cli, replay, aside_
             {"__sleep__": 4}, tool("webfetch", "read"), answer("답")])
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
-    first = poll(lambda: (lambda r: r if "#1 subagent" in r[2] else None)(cli("log", "--run", run_id, "--level", "steps")), timeout=10)
+    first = poll(lambda: (lambda r: r if "#1 subagent" in r[2] else None)(cli("log", run_id, "--level", "steps")), timeout=10)
 
-    cli("result", "--run", run_id, "--wait", "30")
-    _, _, whole = cli("log", "--run", run_id, "--level", "steps")
+    cli("result", run_id, "--wait", "30")
+    _, _, whole = cli("log", run_id, "--level", "steps")
     numbered = [line for line in lines_of(whole) if line[:1] == "#" and line[1:2].isdigit()]
-    shown = [cli("show", "--run", run_id, "--item", str(n))[1]["tool"] for n in range(3)]
+    shown = [cli("show", run_id, "--item", str(n))[1]["tool"] for n in range(3)]
 
     assert [line.split(" ", 2)[:2] for line in lines_of(first[2]) if line[:1] == "#"] == [["#0", "websearch"], ["#1", "subagent"]]
     assert [line.split(" ", 2)[:2] for line in numbered] == [["#0", "websearch"], ["#1", "subagent"], ["#2", "webfetch"]]
@@ -1826,13 +1918,13 @@ def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None
     """The browsing agent acts as the user, in their logged-in browser. What research may not
     do is said in the prompt it receives, every time, rather than hoped for."""
     run_id = finished_run_id(cli)
-    cli("resume", run_id, "후속", "--wait", "30")
+    resume(cli, run_id, "후속")
 
-    scope = "Read-only research: do not post, purchase, sign up, or change account settings."
+    scope = "Unless the objective asks for it, do not post, purchase, sign up, or change account settings."
     prompts = [argv[-1] for argv in exec_calls(fake_aside)]
     assert len(prompts) == 2 and all(scope in p for p in prompts)
     for command in ("search", "resume"):
-        assert "Read-only research" in cli(command, "--help")[2]
+        assert scope in " ".join(cli(command, "--help")[2].split())
 
 
 # --- results read as what they say -------------------------------------------------------------
@@ -1848,7 +1940,7 @@ def test_a_turn_that_stopped_on_an_error_says_why(cli, replay) -> None:
              "errorMessage": 'aside API error (402): 402 "Insufficient credits"'}])
 
     code, payload, _ = search(cli, "질문")
-    _, again, _ = cli("result", "--run", first_run(payload)["run_id"])
+    _, again, _ = cli("result", first_run(payload)["run_id"])
 
     assert (code, first_run(payload)["state"]) == (4, "failed")
     for reply in (payload, again):
@@ -1860,7 +1952,7 @@ def test_records_about_the_conversation_are_neither_steps_nor_unread(cli, replay
             answer("답")])
 
     _, payload, _ = search(cli, "질문")
-    _, _, steps = cli("log", "--run", first_run(payload)["run_id"], "--level", "steps")
+    _, _, steps = cli("log", first_run(payload)["run_id"], "--level", "steps")
 
     assert "could not be read" not in first_run(payload).get("note", "")
     assert "attachments" not in steps and "raw" not in rendered(steps)
@@ -1879,8 +1971,8 @@ def test_show_gives_a_pages_text_as_text(cli, replay) -> None:
     replay([webfetch("https://e.test/a", "\n\n페이지 전문", sid="s1"), answer("답")])
     run_id = finished_run_id(cli)
 
-    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
-    _, item, _ = cli("show", "--run", run_id, "--item", "0")
+    _, shown, _ = cli("show", run_id, "--source", "0")
+    _, item, _ = cli("show", run_id, "--item", "0")
 
     assert shown["content"] == item["content"] == '<webfetch-citation source_id="s1" />\n\n페이지 전문'
 
@@ -1889,7 +1981,7 @@ def test_show_gives_a_listed_source_its_own_excerpt_not_the_whole_listing(cli, r
     replay([websearch(("s1", "https://e.test/a", "A의 발췌"), ("s2", "https://e.test/b", "B의 발췌")), answer("답")])
     run_id = finished_run_id(cli)
 
-    shown = [cli("show", "--run", run_id, "--source", ref)[1]["content"] for ref in ("s1", "1")]
+    shown = [cli("show", run_id, "--source", ref)[1]["content"] for ref in ("s1", "1")]
 
     assert shown == ["A의 발췌", "B의 발췌"]
 
@@ -1901,7 +1993,7 @@ def test_a_page_refused_with_an_http_error_is_not_opened_and_shows_the_refusal(c
 
     _, payload, _ = search(cli, "질문")
     run_id = first_run(payload)["run_id"]
-    _, shown, _ = cli("show", "--run", run_id, "--source", "f1")
+    _, shown, _ = cli("show", run_id, "--source", "f1")
 
     assert first_run(payload)["opened_sources"] == []
     assert [(s["url"], s["opened"]) for s in every_source(cli, run_id)] == [(url, False)]
@@ -1918,12 +2010,12 @@ def test_a_record_holding_a_line_separator_keeps_its_page_and_the_numbering_show
 
     _, payload, _ = search(cli, "질문")
     run_id = first_run(payload)["run_id"]
-    _, _, steps = cli("log", "--run", run_id, "--level", "steps")
-    _, item, _ = cli("show", "--run", run_id, "--item", "1")
+    _, _, steps = cli("log", run_id, "--level", "steps")
+    _, item, _ = cli("show", run_id, "--item", "1")
 
     assert [s["url"] for s in first_run(payload)["opened_sources"]] == ["https://docs.test/a.pdf", "https://e.test/b"]
     assert first_run(payload)["answer"] == "답 공고 (https://docs.test/a.pdf)"
-    assert [line.split(" ", 2)[:2] for line in steps.split("\n") if line.startswith("#")] == [["#0", "webfetch"],
+    assert [line.split(" ", 2)[:2] for line in lines_of(steps) if line.startswith("#")] == [["#0", "webfetch"],
                                                                                                ["#1", "webfetch"]]
     assert item["content"].endswith("B 본문")
 
@@ -1974,9 +2066,9 @@ def test_a_recorded_run_goes_from_search_through_its_child_to_result_and_resume(
 
     code, payload, _ = search(cli, "What is the latest stable Python 3 release according to python.org?")
     run = first_run(payload)
-    _, result, _ = cli("result", "--run", run["run_id"])
+    _, result, _ = cli("result", run["run_id"])
     monkeypatch.delenv("FAKE_ASIDE_REPLAY")
-    resumed_code, resumed, _ = cli("resume", run["run_id"], "Which page did the child read?", "--wait", "30")
+    resumed_code, resumed, _ = resume(cli, run["run_id"], "Which page did the child read?")
 
     assert code == 0
     assert run["state"] == "completed", run.get("note")
@@ -1998,8 +2090,8 @@ def test_lifecycle_records_are_not_progress_lines(cli, replay, aside_home: Path)
     replay(LIFECYCLE_RUN / "session" / "messages.jsonl")
     run_id = finished_run_id(cli)
 
-    _, _, progress = cli("log", "--run", run_id)
-    _, _, steps = cli("log", "--run", run_id, "--level", "steps")
+    _, _, progress = cli("log", run_id)
+    _, _, steps = cli("log", run_id, "--level", "steps")
 
     assert "turn-lifecycle" not in progress and "raw" not in rendered(progress)
     assert "turn final-started" in steps and "turn finished" in steps
@@ -2047,7 +2139,7 @@ def test_a_session_is_busy_until_its_last_turn_has_finished(cli, aside_home: Pat
     not reopen it."""
     aside_session(aside_home, "FramedSession002", *records)
 
-    code, payload, _ = cli("resume", "FramedSession002", "후속", "--wait", "30")
+    code, payload, _ = resume(cli, "FramedSession002", "후속")
 
     assert (code == 2) is refused, payload
     if refused:
@@ -2096,7 +2188,7 @@ def test_every_source_is_one_call_away_numbered_as_show_counts_them(cli, replay)
     replay(listing_of(6, {1, 3}))
     run_id = finished_run_id(cli)
 
-    code, payload, _ = cli("result", "--run", run_id, "--sources")
+    code, payload, _ = cli("result", run_id, "--sources")
 
     run = first_run(payload)
     assert code == 0
@@ -2104,9 +2196,9 @@ def test_every_source_is_one_call_away_numbered_as_show_counts_them(cli, replay)
     assert [(s["n"], s["url"], s["opened"]) for s in run["sources"]] == [
         (i, f"https://e.test/{i}", i in (1, 3)) for i in range(6)]
     for s in run["sources"]:
-        _, shown, _ = cli("show", "--run", run_id, "--source", str(s["n"]))
+        _, shown, _ = cli("show", run_id, "--source", str(s["n"]))
         assert shown["source"]["url"] == s["url"]
-    assert cli("show", "--run", run_id, "--source", "3")[1]["content"] == "page 3"
+    assert cli("show", run_id, "--source", "3")[1]["content"] == "page 3"
 
 
 def test_a_run_still_going_or_abandoned_shows_what_it_has_read_so_far(cli, replay, runs_dir: Path) -> None:
@@ -2117,10 +2209,10 @@ def test_a_run_still_going_or_abandoned_shows_what_it_has_read_so_far(cli, repla
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
 
-    running = poll(lambda: (lambda r: r if r[0] == 0 else None)(cli("show", "--run", run_id, "--source", "0")), timeout=15)
+    running = poll(lambda: (lambda r: r if r[0] == 0 else None)(cli("show", run_id, "--source", "0")), timeout=15)
     kill_supervisors(runs.resolve_run(runs_dir, run_id))
-    assert first_run(cli("result", "--run", run_id)[1])["state"] == "abandoned"
-    code, stopped, _ = cli("show", "--run", run_id, "--source", "0")
+    assert first_run(cli("result", run_id)[1])["state"] == "abandoned"
+    code, stopped, _ = cli("show", run_id, "--source", "0")
 
     assert running and running[1]["content"] == "읽은 본문"
     assert code == 0 and stopped["content"] == "읽은 본문"
@@ -2134,7 +2226,7 @@ def test_a_run_answered_from_stdout_says_it_has_no_page_text(runs_dir: Path, asi
     run = runs.create_run(runs_dir, label="t", prompt="질문")
     research.supervise(run, poll=0.05, discovery_deadline=0.5, settle=0.1)
 
-    code, shown, _ = run_cli("show", "--run", run.run_id, "--source", "0", "--runs-dir", str(runs_dir))
+    code, shown, _ = run_cli("show", run.run_id, "--source", "0", "--runs-dir", str(runs_dir))
 
     assert code == 0
     assert shown["source"]["url"] == "https://example.org/only-in-stdout"
@@ -2147,7 +2239,7 @@ def test_result_of_a_run_still_going_hands_back_the_watch(cli, monkeypatch) -> N
     _, payload, _ = search(cli, "질문", wait="0")
     run_id = first_run(payload)["run_id"]
 
-    code, result, _ = cli("result", "--run", run_id)
+    code, result, _ = cli("result", run_id)
 
     assert code == 0, "still going is not a failure"
     assert result["next"]["run_in_background"] is True
@@ -2179,9 +2271,9 @@ def test_a_run_is_found_by_any_prefix_only_it_has(cli) -> None:
     second = first_run(payload)["run_id"]
     shared = next(i for i in range(len(first)) if first[i] != second[i])
 
-    code, collected, _ = cli("result", "--run", second[: shared + 1])
-    _, shown, _ = cli("show", "--run", second[: shared + 1], "--item", "0")
-    ambiguous_code, ambiguous, _ = cli("result", "--run", first[:shared])
+    code, collected, _ = cli("result", second[: shared + 1])
+    _, shown, _ = cli("show", second[: shared + 1], "--item", "0")
+    ambiguous_code, ambiguous, _ = cli("result", first[:shared])
 
     assert code == 0 and first_run(collected)["run_id"] == second
     assert shown["run_id"] == second
@@ -2194,7 +2286,7 @@ def test_a_whole_id_wins_over_a_longer_one_it_begins(cli) -> None:
     run_id = first_run(short)["run_id"]
     search(cli, "질문", extra=("--label", "x-more"))
 
-    code, collected, _ = cli("result", "--run", run_id)
+    code, collected, _ = cli("result", run_id)
 
     assert code == 0 and first_run(collected)["run_id"] == run_id
 
@@ -2202,12 +2294,12 @@ def test_a_whole_id_wins_over_a_longer_one_it_begins(cli) -> None:
 def test_a_korean_run_goes_from_search_through_its_watch_to_result_and_a_resume_by_prefix(cli, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "slow")
     monkeypatch.setenv("FAKE_ASIDE_DELAY", "1")
-    _, payload, _ = cli("search", unicodedata.normalize("NFD", "한국어 질문입니다"), "--background")
+    _, payload, _ = cli("search", unicodedata.normalize("NFD", "한국어 질문입니다"))
     run_id = first_run(payload)["run_id"]
 
     collected = subprocess.run(payload["next"]["command"], shell=True, capture_output=True, text=True, timeout=120)
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
-    code, resumed, _ = cli("resume", run_id[: len(run_id) - 2], "후속", "--wait", "30")
+    code, resumed, _ = resume(cli, run_id[: len(run_id) - 2], "후속")
 
     assert run_id.endswith("-한국어-질문입니다")
     assert json.loads(collected.stdout)["runs"][0]["answer"] == "느린 답."
@@ -2228,7 +2320,7 @@ def test_resuming_a_prefix_several_runs_share_names_them_instead(cli, fake_aside
 def test_runs_in_the_default_store_are_kept_out_of_git(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
 
-    code, payload, _ = run_cli("search", "질문", "--wait", "30")
+    code, payload, _ = run_cli("search", "질문")
 
     assert code == 0
     assert (Path.cwd() / ".ultra-search" / ".gitignore").read_text() == "*\n"
@@ -2239,7 +2331,7 @@ def test_a_store_chosen_with_runs_dir_is_left_as_it_is_even_where_the_default_wo
 ) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
 
-    run_cli("search", "질문", "--wait", "30", "--runs-dir", "./.ultra-search")
+    run_cli("search", "질문", "--runs-dir", "./.ultra-search")
 
     assert (Path.cwd() / ".ultra-search" / "runs").is_dir()
     assert not (Path.cwd() / ".ultra-search" / ".gitignore").exists()
@@ -2266,12 +2358,13 @@ def test_a_default_store_from_before_gets_its_gitignore_when_next_written(aside_
 
 def test_a_store_that_cannot_take_a_gitignore_is_still_read(aside_home: Path, fake_aside: Path, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
-    _, payload, _ = run_cli("search", "질문", "--wait", "30")
+    _, payload, _ = run_cli("search", "질문")
+    run_cli("result", first_run(payload)["run_id"], "--wait", "30")
     store = Path.cwd() / ".ultra-search"
     (store / ".gitignore").unlink()
     store.chmod(0o500)
     try:
-        code, result, _ = run_cli("result", "--run", first_run(payload)["run_id"])
+        code, result, _ = run_cli("result", first_run(payload)["run_id"])
     finally:
         store.chmod(0o700)
 
@@ -2292,7 +2385,7 @@ def test_the_daemon_checked_is_the_one_aside_exec_uses(runs_dir: Path, aside_hom
     monkeypatch.setenv("DAEMON_BASE_URL", ready_daemon.rstrip("/") if healthy else closed)
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
 
-    code, _, _ = run_cli("search", "질문", "--wait", "30", "--runs-dir", str(runs_dir))
+    code, _, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == (0 if healthy else 3)
 
@@ -2309,6 +2402,6 @@ def test_a_proxy_in_the_environment_does_not_stand_between_the_cli_and_its_daemo
         monkeypatch.setenv(name, proxy)
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
 
-    code, _, _ = run_cli("search", "질문", "--wait", "30", "--runs-dir", str(runs_dir))
+    code, _, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == 0

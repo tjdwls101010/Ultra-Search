@@ -57,8 +57,6 @@ ENDINGS = {
                outcome.ASIDE_UNAVAILABLE: "a check failed; each failed check has its fix"},
     "setup": {outcome.OK: "the packages were installed", outcome.BAD_ARGUMENTS: _REFUSED,
               outcome.ASIDE_UNAVAILABLE: "Node is missing or the install failed; the reply says which"},
-    "repl-api": {outcome.OK: "the daemon's tool description was returned", outcome.BAD_ARGUMENTS: _REFUSED,
-                 outcome.ASIDE_UNAVAILABLE: _NO_ASIDE},
 }
 ENDINGS["resume"] = ENDINGS["search"]
 
@@ -69,13 +67,10 @@ def _exit_lines(command: str) -> str:
 
 
 NEXT_HELP = (
-    "next, while a run is still going, describes one action: command is the shell command, bash_timeout_ms is the "
-    "Bash tool timeout it needs, and run_in_background says whether to run it in the background. Background is for "
-    "when something will receive its completion notification; with nothing to wake -- a single-turn context -- run "
-    "the same command in the foreground with that bash_timeout_ms. Execute it as returned and use that call's latest "
-    "next, not a saved earlier one. It is `result --wait`: it waits for every run to end, printing what they do on "
-    "stderr, and answers with their result -- or, if one is still going when the wait runs out, the same next again. "
-    "A wait ending does not stop the investigation."
+    "next, while a run is still going, is the one call that waits for it -- `result --wait`, which answers with the "
+    "result, or with next again if the wait runs out first: command is the shell command, bash_timeout_ms the Bash "
+    "timeout it needs, run_in_background whether to run it in the background. The reply's note says when a call run "
+    "in the background announces its completion to anyone."
 )
 
 
@@ -117,7 +112,12 @@ ITEM_STATUS_HELP = (
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
-    """A parser whose refusals are JSON on stdout like every other answer, not usage on stderr."""
+    """A parser whose refusals are JSON on stdout like every other answer, not usage on stderr. It takes no abbreviated
+    option: the retired `--run` would otherwise be read as `--runs-dir`, and its run id as a folder to look in."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> None:  # type: ignore[override]
         print(json.dumps({"ok": False, "error": "bad_arguments", "message": message, "fix": f"{self.prog} --help"},
@@ -186,25 +186,13 @@ def _add_runs_dir(p: argparse.ArgumentParser) -> None:
 
 def _add_target(p: argparse.ArgumentParser) -> None:
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--run", metavar="ID", help="A run id as returned by `search`, or any beginning of one that only that run has.")
+    g.add_argument("run", nargs="?", metavar="RUN", help="A run id as returned by `search`, or any beginning of one "
+                   "that only that run has.")
     g.add_argument("--group", metavar="NAME", help="A group of runs started together by one `search`. With neither "
-                   "--run nor --group: the newest run's group, or that run alone when it has none.")
-    # No --last flag: with neither --run nor --group this already targets the most recent
+                   "RUN nor --group: the newest run's group, or that run alone when it has none.")
+    # No --last flag: with neither RUN nor --group this already targets the most recent
     # run's group, and a flag that only restates the default is one more thing to be wrong
     # about.
-
-
-def _add_wait_opts(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--wait",
-        type=_seconds(),
-        default=100.0,
-        metavar="SEC",
-        help="Seconds to wait for the runs once started, before handing back their handles. Never stops a run. "
-        "Default 100: under the Bash tool's 120 s default timeout, so the call answers before the tool gives up; "
-        "a longer wait needs a longer Bash timeout.",
-    )
-    p.add_argument("--background", action="store_true", help="Return the handle immediately instead of waiting.")
 
 
 def _add_fetch_opts(p: argparse.ArgumentParser) -> None:
@@ -215,15 +203,17 @@ def _add_fetch_opts(p: argparse.ArgumentParser) -> None:
         help="auto fetches first and promotes to a real browser tab when the response is a JavaScript shell "
         "or a bot challenge, or the fetch fails other than by timing out -- the tab runs the page's JavaScript, "
         "clears the check, or opens a site that refuses the browser's fetch, and a host whose tab failed too gets no "
-        "further tab in the same call; fetch and tab force one path. Default auto.",
+        "further tab in the same call; fetch and tab force one path. Default %(default)s.",
     )
-    p.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default 8.")
+    p.add_argument("--concurrency", type=_count(1), default=8, metavar="N", help="URLs fetched per browser round trip. Default %(default)s.")
     p.add_argument("--no-frontmatter", action="store_true", help="Omit the YAML frontmatter from saved markdown.")
 
 
 def _add_discovery_opts(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--max-urls", type=_count(1), metavar="N", help="Stop discovering after this many URLs. Default 200.")
-    p.add_argument("--depth", type=_count(0), metavar="N", help="Rounds of link-following from URL. Default 2. Unused when "
+    p.add_argument("--max-urls", type=_count(1), metavar="N", help="Stop discovering after this many URLs. "
+                   f"Default {site.DEFAULT_MAX_URLS}.")
+    p.add_argument("--depth", type=_count(0), metavar="N", help="Rounds of link-following from URL. "
+                   f"Default {site.DEFAULT_DEPTH}. Unused when "
                    "a sitemap is found, which replaces link-following.")
     p.add_argument("--include", action="append", metavar="GLOB", help="Keep only URLs matching this glob. Repeatable.")
     p.add_argument("--exclude", action="append", metavar="GLOB", help="Drop URLs matching this glob. Repeatable.")
@@ -234,7 +224,7 @@ def _add_exec_opts(p: argparse.ArgumentParser, *, settings: bool = True) -> None
     p.add_argument("--label", help="Short name for the run directory, so its id reads as what it is about.")
     if settings:
         p.add_argument("--effort", choices=aside.EFFORTS, help="Aside reasoning effort. Default: the account's setting.")
-        p.add_argument("--model", help="Aside model id, e.g. openai-codex/gpt-5.6-sol. Default: the account's setting.")
+        p.add_argument("--model", help="Aside model id, or provider/model. Default: the account's setting.")
         p.add_argument("--speed", choices=aside.SPEEDS, help="Aside speed setting. Default: the account's setting.")
     _add_runs_dir(p)
 
@@ -244,8 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cli.py",
         description="Search, read, map and save the web through the user's logged-in Aside browser.",
         epilog="Exit codes describe the command, not the investigation: 0 handled (read the states in the reply) | "
-        "2 bad arguments | 3 Aside unavailable | 4 a run failed or was abandoned, nothing was saved, or a file could not "
-        "be written | 5 no result data. Each command's --help lists its own.",
+        "2 bad arguments | 3 an external dependency is unavailable (Aside, Node) | 4 a run failed or was abandoned, "
+        "nothing was saved, or a file could not be written | 5 no result data. Each command's --help lists its own.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"ultra-search {__version__}")
@@ -258,16 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser(
         "search",
         help="Run an autonomous web investigation (Aside's in-browser agent).",
-        description="Hand a research objective to Aside's browsing agent. Several PROMPTs run in parallel "
-        "as one group. Synchronous by default: if the work finishes within --wait its entry carries the answer; "
-        "if it does not, the run is left alive and the reply carries a `next` action that waits for it. "
-        "A partial snapshot is not a complete investigation.\n"
+        description="Hand a research objective to Aside's browsing agent, which chooses its own searches and pages and "
+        "spends the user's Aside subscription. Several PROMPTs run in parallel as one group. Returns at once, each run "
+        "starting, with next -- the call that waits for them and answers with their result.\n"
         + ENTRY_HELP + STATES_HELP +
-        "Every prompt is sent with one more line: \"Read-only research: do not post, purchase, sign up, or change account settings.\"",
+        f"Every prompt is sent with one more line: \"{research.SCOPE}\"",
         epilog=NEXT_HELP,
     )
     s.add_argument("prompt", nargs="+", metavar="PROMPT", help="Research objective. Repeat for parallel runs.")
-    _add_wait_opts(s)
     _add_exec_opts(s)
 
     # --- resume -------------------------------------------------------------
@@ -279,9 +267,8 @@ def build_parser() -> argparse.ArgumentParser:
         "conversation started in the Aside app can be picked up here. Creates a new run id recording its "
         "lineage. Refused while the session is still working: attaching to a live one waits for the current "
         "turn and cannot steer it. The session keeps its own effort, model and speed; Aside takes none for a "
-        "continued one. The returned run's log and result describe only this new turn. "
-        "The follow-up is sent with one more line, as in `search`: \"Read-only research: do not post, purchase, "
-        "sign up, or change account settings.\"\n"
+        "continued one. The returned run's log and result describe only this new turn. Returns at once with next, "
+        f"as `search` does. The follow-up is sent with one more line, as in `search`: \"{research.SCOPE}\"\n"
         + ENTRY_HELP + STATES_HELP.rstrip("\n"),
         epilog=NEXT_HELP,
     )
@@ -293,16 +280,15 @@ def build_parser() -> argparse.ArgumentParser:
         "not create.",
     )
     r.add_argument("prompt", metavar="PROMPT", help="The follow-up.")
-    _add_wait_opts(r)
     _add_exec_opts(r, settings=False)
 
     # --- log ----------------------------------------------------------------
     lg = sub.add_parser(
         "log",
         help="A run's events, to retrace why it chose a source or came back thin.",
-        description="Print the events of this run's turn on stderr, one line each, then one JSON reply on stdout: runs, "
-        "each run's state. Read once, after the fact or mid-run -- it does not wait; `result --wait` does. A resumed "
-        "run excludes earlier turns and their children.",
+        description="One JSON reply: runs, each with its state and lines -- the events of the run's turn and its "
+        "children's, one line each. Read once, after the fact or mid-run; it does not wait. A resumed run excludes "
+        "earlier turns and their children. full and raw can be large.",
     )
     _add_target(lg)
     lg.add_argument(
@@ -313,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
         "the host or objective) and what it said; a result appears only when it errored, an answer as its "
         "first line. steps: every call with the first 200 characters of its arguments and every result's "
         "size, numbered #N for `show --item N`, for retracing why a source was chosen. full: arguments to 4000 characters and the first 2000 "
-        "characters of each result. raw: the stored records unchanged. Default progress.",
+        "characters of each result. raw: the stored records unchanged. Default %(default)s.",
     )
     _add_runs_dir(lg)
 
@@ -338,8 +324,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_seconds(),
         default=0.0,
         metavar="SEC",
-        help="Wait up to SEC for every run to end, printing what they do on stderr as it happens -- only what happens "
-        "during the wait. Never stops a run. Default 0: answer at once.",
+        help="Wait up to SEC for every run to end, then answer -- with next again for any still going. Prints nothing "
+        "else; `log` shows what a run did. Never stops a run. Default 0: answer at once.",
     )
     _add_runs_dir(rs)
 
@@ -355,7 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
         "document gives file, a copy of it, beside the text of any page a tool read at that URL. An item's content is that tool result's text. A run still "
         "going, or abandoned, is read from its transcript so far, and its files from the session's folder.",
     )
-    sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")
+    sh.add_argument("run", nargs="?", metavar="RUN", help="A run id, or any beginning of one that only that run has. "
+                    "Default: the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)
     g.add_argument("--source", metavar="N|ID", help="Source index from `result`, counting from 0 -- the n it lists -- or any of its source ids.")
     g.add_argument(
@@ -394,11 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="md saves extracted markdown; html saves the document itself -- the response body "
         "for a plain fetch, or the rendered DOM when the page was opened in a tab. html is "
         "refused for a response that was not HTML (a PDF, a markdown file) rather than "
-        "silently writing markdown into a .html file. Default md.",
+        "silently writing markdown into a .html file. Default %(default)s.",
     )
     _add_fetch_opts(f)
     f.add_argument("--print", dest="print_content", action="store_true", help="Include the content inline in the JSON.")
-    f.add_argument("--max-chars", type=_count(1), default=20000, metavar="N", help="Inline content cap for --print. Default 20000.")
+    f.add_argument("--max-chars", type=_count(1), default=20000, metavar="N", help="Inline content cap for --print. Default %(default)s.")
     _add_runs_dir(f)
 
     # --- map ----------------------------------------------------------------
@@ -457,23 +444,15 @@ def build_parser() -> argparse.ArgumentParser:
         "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside removes old sessions "
         "on its own schedule, so a session listed here may not be listed later.",
     )
-    se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default 20.")
+    se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default %(default)s.")
     se.add_argument(
         "--mine",
         action="store_true",
         help="Only sessions this tool started, identified by the marker it plants in the prompt.",
     )
     se.add_argument("--search", metavar="TEXT", help="Only sessions whose opening prompt contains TEXT.")
-    _add_runs_dir(se)
 
-    # --- repl-api / doctor / setup -----------------------------------------
-    ra = sub.add_parser(
-        "repl-api",
-        help="Print the browser REPL's own API documentation, live.",
-        description="Asks the running daemon what its repl tool accepts, and says how to call it. Use it instead of "
-        "guessing at globals -- it is generated by the version actually installed.",
-    )
-    ra.add_argument("--all", action="store_true", help="Every tool the daemon lists, not only repl.")
+    # --- doctor / setup -----------------------------------------------------
     d = sub.add_parser(
         "doctor",
         help="Check the aside binary, daemon, account and conversion toolchain.",
@@ -535,12 +514,11 @@ def _root(args: argparse.Namespace) -> pathlib.Path:
 
 def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome.Reply:
     c = args.command
-    if c in ("search", "resume"):
-        common = dict(wait=args.wait, background=args.background, label=args.label, cli=cli)
-        if c == "search":
-            return research.search(root, list(args.prompt), effort=args.effort, model=args.model, speed=args.speed,
-                                   **common)
-        return research.resume(root, args.target, args.prompt, **common)
+    if c == "search":
+        return research.search(root, list(args.prompt), label=args.label, effort=args.effort, model=args.model,
+                               speed=args.speed, cli=cli)
+    if c == "resume":
+        return research.resume(root, args.target, args.prompt, label=args.label, cli=cli)
     if c == "log":
         return research.log(root, run=args.run, group=args.group, level=args.level)
     if c == "result":
@@ -563,9 +541,7 @@ def _dispatch(args: argparse.Namespace, root: pathlib.Path, cli: str) -> outcome
                           frontmatter=not args.no_frontmatter, out=args.out)
     if c == "doctor":
         return doctor.doctor(root)
-    if c == "setup":
-        return doctor.setup()
-    return doctor.repl_api(every=args.all)
+    return doctor.setup()
 
 
 if __name__ == "__main__":

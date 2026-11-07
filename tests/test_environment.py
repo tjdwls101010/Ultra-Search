@@ -1,4 +1,4 @@
-"""`doctor`, `setup`, `repl-api` and the contract every command shares: argv in, JSON out.
+"""`doctor`, `setup` and the contract every command shares: argv in, JSON out.
 
 `doctor` answers one question -- would a command fail right now, and why -- so each check
 is driven here by changing the one thing outside the CLI it looks at: the aside binary
@@ -109,7 +109,8 @@ def test_versions_other_than_the_measured_ones_are_named_not_failed(
     assert code == 0
     for name in ("aside version", "aside daemon"):
         assert check(payload, name)["ok"] is True
-        assert "measured against" in check(payload, name)["fix"]
+        assert "fix" not in check(payload, name), "nothing is broken, so there is nothing to fix"
+        assert "measured against" in check(payload, name)["note"]
 
 
 def test_doctor_fails_when_the_conversion_packages_are_missing(
@@ -180,7 +181,7 @@ def test_doctor_without_the_aside_binary_says_how_to_get_one(runs_dir: Path, asi
     assert check(payload, "aside binary")["fix"]
 
 
-# --- setup and repl-api ------------------------------------------------------------------
+# --- setup -------------------------------------------------------------------------------
 
 
 def test_setup_without_npm_says_what_to_install(tmp_path: Path) -> None:
@@ -197,48 +198,16 @@ def test_setup_without_npm_says_what_to_install(tmp_path: Path) -> None:
     assert "Node" in payload["fix"]
 
 
-def test_repl_api_answers_with_the_repl_tool_and_how_to_run_it(aside_home: Path, fake_aside: Path) -> None:
-    """Read from the installed daemon, not a copy kept here. What a caller writing its own
-    snippet needs is the repl tool and the shape of the call -- which, unlike the CLI, no
-    permission rule pre-approves."""
-    code, payload, _ = run_cli("repl-api")
-
-    assert code == 0
-    assert payload["tool"] == {"name": "repl", "description": "fake repl API description"}
-    assert "aside repl '<code>'" in payload["run"]
-    assert "approval" in payload["run"]
-    assert "tools" not in payload
-    # The daemon reports its own 120-second kill as if it had gone away; a caller writing a
-    # snippet needs to know both that, and to print results as they land.
-    assert "120" in payload["run"] and "daemon is not reachable" in payload["run"] and "as" in payload["run"]
-
-
-def test_repl_api_all_lists_every_tool(aside_home: Path, fake_aside: Path) -> None:
-    _, payload, _ = run_cli("repl-api", "--all")
-
-    assert [t["name"] for t in payload["tools"]] == ["repl", "navigate"]
-    assert "120" in payload["run"]
-
-
-def test_repl_api_without_a_daemon_is_an_aside_error(aside_home: Path, monkeypatch) -> None:
-    monkeypatch.setenv("ULTRA_SEARCH_ASIDE_BIN", "/nonexistent/aside")
-
-    code, payload, _ = run_cli("repl-api")
-
-    assert code == 3
-    assert payload["error"] == "aside_unavailable"
-
-
 # --- the shared contract -----------------------------------------------------------------
 
 
 @pytest.mark.parametrize("argv,command", [
     (["search"], "search"),
     (["fetch"], "fetch"),
-    (["result", "--run", "a", "--group", "b"], "result"),
+    (["result", "a", "--group", "b"], "result"),
     (["no-such-command"], None),
-    (["search", "q", "--wait", "-1"], "search"),
-    (["search", "q", "--wait", "nan"], "search"),
+    (["result", "--wait", "-1"], "result"),
+    (["result", "--wait", "nan"], "result"),
     (["result", "--wait", "inf"], "result"),
     (["log", "--level", "everything"], "log"),
     (["fetch", "https://e.test/", "--concurrency", "0"], "fetch"),
@@ -315,7 +284,7 @@ def test_the_runs_dir_default_is_named_for_where_it_is(capsys) -> None:
 # --- what each command's help promises -----------------------------------------------------
 
 COMMANDS = ["search", "resume", "log", "result", "show", "fetch", "map", "crawl",
-            "sessions", "repl-api", "doctor", "setup"]
+            "sessions", "doctor", "setup"]
 
 
 def help_of(command: str) -> str:
@@ -338,7 +307,7 @@ EXIT_CODES = {
     "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "log": {0, 2, 4},
     "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "sessions": {0, 2, 5},
     "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4, 5},
-    "doctor": {0, 2, 3}, "setup": {0, 2, 3}, "repl-api": {0, 2, 3},
+    "doctor": {0, 2, 3}, "setup": {0, 2, 3},
 }
 
 
@@ -357,7 +326,7 @@ def test_every_help_names_the_exit_codes_it_can_return(command: str) -> None:
 def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
     text = help_of(command)
 
-    assert "run_in_background" in text and "foreground" in text and "bash_timeout_ms" in text
+    assert "run_in_background" in text and "bash_timeout_ms" in text and "note" in text
 
 
 def test_result_help_names_every_end_state_and_what_opened_means() -> None:

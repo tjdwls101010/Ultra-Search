@@ -156,7 +156,8 @@ def run_cli(*argv: str) -> tuple[int, dict, str]:
 def cli(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch: pytest.MonkeyPatch):
     """The CLI against the fake aside, with every command pointed at this test's registry."""
     monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
-    return lambda *a: run_cli(*a, "--runs-dir", str(runs_dir))
+    # `sessions` lists Aside's own sessions and takes no registry.
+    return lambda *a: run_cli(*a, *(() if a[:1] == ("sessions",) else ("--runs-dir", str(runs_dir))))
 
 
 @pytest.fixture

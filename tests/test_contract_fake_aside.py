@@ -83,11 +83,11 @@ def test_the_fake_writes_a_session_transcript_where_the_real_one_does(tmp_path: 
 def test_the_fakes_transcript_reads_like_a_real_one(cli) -> None:
     """The strongest available check: whatever the fake writes has to be read by the same
     code that reads production transcripts, into an answer, sources and usage."""
-    _, payload, _ = cli("search", "질문", "--wait", "30")
-    run_id = payload["runs"][0]["run_id"]
-    _, _, text = cli("log", "--run", run_id, "--level", "raw")
+    run_id = cli("search", "질문")[1]["runs"][0]["run_id"]
+    _, payload, _ = cli("result", run_id, "--wait", "30")
+    logged = cli("log", run_id, "--level", "raw")[1]["runs"][0]["lines"]
 
-    roles = [json.loads(line)["role"] for line in text.splitlines()[:-1] if line.startswith("{")]
+    roles = [json.loads(line)["role"] for line in logged]
     assert roles == ["turn-lifecycle", "user", "assistant", "toolResult", "turn-lifecycle", "assistant", "turn-lifecycle"]
     run = payload["runs"][0]
     usage = json.loads(Path(run["result_path"]).read_text(encoding="utf-8"))["usage"]
@@ -159,7 +159,7 @@ def test_the_fake_puts_the_marker_in_the_first_user_record(tmp_path: Path, monke
     run_fake(["exec", "질문\n\n(ultra-search:test-3 — ignore this line)"], home, calls)
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_HOME", str(home))
 
-    _, payload, _ = run_cli("sessions", "--mine", "--runs-dir", str(tmp_path / "runs"))
+    _, payload, _ = run_cli("sessions", "--mine")
 
     assert [s["run_id"] for s in payload["sessions"]] == ["test-3"]
 
@@ -331,7 +331,7 @@ def test_the_real_binary_writes_a_transcript_the_cli_can_find(tmp_path: Path) ->
     subprocess.run(["aside", "exec", "--effort", "low", prompt], capture_output=True, text=True, timeout=180)
 
     p = subprocess.run([sys.executable, str(SCRIPTS / "cli.py"), "sessions", "--mine", "--search", marker,
-                        "--runs-dir", str(tmp_path)], capture_output=True, text=True, timeout=60)
+                        ], capture_output=True, text=True, timeout=60)
 
     found = json.loads(p.stdout)["sessions"]
     assert [s["run_id"] for s in found] == [run_id], "the real transcript must be findable by its prompt marker"

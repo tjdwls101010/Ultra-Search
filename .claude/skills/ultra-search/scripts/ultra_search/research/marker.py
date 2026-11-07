@@ -9,8 +9,9 @@ from __future__ import annotations
 
 PREFIX = "ultra-search:"
 
-#: Said in every prompt: the browsing agent acts as the user, in their logged-in browser.
-SCOPE = "Read-only research: do not post, purchase, sign up, or change account settings."
+#: Said in every prompt: the browsing agent acts as the user, in their logged-in browser. It keeps the agent from acting
+#: on its own initiative while it researches, not from doing what the objective asks of it.
+SCOPE = "Unless the objective asks for it, do not post, purchase, sign up, or change account settings."
 
 
 def marker_for(run_id: str) -> str:

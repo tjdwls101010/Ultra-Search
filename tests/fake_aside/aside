@@ -37,8 +37,9 @@ snippet named on the snippet's `// snippet: <name>` line and then by URL:
                           it is answered as the snippet answers one, with that file's
                           bytes in base64 as body_b64.
     sitemap               candidate URL -> the page URLs that sitemap lists
-    links                 page URL -> the raw hrefs on that page; "__hit_budget__": true
-                          ends the call the way a snippet cut off by its budget does
+    links                 page URL -> the raw hrefs on that page, or {"final_url": URL,
+                          "hrefs": [...]} for a page that redirected there; "__hit_budget__":
+                          true ends the call the way a snippet cut off by its budget does
     sitemap, links        "__timeout__": true prints what was found and then dies the way
                           the daemon's 120s snippet kill does, with no closing record
 
@@ -513,7 +514,8 @@ def links(args: dict, routes: dict):
         if hrefs is None:
             yield {"kind": "link_miss", "url": page, "status": 404}
             continue
-        yield {"kind": "hrefs", "url": page, "final_url": page, "hrefs": list(hrefs)}
+        moved = hrefs if isinstance(hrefs, dict) else {"final_url": page, "hrefs": hrefs}
+        yield {"kind": "hrefs", "url": page, "final_url": moved["final_url"], "hrefs": list(moved["hrefs"])}
     yield {"kind": "links_done", "pages": len(pages), "elapsed_ms": 1, "hit_budget": cut}
 
 

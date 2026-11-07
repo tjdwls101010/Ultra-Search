@@ -409,8 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
         "walked once.\n"
         "The reply is a summary whatever the site's size: count, coverage (how many pages could not be read with the "
-        "first 10 of them, and whether a budget or --max-urls cut discovery short), the first 10 URLs, and "
-        "manifest_path, the file holding every URL and the full coverage.",
+        "first 10 of them, whether a budget or --max-urls cut discovery short, and dropped_other_origin -- how many distinct "
+        "URLs links and listings pointed to off the site, which a root that redirected elsewhere turns into nearly all "
+        "of them), the first 10 URLs, and manifest_path, the file holding every URL and the full coverage. A site is a "
+        "scheme, host and port, a host and its www. name being one; a page under both names is listed once.",
     )
     m.add_argument("url", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole origin -- its "
                    "sitemap, else same-origin links from URL -- not only URL's path: select a section with --include.")
@@ -425,7 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Map a site and save every page, as fetch saves one.",
         description="map + fetch. Writes NNN-slug files -- .md, or .json, .jsonl or .xml for data -- and a manifest.json recording url, file, title, "
         "status and via for each page. The reply counts pages by status and lists the first 10 that are not ok; the "
-        "manifest has every page.\n"
+        "manifest has every page. discovered is how many URLs there were to crawl, and not_crawled how many of them "
+        "--max-pages left -- listed in the manifest's not_crawled, with a note saying so.\n"
         "With --from, only --max-pages, --via, --concurrency, --no-frontmatter and --out apply; the manifest is "
         "crawled as it is, so discovery flags are refused.\n"
         "Each page's status says what it turned out to be; only an ok page's file is its text:\n"
@@ -435,8 +438,10 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole "
                      "origin -- its sitemap, else same-origin links from URL -- not only URL's path: select a section with "
                      "--include.")
-    src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
-    c.add_argument("--max-pages", type=_count(1), default=25, metavar="N", help="Stop after this many pages. Default 25.")
+    src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map` "
+                     "or `crawl`, crawled as it is: every URL it lists, a crawl's not_crawled included.")
+    c.add_argument("--max-pages", type=_count(1), metavar="N", help="Fetch at most this many pages. Default "
+                   f"{site.DEFAULT_MAX_PAGES} from URL; with --from, every URL the manifest lists.")
     _add_discovery_opts(c)
     _add_fetch_opts(c)
     c.add_argument("--out", type=_user_path, metavar="DIR", help="An empty or new output directory. Default: a new "

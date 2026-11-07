@@ -1097,6 +1097,95 @@ def test_max_pages_caps_what_a_crawl_fetches(cli, routes, fake_aside: Path) -> N
     assert sum(len(c["urls"]) for c in repl_calls(fake_aside, "fetch_batch")) == 2
 
 
+def test_a_crawl_cut_at_max_pages_says_what_it_left(cli, routes, tmp_path: Path) -> None:
+    """A crawl stopped at its page cap looked exactly like a site of that size."""
+    urls = [f"https://site.test/p{i}" for i in range(60)]
+    routes({"sitemap": {"https://site.test/sitemap.xml": urls}, "fetch_batch": {u: page(ARTICLE) for u in urls}})
+
+    _, payload, _ = cli("crawl", "https://site.test/", "--out", str(tmp_path / "c"))
+
+    assert (payload["requested"], payload["discovered"], payload["not_crawled"]) == (25, 60, 35)
+    assert "--max-pages" in payload["note"]
+    assert json.loads(Path(payload["manifest"]).read_text())["not_crawled"] == urls[25:]
+
+
+def test_a_manifest_is_crawled_whole_unless_a_cap_is_given(cli, routes, tmp_path: Path) -> None:
+    urls = [f"https://site.test/p{i}" for i in range(60)]
+    routes({"fetch_batch": {u: page(ARTICLE) for u in urls}})
+    manifest = tmp_path / "map.json"
+    manifest.write_text(json.dumps({"root": "https://site.test/", "urls": urls}))
+
+    _, whole, _ = cli("crawl", "--from", str(manifest), "--out", str(tmp_path / "whole"))
+    _, capped, _ = cli("crawl", "--from", str(manifest), "--max-pages", "10", "--out", str(tmp_path / "capped"))
+
+    assert (whole["requested"], whole["saved"], whole["not_crawled"]) == (60, 60, 0) and "note" not in whole
+    assert (capped["requested"], capped["not_crawled"]) == (10, 50)
+
+
+def test_a_site_whose_root_moves_to_www_is_one_site(cli, routes) -> None:
+    """example.com answering from www.example.com is the commonest redirect there is; read as another site, it left
+    a map of one page and an ok reply."""
+    routes({"links": {"https://example.test/": {"final_url": "https://www.example.test/", "hrefs": ["/a", "/b"]},
+                      "https://www.example.test/a": [], "https://www.example.test/b": []},
+            "sitemap": {"https://apex.test/sitemap.xml": ["https://www.apex.test/x", "https://www.apex.test/y"]}})
+
+    _, linked, _ = cli("map", "https://example.test/", "--no-sitemap", "--depth", "2")
+    _, listed_, _ = cli("map", "https://apex.test/")
+
+    assert listed(linked) == ["https://example.test/", "https://www.example.test/a", "https://www.example.test/b"]
+    assert listed(listed_) == ["https://www.apex.test/x", "https://www.apex.test/y"]
+
+
+def test_a_page_under_both_names_is_one_page(cli, routes) -> None:
+    """Pages of a site that answers from www. link back to it under both names; each is still fetched once."""
+    routes({"links": {"https://example.test/": {"final_url": "https://www.example.test/", "hrefs": ["/", "/a"]},
+                      "https://www.example.test/a": ["https://example.test/a", "https://example.test/"]},
+            "sitemap": {"https://apex.test/sitemap.xml": ["https://apex.test/x", "https://www.apex.test/x"]}})
+
+    _, linked, _ = cli("map", "https://example.test/", "--no-sitemap", "--depth", "3")
+    _, listed_, _ = cli("map", "https://apex.test/")
+
+    assert listed(linked) == ["https://example.test/", "https://www.example.test/a"]
+    assert listed(listed_) == ["https://apex.test/x"]
+
+
+def test_a_section_named_under_either_name_is_selected(cli, routes) -> None:
+    routes({"links": {"https://example.test/docs/": {"final_url": "https://www.example.test/docs/",
+                                                      "hrefs": ["/docs/a", "/docs/b", "/blog/"]}}})
+
+    _, payload, _ = cli("map", "https://example.test/docs/", "--no-sitemap", "--depth", "1",
+                        "--include", "https://example.test/docs/*")
+
+    assert listed(payload) == ["https://example.test/docs/", "https://www.example.test/docs/a",
+                               "https://www.example.test/docs/b"]
+
+
+def test_links_and_listings_to_another_site_are_counted_once_each(cli, routes) -> None:
+    routes({"links": {"https://moved.test/": {"final_url": "https://elsewhere.test/", "hrefs": ["/a", "/b", "/a"]},
+                      "https://site.test/": ["/p", "https://twitter.test/x", "https://www./x"],
+                      "https://site.test/p": ["https://twitter.test/x"]},
+            "sitemap": {"https://listed.test/sitemap.xml": ["https://cdn.test/x", "/relative", "https://listed.test/y"]}})
+
+    _, moved, _ = cli("map", "https://moved.test/", "--no-sitemap", "--depth", "1")
+    _, footer, _ = cli("map", "https://site.test/", "--no-sitemap", "--depth", "2")
+    _, listed_, _ = cli("map", "https://listed.test/")
+
+    assert (listed(moved), moved["coverage"]["dropped_other_origin"]) == (["https://moved.test/"], 2)
+    assert (listed(footer), footer["coverage"]["dropped_other_origin"]) == (["https://site.test/", "https://site.test/p"], 1)
+    assert listed_["coverage"]["dropped_other_origin"] == 1
+
+
+def test_a_crawls_own_manifest_is_crawled_with_what_it_left(cli, routes, tmp_path: Path) -> None:
+    urls = [f"https://site.test/p{i}" for i in range(30)]
+    routes({"sitemap": {"https://site.test/sitemap.xml": urls}, "fetch_batch": {u: page(ARTICLE) for u in urls}})
+    _, first, _ = cli("crawl", "https://site.test/", "--out", str(tmp_path / "first"))
+
+    _, again, _ = cli("crawl", "--from", first["manifest"], "--out", str(tmp_path / "again"))
+
+    assert (first["requested"], first["not_crawled"]) == (25, 5)
+    assert (again["requested"], again["not_crawled"]) == (30, 0)
+
+
 @pytest.mark.parametrize("manifest", [[], {"pages": ["https://site.test/a"]}, {"urls": "https://site.test/a"},
                                       {"root": 123, "urls": ["https://site.test/a"]}])
 def test_a_manifest_of_the_wrong_shape_is_refused(cli, routes, tmp_path: Path, manifest) -> None:

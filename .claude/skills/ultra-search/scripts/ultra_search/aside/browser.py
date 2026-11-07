@@ -6,7 +6,11 @@ says its budget ran out, so a caller sees a partial answer as partial.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import re
+import tempfile
+from pathlib import Path
 
 from ultra_search.aside import repl
 
@@ -17,18 +21,33 @@ DEFAULT_PER_URL_MS = 20_000
 TAB_WAIT_MS = 45_000
 
 
-def fetch_pages(urls: list[str], *, per_url_ms: int = DEFAULT_PER_URL_MS,
+def fetch_pages(urls: list[str], *, into: Path, per_url_ms: int = DEFAULT_PER_URL_MS,
                 budget_ms: int = DEFAULT_BUDGET_MS) -> list[dict]:
-    """Fetch a batch; non-text responses are written to the browser session directory.
-
-    Where downloads land is not the caller's choice: the sandbox refuses writes outside the
-    project and session roots. The caller gets the path back and copies the file itself.
-    """
+    """Fetch a batch. A response that is not text -- a PDF, an HWP -- is written to a new file in ``into`` and its
+    record names it as ``saved_path``; the caller owns that folder and the files in it. An error record marked
+    ``threw`` is the browser's fetch failing on that URL itself, rather than running out of time."""
     args = {"urls": list(urls), "perUrlTimeoutMs": per_url_ms, "budgetMs": budget_ms}
     try:
-        return repl.run_snippet("fetch_batch.js", args)
+        records = repl.run_snippet("fetch_batch.js", args)
     except repl.ReplTimeout as e:
-        return e.lines
+        records = e.lines
+    for rec in records:
+        if "body_b64" in rec:
+            _write_body(rec, into)
+    return records
+
+
+def _write_body(rec: dict, into: Path) -> None:
+    try:
+        body = base64.b64decode(rec.pop("body_b64"), validate=True)
+    except (binascii.Error, TypeError, ValueError) as e:
+        rec.update(kind="error", error=f"the browser's answer could not be decoded: {e}")
+        return
+    ext = "".join(ch for ch in str(rec.get("ext") or "bin") if ch.isalnum())[:8] or "bin"
+    fd, name = tempfile.mkstemp(prefix="download-", suffix=f".{ext}", dir=into)
+    with open(fd, "wb") as f:
+        f.write(body)
+    rec["saved_path"] = name
 
 
 def open_tab(url: str, *, wait_ms: int = TAB_WAIT_MS, settle_ms: int = 700) -> list[dict]:

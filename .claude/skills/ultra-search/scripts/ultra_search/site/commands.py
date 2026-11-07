@@ -35,6 +35,7 @@ def _providers(no_sitemap: bool) -> dict:
 
 def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, include: list[str] | None,
              exclude: list[str] | None, no_sitemap: bool, out: str | None, list_all: bool) -> Reply:
+    aside.require_ready()
     urls, coverage = discover.discover(
         url,
         **_discovery(depth, max_urls),
@@ -44,7 +45,7 @@ def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, i
         **_providers(no_sitemap),
     )
     manifest = {**discover.build_manifest(url, [], urls=urls), "coverage": coverage}
-    path = Path(out).expanduser() if out else saved.new_map_file(root, _host(url))
+    path = Path(out).expanduser().absolute() if out else saved.new_map_file(root, _host(url))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     # The list lives in the manifest; the reply is sized for reading whatever the site's size.
@@ -87,6 +88,8 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:
         site = url
+    aside.require_ready()
+    if not from_manifest:
         urls, coverage = discover.discover(
             site,
             **_discovery(depth, max_urls),
@@ -98,7 +101,7 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
 
     urls = urls[:max_pages]
     if out:
-        out_dir = Path(out).expanduser()
+        out_dir = Path(out).expanduser().absolute()
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         out_dir = saved.new_crawl_dir(root, _host(site))

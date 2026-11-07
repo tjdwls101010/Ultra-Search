@@ -7,13 +7,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ultra_search import outcome, saved
+from ultra_search import aside, outcome, saved
 from ultra_search.fetch import acquire
 from ultra_search.outcome import ArgumentError, Reply
 
 
 def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, concurrency: int,
           frontmatter: bool, print_content: bool, max_chars: int) -> Reply:
+    if out:
+        _out_path(urls, out)  # a bad --out is the caller's to fix, and said before anything else
+    aside.require_ready()
     out_file, out_dir = _destinations(urls, out, root)
     envelope = acquire.fetch_urls(
         urls,
@@ -48,18 +51,25 @@ def _destinations(urls: list[str], out: str | None, root: Path) -> tuple[Path | 
     """
     if not out:
         return None, saved.pages_dir(root)
-    p = Path(out).expanduser()
-    looks_like_file = p.is_file() or (bool(p.suffix) and not p.is_dir() and not out.endswith("/"))
+    p, looks_like_file = _out_path(urls, out)
     if looks_like_file:
-        if len(urls) > 1:
-            raise ArgumentError(
-                f"--out {out!r} names a file but {len(urls)} URLs were given",
-                fix="Pass a directory for several URLs, or fetch them one at a time.",
-            )
         p.parent.mkdir(parents=True, exist_ok=True)
         return p, p.parent
     p.mkdir(parents=True, exist_ok=True)
     return None, p
+
+
+def _out_path(urls: list[str], out: str) -> tuple[Path, bool]:
+    """--out as the absolute path the reply will report -- a path relative to this process means nothing to a caller
+    elsewhere -- and whether it names a file; refused when it names one file for several URLs."""
+    p = Path(out).expanduser().absolute()
+    looks_like_file = p.is_file() or (bool(p.suffix) and not p.is_dir() and not out.endswith("/"))
+    if looks_like_file and len(urls) > 1:
+        raise ArgumentError(
+            f"--out {out!r} names a file but {len(urls)} URLs were given",
+            fix="Pass a directory for several URLs, or fetch them one at a time.",
+        )
+    return p, looks_like_file
 
 
 def outcome_for(items: list[dict]) -> str:

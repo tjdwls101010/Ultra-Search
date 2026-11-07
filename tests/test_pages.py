@@ -237,6 +237,220 @@ def test_plain_text_is_passed_through(cli, routes) -> None:
     assert "just some text" in saved(item_of(payload))
 
 
+@pytest.mark.parametrize("ct,ext", [
+    ("application/json; charset=utf-8", ".json"), ("application/ld+json", ".json"),
+    ("application/xml", ".xml"), ("text/xml; charset=utf-8", ".xml"), ("application/rss+xml", ".xml"),
+])
+def test_a_data_response_is_saved_as_it_came(cli, routes, tmp_path: Path, ct: str, ext: str) -> None:
+    """An API's JSON or a feed's XML is not an article: run through the article extractor it came back empty or as a
+    shell sent on to a tab. Its own bytes are the thing worth keeping."""
+    body = '{"name": "ultra", "tags": ["a", "b"]}' if ext == ".json" else '<?xml version="1.0"?><rss><item>a</item></rss>'
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    code, payload, _ = cli("fetch", "https://api.test/x", "--out", str(tmp_path / "out"))
+
+    item = item_of(payload)
+    assert (code, item["status"], Path(item["path"]).suffix) == (0, "ok", ext)
+    assert Path(item["path"]).read_text(encoding="utf-8") == body
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/json; charset=utf-8", "<!doctype html><html><body><form>Please sign in</form></body></html>"),
+    ("text/xml", '<!DOCTYPE html><html lang="en"><body><div id=root></div></body></html>'),
+    ("application/json", "\ufeff  <!-- served by a proxy -->\n<head><title>Sign in</title></head><body>x</body>"),
+    ("application/json", "<body><h1>502 Bad Gateway</h1></body>"),
+    ("application/json", '<meta charset="utf-8"><title>Error</title><p>x</p>'),
+], ids=["json-typed-html", "xml-typed-html", "json-typed-page-opening-with-head", "opening-with-body", "opening-with-meta"])
+def test_an_html_page_served_as_data_is_still_a_page(cli, routes, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://s.test/login": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://s.test/login", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "shell"
+
+
+def test_a_body_opening_with_many_comments_is_classified_at_once(cli, routes) -> None:
+    """A comment banner of 200 lines before the document: the check for an HTML start must not try every way to read it."""
+    import time
+    body = '<?xml version="1.0"?>' + "<!-- c -->\n" * 200 + "<urlset/>"
+    routes({"fetch_batch": {"https://e.test/s.xml": page(body, ct="application/xml")}})
+
+    began = time.time()
+    _, payload, _ = cli("fetch", "https://e.test/s.xml")
+
+    assert item_of(payload)["status"] == "ok" and time.time() - began < 10
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/json", '{"rendered": "<!DOCTYPE html>\\n<html lang=\\"en\\"><body>x</body></html>"}'),
+    ("application/x-ipynb+json", '{"cells": [{"outputs": [{"data": {"text/html": ["<html>\\n<b>x</b>"]}}]}]}'),
+    ("application/rss+xml", '<?xml version="1.0"?><rss><item><description><![CDATA[<!DOCTYPE html><html><body>x</body>'
+     '</html>]]></description></item></rss>'),
+], ids=["json-holding-html", "notebook", "rss-cdata"])
+def test_data_that_carries_html_inside_is_still_data(cli, routes, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x")
+
+    assert item_of(payload)["status"] == "ok" and Path(item_of(payload)["path"]).read_text(encoding="utf-8") == body
+
+
+def test_xml_that_only_names_html_is_still_data(cli, routes) -> None:
+    body = '<?xml version="1.0"?><feeds><feed><htmlUrl>https://e.test/</htmlUrl></feed></feeds>'
+    routes({"fetch_batch": {"https://e.test/feeds.opml": page(body, ct="application/xml")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/feeds.opml")
+
+    assert (item_of(payload)["status"], Path(item_of(payload)["path"]).suffix) == ("ok", ".xml")
+
+
+def test_newline_delimited_json_is_kept_as_jsonl(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/log": page('{"a": 1}\n{"a": 2}\n', ct="application/x-ndjson")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/log")
+
+    assert Path(item_of(payload)["path"]).suffix == ".jsonl"
+
+
+def test_xhtml_is_still_a_page(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE, ct="application/xhtml+xml")}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a")
+
+    assert (item_of(payload)["status"], Path(item_of(payload)["path"]).suffix) == ("ok", ".md")
+
+
+def test_format_html_still_refuses_a_data_response(cli, routes) -> None:
+    routes({"fetch_batch": {"https://api.test/x": page('{"a": 1}', ct="application/json")}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x", "--format", "html")
+
+    assert item_of(payload)["status"] == "unsupported" and item_of(payload)["path"] is None
+
+
+def mis_decoded(html: str) -> str:
+    """A page served in EUC-KR as the browser's fetch hands it over: its bytes read as UTF-8."""
+    return html.encode("euc-kr").decode("utf-8", "replace")
+
+
+KOREAN_ARTICLE = "<html><head><title>글</title></head><body><article><p>" + ("한국어 문장입니다 " * 120) + "</p></article></body></html>"
+#: Markup-heavy pages, where the broken characters are a small share of the whole: 0.1% and 0.33% of it here.
+MARKUP = '<div class="nav"><a href="/category/item?id=1&amp;ref=menu">menu entry</a></div>\n'
+SPARSE = [MARKUP * 2000 + "<p>" + "가" * 80 + "</p>", MARKUP * 600 + "<p>" + "가" * 80 + "</p>"]
+
+
+@pytest.mark.parametrize("body", [mis_decoded(KOREAN_ARTICLE)] + [mis_decoded(b) for b in SPARSE],
+                         ids=["prose", "markup-0.1%", "markup-0.33%"])
+def test_a_page_not_in_utf8_is_not_saved_broken(cli, routes, fake_aside: Path, body: str) -> None:
+    """The browser's fetch decodes every body as UTF-8. An EUC-KR page came back with half its characters replaced and
+    was saved as ok; a tab reads it with the charset the page declares."""
+    assert body.count("\ufffd") >= 20
+    routes({"fetch_batch": {"https://ko.test/a": page(body)}, "tab_one": {"https://ko.test/a": page(KOREAN_ARTICLE)}})
+
+    _, auto, _ = cli("fetch", "https://ko.test/a")
+    _, forced, _ = cli("fetch", "https://ko.test/a", "--via", "fetch")
+    _, as_html, _ = cli("fetch", "https://ko.test/a", "--via", "fetch", "--format", "html")
+
+    assert (item_of(auto)["status"], item_of(auto)["via"]) == ("ok", "tab")
+    assert "\ufffd" not in saved(item_of(auto))
+    for reply in (forced, as_html):
+        assert (item_of(reply)["status"], item_of(reply)["path"]) == ("shell", None)
+        assert item_of(reply)["error"] == "the response is not UTF-8"
+
+
+ENGLISH = "<p>" + ("word " * 200) + "</p>"
+
+
+@pytest.mark.parametrize("ct,body,status", [
+    ("text/html; charset=utf-8", ARTICLE.replace("단어 ", "단어\ufffd ", 25), "ok"),
+    ("text/html; charset=iso-8859-1", f"<html><body><article>{ENGLISH}<p>caf\ufffd caf\ufffd</p></article></body></html>", "shell"),
+    ("text/html", f'<html><head><meta charset="euc-kr"></head><body><article>{ENGLISH}<p>caf\ufffd</p></article></body></html>',
+     "shell"),
+    ("text/html", '<html><head><script src="https://cdn.test/k.js" charset="utf-8"></script><meta http-equiv="Content-Type" '
+     'content="text/html; charset=euc-kr"></head>' + mis_decoded("<body><article><p>" + "한국어 문장입니다 " * 120
+                                                                   + "</p></article></body></html>"), "shell"),
+    ("text/html; charset=utf-8", mis_decoded(KOREAN_ARTICLE), "shell"),
+    ("text/html", f'<html><head><script src="https://cdn.test/k.js" charset="euc-kr"></script></head><body><article>'
+     f'{ENGLISH}<p>Content-Type: text/plain; charset=latin1 \ufffd\ufffd\ufffd</p></article></body></html>', "ok"),
+    ("text/html; charset=unicode-1-1-utf-8", f"<html><body><article>{ENGLISH}<p>\ufffd</p></article></body></html>", "ok"),
+    ("text/html; charset=utf-8", mis_decoded(f'<html><head><meta charset="euc-kr"></head><body><article>{ENGLISH}'
+                                             "<p>한글 다섯자</p></article></body></html>"), "shell"),
+], ids=["declared-utf8-with-real-replacement-characters", "declared-latin1", "meta-euc-kr", "script-charset-before-meta",
+        "header-says-utf8-body-is-not", "charset-in-a-script-or-text-is-not-a-declaration", "utf8-alias",
+        "header-says-utf8-meta-says-euc-kr"])
+def test_a_declared_charset_and_the_count_decide_together(cli, routes, ct: str, body: str, status: str) -> None:
+    """A page that names a charset other than UTF-8 -- in its header or a <meta> tag -- was decoded wrongly the moment
+    it held a character outside ASCII. Saying UTF-8 proves nothing: a page whose every non-ASCII character was replaced
+    is not UTF-8 whatever its header says."""
+    routes({"fetch_batch": {"https://e.test/a": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
+
+    assert item_of(payload)["status"] == status
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/rss+xml", mis_decoded('<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>")),
+    ("application/rss+xml", '<?xml version="1.0" encoding="ISO-8859-1"?><rss><item>caf\ufffd na\ufffdve</item></rss>'),
+    ("application/json; charset=euc-kr", '{"title": "\ufffd\ufffd"}'),
+    ("text/xml; charset=UTF-8", mis_decoded('<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>")),
+], ids=["euc-kr-feed", "latin1-feed-with-few-accents", "json-declared-euc-kr", "feed-the-server-labels-utf8"])
+def test_data_not_in_utf8_is_not_sent_to_a_tab_that_cannot_read_it(cli, routes, fake_aside: Path, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://ko.test/rss": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://ko.test/rss")
+
+    assert repl_calls(fake_aside, "tab_one") == []
+    assert (item_of(payload)["status"], item_of(payload)["error"]) == ("unsupported", "the response is not UTF-8")
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/json", '{"comment": "' + "\ufffd" * 25 + '"}'),
+    ("application/atom+xml", '<?xml version="1.0" encoding="UTF-8"?><feed><title>' + "\ufffd" * 25 + "</title></feed>"),
+], ids=["json", "xml-declaring-utf8"])
+def test_data_that_is_utf8_keeps_its_own_replacement_characters(cli, routes, ct: str, body: str) -> None:
+    """JSON is UTF-8 by its own definition, and XML says what it is: only a declared other charset makes it misread."""
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x")
+
+    assert item_of(payload)["status"] == "ok" and Path(item_of(payload)["path"]).read_text(encoding="utf-8") == body
+
+
+def test_markup_heavy_cases_really_are_a_small_share() -> None:
+    assert [round(mis_decoded(b).count("\ufffd") / len(mis_decoded(b)), 4) for b in SPARSE] == [0.001, 0.0033]
+
+
+def test_a_page_with_a_few_replacement_characters_is_still_a_page(cli, routes) -> None:
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE.replace("단어 ", "단어\ufffd ", 5))}})
+
+    _, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
+
+    assert item_of(payload)["status"] == "ok"
+
+
+@pytest.mark.parametrize("argv", [["fetch", "https://e.test/a"], ["map", "https://e.test/"], ["crawl", "https://e.test/"]],
+                         ids=["fetch", "map", "crawl"])
+def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv,
+                                                                runs_dir: Path) -> None:
+    """With the Aside app closed, a fetch came back as `error: no response` and a map as an empty site."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+
+    code, payload, _ = cli(*argv)
+
+    assert (code, payload["error"]) == (3, "aside_unavailable")
+    assert "doctor" in payload["fix"]
+    assert not (fake_aside / "calls.jsonl").exists()
+    assert list(runs_dir.iterdir()) == [], "nothing was made before the refusal"
+    code, _, _ = run_cli(*argv, "--out", "made/")
+    assert code == 3 and list(Path.cwd().iterdir()) == []
+
+
 # --- escalating to a real tab ------------------------------------------------------------
 
 
@@ -1199,6 +1413,23 @@ def test_a_home_relative_out_keeps_its_trailing_slash(cli, routes, tmp_path: Pat
 
 
 # --- where saved work goes ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv,key", [
+    (["fetch", "https://example.org/a", "--out", "notes/a.md"], "path"),
+    (["fetch", "https://example.org/a", "--out", "notes/"], "path"),
+    (["map", "https://example.org/", "--depth", "0", "--out", "maps/site.json"], "manifest_path"),
+    (["crawl", "https://example.org/", "--depth", "0", "--out", "crawled"], "out_dir"),
+], ids=["fetch-file", "fetch-dir", "map", "crawl"])
+def test_a_relative_out_is_reported_as_the_path_it_became(cli, routes, argv: list[str], key: str) -> None:
+    """A path relative to the CLI's working directory means nothing to a caller somewhere else."""
+    routes({"fetch_batch": {"https://example.org/a": page(ARTICLE), "https://example.org/": page(ARTICLE)},
+            "links": {"https://example.org/": []}})
+
+    _, payload, _ = cli(*argv)
+
+    reported = payload["items"][0][key] if key == "path" else payload[key]
+    assert Path(reported).is_absolute() and Path(reported).exists()
 
 
 def test_the_default_store_keeps_itself_out_of_git(routes, fake_aside: Path, aside_home: Path, tmp_path: Path) -> None:

@@ -105,6 +105,23 @@ def test_a_login_gated_feed_is_readable(tmp_path: Path) -> None:
     assert item["words"] > 100
 
 
+def test_an_api_response_is_saved_as_its_json(tmp_path: Path) -> None:
+    code, payload = cli("fetch", "https://api.github.com/repos/python/cpython", "--out", str(tmp_path / "pages"))
+    item = payload["items"][0]
+
+    assert (code, item["status"], Path(item["path"]).suffix) == (0, "ok", ".json"), item
+    assert json.loads(Path(item["path"]).read_text(encoding="utf-8"))["full_name"] == "python/cpython"
+
+
+def test_a_page_not_in_utf8_is_read_whole(tmp_path: Path) -> None:
+    """ppomppu serves EUC-KR; the browser's fetch reads every body as UTF-8, so only a tab gets its characters."""
+    code, payload = cli("fetch", "https://www.ppomppu.co.kr/zboard/zboard.php?id=freeboard", "--out", str(tmp_path / "pages"))
+    item = payload["items"][0]
+
+    assert (item["status"], item["via"]) == ("ok", "tab"), item
+    assert "�" not in Path(item["path"]).read_text(encoding="utf-8")
+
+
 def test_a_pdf_becomes_markdown_and_the_original_is_kept(tmp_path: Path) -> None:
     code, payload = cli("fetch", "https://arxiv.org/pdf/1706.03762", "--out", str(tmp_path / "pages"))
 

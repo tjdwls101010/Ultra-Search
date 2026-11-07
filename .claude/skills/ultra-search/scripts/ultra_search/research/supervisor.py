@@ -32,7 +32,7 @@ from pathlib import Path
 
 from ultra_search import aside, runs
 from ultra_search.research import evidence
-from ultra_search.research.marker import decorate_prompt, marker_for
+from ultra_search.research.marker import decorate_prompt, marker_for, token
 
 POLL = 2.0
 #: How long to keep looking for the session before giving up and using stdout alone.
@@ -83,7 +83,7 @@ class _Watch:
 
     def __init__(self, run: runs.Run, meta: dict, started: float, discovery_deadline: float) -> None:
         self.run = run
-        self.marker = meta.get("marker") or marker_for(run.run_id)
+        self.marker = token(meta.get("marker") or marker_for(run.run_id))
         # A resumed run appends to a session that already exists, so its transcript opens with
         # the original prompt and the marker never appears in the first line that discovery
         # reads. The id is already known here -- use it rather than hunting for it.
@@ -257,12 +257,23 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     # to this run -- and strictly this turn's children, for the same reason.
     kept: dict[str | None, dict[str, Path]] = {}
     missing: list[dict] = []
+    notes: list[str | None] = []
     if turn.observed:
         sources = turn.sources()
         if session_id:
             kept, missing = _keep_artifacts(run, session_id, turn, sources)
         answer = turn.answer(sources, rewrite=lambda cid, text: _point_at_copies(text, cid, session_id, kept))
         usage = turn.usage()
+        # Aside writes why a turn stopped on an error beside the stop, and nowhere a caller would otherwise look.
+        why = turn.error_message() if state == "failed" else ""
+        if why:
+            notes.append(f"the agent stopped on an error: {why}")
+            meta.setdefault("reason", why)
+        unread = turn.unreadable()
+        if unread:
+            # A shape Aside added later would otherwise pass unnoticed, leaving the result short without saying so.
+            notes.append(f"{unread} record{'' if unread == 1 else 's'} in this run's transcript could not be read; "
+                         "`log --level raw` prints every record as stored")
     else:
         answer, sources, usage = _from_stdout(_read_text(run.stdout_path))
         result_note = result_note or (
@@ -284,7 +295,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         "empty": not answer.strip() and not sources,
         "exit_code": exit_code,
     }
-    notes = [result_note]
+    notes.insert(0, result_note)
     copied = [str(path) for cid in [None, *turn.children] for path in kept.get(cid, {}).values()]
     if copied:
         result["artifacts"] = copied

@@ -17,6 +17,13 @@ def marker_for(run_id: str) -> str:
     return f"{PREFIX}{run_id}"
 
 
+def token(marker: str) -> str:
+    """The marker as a prompt carries it, with the dash after it -- what a session is matched by. Run ids started in
+    the same second differ only in their labels, and one label can begin another (`…-ab`, `…-abc`): only the dash keeps
+    the shorter one's marker from matching inside the longer one's."""
+    return f"{marker} —"
+
+
 def decorate_prompt(prompt: str, marker: str) -> str:
     """Append the research scope and the correlation marker to a prompt.
 
@@ -24,7 +31,7 @@ def decorate_prompt(prompt: str, marker: str) -> str:
     than as part of the task; a run was measured answering the question correctly with it
     attached.
     """
-    return f"{prompt}\n\n{SCOPE}\n\n({marker} — ignore this line)"
+    return f"{prompt}\n\n{SCOPE}\n\n({token(marker)} ignore this line)"
 
 
 def run_id_in(prompt: str) -> str | None:

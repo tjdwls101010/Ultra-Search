@@ -103,7 +103,7 @@ def _text(raw: object) -> str:
 
 def parse_ndjson(stdout: str) -> list[dict]:
     out: list[dict] = []
-    for line in _text(stdout).splitlines():
+    for line in _text(stdout).split("\n"):
         line = line.strip()
         if not line.startswith("{"):
             continue

@@ -147,7 +147,8 @@ def run_cli(*argv: str) -> tuple[int, dict, str]:
     """argv in; the exit code, the JSON document on stdout, and everything printed -- stderr's
     progress lines, then stdout -- out, the way a background Bash call's output file reads."""
     code, out, err = run_cli_streams(*argv)
-    last = [line for line in out.splitlines() if line.startswith("{")]
+    # Split where the CLI ends a line, at "\n" alone: JSON leaves U+0085, U+2028 and U+2029 unescaped inside a string.
+    last = [line for line in out.split("\n") if line.startswith("{")]
     return code, (json.loads(last[-1]) if last else {}), err + out
 
 
@@ -240,6 +241,33 @@ def calling(*calls: tuple[str, object], text: str = "") -> dict:
 
 def tool(name: str, content: str, **details: object) -> dict:
     return {"role": "toolResult", "toolName": name, "content": content, "details": details, "timestamp": 3}
+
+
+# --- records shaped the way Aside writes them now -------------------------------------------------
+#
+# `tool()` above stores a result's content as a string; a real transcript never does. Its content is a list of text
+# blocks, and a webfetch result opens with a citation tag. These are what the tests of how a result is read use.
+
+
+def text_blocks(text: str) -> list[dict]:
+    return [{"type": "text", "text": text}]
+
+
+def webfetch(url: str, after_tag: str, *, sid: str = "src1", title: str = "", excerpt: str = "") -> dict:
+    """A webfetch result as Aside records it: ``after_tag`` is everything after the citation tag, verbatim -- a blank
+    line and the page (``"\\n\\nPage text"``), a status line (``"\\nHTTP 403 Forbidden"``), or a download notice."""
+    return {"role": "toolResult", "toolName": "webfetch",
+            "content": text_blocks(f'<webfetch-citation source_id="{sid}" />{after_tag}'),
+            "details": {"sources": [{"id": sid, "url": url, "title": title or url, "excerpt": excerpt}], "title": title},
+            "isError": False, "toolCallId": f"call_{sid}", "timestamp": 3}
+
+
+def websearch(*found: tuple[str, str, str]) -> dict:
+    """A websearch result as Aside records it: each found page as (id, url, excerpt), in its details and in its text."""
+    listed = [{"id": i, "url": u, "title": u, "excerpt": x} for i, u, x in found]
+    text = json.dumps({"results": [{"source_id": i, "url": u, "excerpts": [x]} for i, u, x in found]}, ensure_ascii=False)
+    return {"role": "toolResult", "toolName": "websearch", "content": text_blocks(text), "details": {"sources": listed},
+            "isError": False, "toolCallId": "call_search", "timestamp": 3}
 
 
 def turn(event: str) -> dict:

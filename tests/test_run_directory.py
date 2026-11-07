@@ -63,6 +63,49 @@ def test_a_run_whose_session_is_never_found_still_produces_an_answer(
     assert "stdout only" in result["note"]
 
 
+def test_a_run_is_not_taken_for_a_session_whose_run_id_only_begins_with_its_own(
+    runs_dir: Path, aside_home: Path, fake_aside: Path
+) -> None:
+    """Runs started in the same second share their ids up to the label, and one label can begin another -- `…-ab` and
+    `…-abc`. The newer session's prompt then holds the older run's id as a prefix of its own."""
+    run = start(runs_dir)
+    longer = aside_session(aside_home, "LongerRunId00001", turn("started"),
+                           user(f"다른 질문\n\n(ultra-search:{run.run_id}c — ignore this line)"),
+                           turn("final-started"), answer("다른 런의 답"), turn("finished"))
+    later = time.time() + 3600
+    os.utime(longer, (later, later))
+
+    meta = supervise(run)
+
+    assert meta["session_id"] != "LongerRunId00001"
+    assert result_of(run)["answer"] == "Answer Example A (https://example.org/a)"
+
+
+def test_a_later_turn_whose_run_id_begins_with_this_ones_is_not_this_turn(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The session went on to a turn another run started, whose id this run's id begins. This run's turn is still the
+    one its own prompt opened."""
+    run = start(runs_dir)
+    replay([turn("final-started"), answer("내 답"), turn("finished"),
+            turn("started"), user(f"후속\n\n(ultra-search:{run.run_id}c — ignore this line)"),
+            turn("final-started"), answer("다른 런의 답"), turn("finished")])
+
+    supervise(run)
+
+    assert result_of(run)["answer"] == "내 답"
+
+
+def test_a_turn_that_stopped_on_an_error_records_why(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
+    replay([{"role": "assistant", "content": [], "stopReason": "error", "timestamp": 4,
+             "errorMessage": "Codex usage limit reached"}])
+    run = start(runs_dir)
+
+    meta = supervise(run)
+
+    assert (meta["state"], meta["reason"]) == ("failed", "Codex usage limit reached")
+
+
 RECORDED_STDOUT = Path(__file__).parent / "fixtures" / "runs" / "261002-lifecycle-subagent" / "stdout.log"
 
 

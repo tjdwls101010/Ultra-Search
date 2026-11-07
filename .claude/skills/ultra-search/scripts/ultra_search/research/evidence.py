@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from ultra_search import aside, runs
 from ultra_search.ids import is_safe_id
-from ultra_search.research.marker import marker_for
+from ultra_search.research.marker import marker_for, token
 
 
 @dataclass
@@ -199,6 +199,15 @@ class Turn:
         said = [e for e in self.events if e.kind == "assistant"]
         return bool(said) and said[-1].stop == "error"
 
+    def error_message(self) -> str:
+        """The error the turn's last message stopped on, as Aside recorded it; "" when it did not stop on one or no reason was recorded."""
+        said = [e for e in self.events if e.kind == "assistant"]
+        return said[-1].error if said and said[-1].stop == "error" else ""
+
+    def unreadable(self) -> int:
+        """How many of the turn's records, its children's included, are of a shape this skill does not read."""
+        return sum(1 for events in [self.events, *self.child_events.values()] for e in events if e.kind == "raw")
+
     def sources(self) -> list[Source]:
         """Every URL the turn and its children touched, one entry per URL."""
         return merge_sources(
@@ -251,14 +260,15 @@ class Turn:
         return [e for e in self.events if e.kind == "tool_result"]
 
     def source_text(self, url: str) -> str:
-        """What the turn already read of a URL: the fullest result that holds the page, else a
-        notice that a tab opened on it, else a listing's excerpt.
+        """What the turn already has of a URL: the fullest result that holds the page, else a notice that a tab opened
+        on it or a document was saved, else the excerpt a listing gave it, else what a result naming it alone said --
+        an HTTP error, say. Never a whole listing of other pages.
 
         A URL usually appears more than once -- as a search result, as a tab being opened, as
         the page then read -- and the read page is the one worth returning, whichever stream
         and whichever order it came in.
         """
-        read, opened, listed = "", "", ""
+        read, opened, excerpt, alone = "", "", "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
                 named = [s for s in e.sources if s.url == url]
@@ -268,15 +278,17 @@ class Turn:
                     read = max(read, e.content, key=len)
                 elif any(s.opened for s in named):
                     opened = opened or e.content
-                listed = listed or e.content
-        return read or opened or listed
+                excerpt = excerpt or next((s.excerpt for s in named if s.excerpt), "")
+                if len(e.sources) == 1:
+                    alone = alone or e.content
+        return read or opened or excerpt or alone
 
 
 def turn_of(run: runs.Run) -> Turn:
     meta = run.meta()
     marker = meta.get("marker") or marker_for(run.run_id)
     events, _ = aside.read_events(run.session_transcript)
-    start = turn_start_index(events, marker)
+    start = turn_start_index(events, token(marker))
     if start is None:
         return Turn(observed=False)
     opened_at = events[start].timestamp

@@ -27,8 +27,10 @@ _HTTP_ERROR = re.compile(r"^<webfetch-citation[^>]*/>\nHTTP [3-5]\d\d\b")
 #: the blank line -- or after the status line, when the server refused and sent something anyway.
 _DOWNLOADED = re.compile(r"^<webfetch-citation[^>]*/>\n(?:\n|HTTP [^\n]*\n)Downloaded to: (?P<path>[^\n]+)")
 _EMPTY_DOWNLOAD = re.compile(r"^File size: 0 bytes$", re.M)
-#: A result too large to keep inline is kept whole in a file, and the record says where, then shows its start.
-_SAVED_OUTPUT = re.compile(r"^\[Output too large \([^)]*\)\. Full output saved to: (?P<path>.+?) — ")
+#: A result too large to keep inline is kept whole in a file, and the record says where -- followed by a reading hint
+#: since late 2026, closing the bracket before that -- then shows the result's start under a preview header.
+_SAVED_OUTPUT = re.compile(r"^\[Output too large \([^)]*\)\. Full output saved to: (?P<path>.+?)(?: — |\]\n)")
+_PREVIEW = re.compile(r"\A\[Output too large [^\n]*\]\n\nPreview \([^)\n]*\):\n")
 #: Records about the conversation rather than in it: a message's attachments, a summary standing in for earlier turns.
 _META_ROLES = frozenset({"user-message-metadata", "compaction"})
 #: The browser REPL lists no sources; it prints the pages it touched, each on a line of its
@@ -255,7 +257,8 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
         details = {}
     is_error = bool(obj.get("isError"))
     text = _flatten_text(obj.get("content"))
-    refused = name == "webfetch" and bool(_HTTP_ERROR.match(text))
+    # A refusal large enough to be kept in a file still opens its preview with the status line.
+    refused = name == "webfetch" and bool(_HTTP_ERROR.match(_PREVIEW.sub("", text, count=1)))
     # A tool that opens pages can still fail on the one it was given -- a 403, a timeout.
     opened = name in _OPENING_TOOLS and not is_error and not refused
     saved_path, holds_page = _saved_by_fetch(text, refused) if name == "webfetch" else ("", True)

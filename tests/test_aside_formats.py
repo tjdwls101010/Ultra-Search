@@ -239,6 +239,25 @@ def test_a_result_too_large_to_keep_inline_names_the_file_that_holds_it(tmp_path
     assert (source.opened, source.holds_page, source.saved_path) == (True, True, "/s/tmp/webfetch-result-pZXA.txt")
 
 
+def test_the_earlier_too_large_notice_names_its_file_too(tmp_path: Path) -> None:
+    """Recorded on 2026-08-29: the path closes the bracket, with no reading hint after it."""
+    pointer = ("[Output too large (193.2KB). Full output saved to: /s/tmp/webfetch-result-Bop6.txt]\n\n"
+               'Preview (first 4.0KB):\n<webfetch-citation source_id="src1" />\n\nText')
+    record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": pointer}]}
+
+    assert one(tmp_path, record).sources[0].saved_path == "/s/tmp/webfetch-result-Bop6.txt"
+
+
+def test_a_refusal_too_large_to_keep_inline_is_still_a_refusal(tmp_path: Path) -> None:
+    """A bot check's page can be large enough that Aside keeps it in a file; its preview still opens with the status."""
+    pointer = ("[Output too large (52.0KB). Full output saved to: /s/tmp/webfetch-result-C1.txt — read it with "
+               "read_file({ path, offset: 1 }), 36.0KB per read.]\n\nPreview (first 4.0KB):\n"
+               '<webfetch-citation source_id="src1" />\nHTTP 403 Forbidden\n<html>challenge')
+    record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": pointer}]}
+
+    assert [s.opened for s in one(tmp_path, record).sources] == [False]
+
+
 def test_a_result_of_text_blocks_reads_as_its_text(tmp_path: Path) -> None:
     record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]}
     mixed = {**record, "content": [{"type": "text", "text": "one"}, {"type": "image", "data": "AAAA"}]}

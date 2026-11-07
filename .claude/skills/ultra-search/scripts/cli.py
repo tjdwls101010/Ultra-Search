@@ -68,8 +68,8 @@ def _exit_lines(command: str) -> str:
 NEXT_HELP = (
     "next, while a run is still going, is the one call that waits for it -- `result --wait`, which answers with the "
     "result, or with next again if the wait runs out first: command is the shell command, bash_timeout_ms the Bash "
-    "timeout it needs, run_in_background whether to run it in the background. The reply's note says when a call run "
-    "in the background announces its completion to anyone."
+    "timeout it needs, run_in_background the recommended setting. The reply's note says when a call run in the "
+    "background announces its completion to anyone."
 )
 
 
@@ -286,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
         "log",
         help="A run's events, to retrace why it chose a source or came back thin.",
         description="One JSON reply: runs, each with its state and lines -- the events of the run's turn and its "
-        "children's, one line each. Read once, after the fact or mid-run; it does not wait. A resumed run excludes "
+        "children's, one line each. A snapshot, after the fact or mid-run; it does not wait. A resumed run excludes "
         "earlier turns and their children. full and raw can be large.",
     )
     _add_target(lg)
@@ -332,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     sh = sub.add_parser(
         "show",
         help="Full text of one source or one tool result.",
-        description="The third layer under `result`: what Aside already has, returned without fetching anything "
+        description="What Aside already has for one source or tool result, returned without fetching anything "
         "again. A source is found by its n from `result` or `result --sources`, or by any of its ids; its content is "
         "the fullest text a tool returned for it -- the page, or a notice that a tab opened on it or a document was "
         "saved -- and for a source never opened, the excerpt a result gave it, else what a request for it alone "
@@ -357,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser(
         "fetch",
         help="Read one or more URLs into files: markdown, or JSON and XML as they came.",
-        description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
+        description="Fetches with the user's cookies, so logged-in pages open, and a real tab clears many bot checks. Documents "
         "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave; "
         "a JSON or XML response is saved as it came, as .json, .jsonl or .xml, unless it is not UTF-8. Full text always goes to a file, whose path is "
         "absolute; use --print to also get it inline.\n"
@@ -379,8 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="md",
         help="md saves extracted markdown; html saves the document itself -- the response body "
         "for a plain fetch, or the rendered DOM when the page was opened in a tab. html is "
-        "refused for a response that was not HTML (a PDF, a markdown file) rather than "
-        "silently writing markdown into a .html file. Default %(default)s.",
+        "refused for a response that was not HTML (a PDF, a markdown file). Default %(default)s.",
     )
     _add_fetch_opts(f)
     f.add_argument("--print", dest="print_content", action="store_true", help="Include the content inline in the JSON.")
@@ -391,9 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser(
         "map",
         help="List a site's URLs without extracting or saving pages.",
-        description="Discovers URLs from sitemaps and same-origin links, without extracting or saving pages. Cheap enough to run before deciding "
-        "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
-        "walked once.\n"
+        description="Discovers URLs from sitemaps and same-origin links, without extracting or saving pages; "
+        "the manifest it writes is what `crawl --from` takes, without discovering again.\n"
         "The reply is a summary whatever the site's size: count, coverage (how many pages could not be read with the "
         "first 10 of them, whether a budget or --max-urls cut discovery short, and dropped_other_origin -- how many distinct "
         "URLs links and listings pointed to off the site, which a root that redirected elsewhere turns into nearly all "
@@ -439,8 +437,8 @@ def build_parser() -> argparse.ArgumentParser:
         "sessions",
         help="List Aside sessions that exist right now, so one can be resumed.",
         description="Every conversation Aside still has on disk, newest first -- ones this tool started and "
-        "ones started in the Aside app or by a bare `aside exec` alike. The opening prompt is shown because "
-        "a session id is not something anyone remembers. Feed a session_id to `resume`. Aside removes old sessions "
+        "ones started in the Aside app or by a bare `aside exec` alike, each with its opening prompt. Feed a session_id "
+        "to `resume`. Aside removes old sessions "
         "on its own schedule, so a session listed here may not be listed later.",
     )
     se.add_argument("--limit", type=_count(1), default=20, metavar="N", help="How many to list. Default %(default)s.")
@@ -462,8 +460,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "setup",
         help="Install the Node packages used for markdown and document conversion.",
-        description="Installs the Node packages page and document conversion use, exactly the versions their lockfile pins. Run it again "
-        "after updating this skill.",
+        description="Installs the Node packages page and document conversion use, exactly the versions this skill's "
+        "lockfile pins, so an update of the skill can change them.",
     )
 
     for name, command in sub.choices.items():

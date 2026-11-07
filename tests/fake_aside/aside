@@ -525,7 +525,7 @@ SNIPPETS = {"fetch_batch": fetch_batch, "tab_one": tab_one, "sitemap": sitemap, 
 def main(argv: list[str]) -> int:
     record_call(argv)
     if len(argv) < 2:
-        print("usage: aside <exec|repl|mcp|account> …", file=sys.stderr)
+        print("usage: aside <exec|repl|account> …", file=sys.stderr)
         return 2
     cmd = argv[1]
     positionals = [a for a in argv[2:] if not a.startswith("-")]
@@ -546,10 +546,6 @@ def main(argv: list[str]) -> int:
         return do_exec(positionals[2] if len(positionals) > 2 else "", positionals[1])
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")
-    if cmd == "mcp":
-        print(json.dumps({"result": {"tools": [{"name": "repl", "description": "fake repl API description"},
-                                               {"name": "navigate", "description": "fake navigation tool"}]}}))
-        return 0
     if cmd == "account":
         # FAKE_ASIDE_ACCOUNTS=none is a signed-out browser: the command succeeds with an
         # empty roster, which is what the real one does.

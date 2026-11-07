@@ -2,7 +2,7 @@
 
 The skill is read by its tree before any file: `scripts/` holds `cli.py`, the one entry point, and `ultra_search/`, the one package. Each unit directly in the package is of one kind -- a feature (a reason the skill exists), a system (a format or program someone else owns), a store (a kind of state on disk) or a helper (shared by every kind) -- and imports run one way, features to systems and stores to helpers, so a feature can change or go without touching the rest. Nothing outside a unit reaches past what its interface exports, tests included, so the inside can change without touching callers.
 
-State does not live in the skill's `data/`, as the skill layout would have it: runs, saved pages, maps and crawls go to `./.ultra-search/` in the working directory. The skill is loaded globally and several projects' sessions run at once, a per-project registry is what keeps a bare `status` or `result` to that project's most recent run, and what the skill saves has to be readable with Read, which refuses files inside an installed skill folder.
+State does not live in the skill's `data/`, as the skill layout would have it: runs, saved pages, maps and crawls go to `./.ultra-search/` in the working directory. The skill is loaded globally and several projects' sessions run at once, a per-project registry is what keeps a bare `result` or `log` to that project's most recent run, and what the skill saves has to be readable with Read, which refuses files inside an installed skill folder.
 
 Each checker is a function of source text, so it is shown failing on a short source that breaks its rule before it is trusted on the real tree. They read the usual ways of spelling an import or an edit, not every way Python allows: they catch a slip, and a deliberate workaround is a change to these rules to raise in review.
 """
@@ -372,7 +372,7 @@ def test_the_entry_point_checker_and_the_test_path_checker_catch_their_cases() -
 
 def test_the_format_checkers_catch_a_leak() -> None:
     assert opaque_reads("x = event.details['sources']\n", "ultra_search.research.evidence")
-    assert opaque_reads("x = event.raw\n", "ultra_search.research.follow")
+    assert opaque_reads("x = event.raw\n", "ultra_search.research.timeline")
     assert not opaque_reads("x = json.dumps(event.raw)\n", "ultra_search.research.render")
     assert not opaque_reads('payload = {"details": e.details}\n', "ultra_search.research.commands")
     assert opaque_reads('x = event.raw["content"]\n', "ultra_search.research.render")

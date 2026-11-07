@@ -1,11 +1,8 @@
-"""`search` and `resume` -- starting work and, when it outlasts the wait, handing back
-something that can be picked up again.
+"""`search` and `resume` -- starting work and handing back, at once, the one call that waits for it.
 
-Synchronous by default because most searches finish in seconds and an inline answer is
-what the caller actually wanted. The interesting half is what happens when one does not:
-the run is left alive, and the reply carries `next` -- the literal command that will wake
-the caller when it finishes, with the Bash timeout that command needs. A handle alone
-would be a handle nobody comes back for.
+A delegated investigation runs for minutes (p50 six minutes measured), so they wait for nothing: the reply carries
+`next` -- the literal command that waits for the runs and answers with their result, with the Bash timeout that
+command needs. A handle alone would be a handle nobody comes back for.
 
 `result`, `log`, `show`, `sessions` -- looking at runs that are already going.
 
@@ -22,7 +19,7 @@ from pathlib import Path
 from ultra_search import aside, outcome, runs
 from ultra_search.ids import is_safe_id, normal
 from ultra_search.outcome import ArgumentError, Reply, RunFailed, RunNotFound
-from ultra_search.research import evidence, follow, supervisor
+from ultra_search.research import evidence, supervisor, timeline
 from ultra_search.research.marker import marker_for, run_id_in
 from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
 
@@ -93,8 +90,8 @@ def run_summary(run: runs.Run) -> dict:
 
 def log(root: Path, *, run: str | None, group: str | None, level: str) -> Reply:
     targets = _targets(root, run, group)
-    follow.print_log(targets, level=level)
-    return Reply({"ok": True, "command": "log", "runs": [run_summary(r) for r in targets]})
+    return Reply({"ok": True, "command": "log",
+                  "runs": [{**run_summary(r), "lines": timeline.lines_of(r, level=level)} for r in targets]})
 
 
 # --- result ---------------------------------------------------------------------------
@@ -104,11 +101,13 @@ def log(root: Path, *, run: str | None, group: str | None, level: str) -> Reply:
 WAIT = 570
 #: How long a reserved run may go without its supervisor claiming it before it is taken for one that never will.
 STARTUP_GRACE = 60.0
+#: How often a wait looks again.
+POLL = 1.0
 
 
 def next_step(targets: list, group: str | None, root: Path, cli: str) -> dict:
     """The one action that waits for these runs and returns their result."""
-    target = ["--group", group] if group else ["--run", targets[0].run_id]
+    target = ["--group", group] if group else [targets[0].run_id]
     argv = ["result", *target, "--runs-dir", str(root), "--wait", str(WAIT)]
     quoted_script = cli.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
     return {"command": f'uv run "{quoted_script}" {shlex.join(argv)}', "bash_timeout_ms": 600_000, "run_in_background": True}
@@ -117,12 +116,22 @@ def next_step(targets: list, group: str | None, root: Path, cli: str) -> dict:
 def result(root: Path, *, run: str | None, group: str | None, sources: bool, wait: float, cli: str) -> Reply:
     targets = _targets(root, run, group)
     group = None if run else (group or targets[0].meta().get("group"))
-    for r in targets:
-        _settle_unwatched(r)
-    if wait:
-        follow.wait(targets, seconds=wait, check=_settle_unwatched)
+    _wait(targets, seconds=wait)
     entries = [_run_entry(r, sources=sources) for r in targets]
     return Reply(_envelope("result", targets, entries, group, root, cli), _outcome(entries))
+
+
+def _wait(targets: list, *, seconds: float) -> None:
+    """Until every run has ended or ``seconds`` have passed, settling on each look any run nothing watches any more.
+    Silent: what a run did is `log`'s, and the one reply -- read from a file that holds stdout and stderr together, when
+    the wait runs in the background -- is the result."""
+    deadline = time.time() + seconds
+    while True:
+        for r in targets:
+            _settle_unwatched(r)
+        if time.time() >= deadline or all((r.meta().get("state") or "") in TERMINAL_STATES for r in targets):
+            return
+        time.sleep(min(POLL, max(0.0, deadline - time.time())))
 
 
 def _settle_unwatched(run: runs.Run) -> None:
@@ -175,8 +184,10 @@ def _envelope(command: str, targets: list, entries: list[dict], group: str | Non
     if group:
         payload["group"] = group
     if any(e["state"] not in TERMINAL_STATES for e in entries):
-        payload["note"] = ("Still running. Execute next, then follow its response; a wait that ends does not mean "
-                           "the investigation finished.")
+        payload["note"] = ("Still running: next waits for it and answers with its result, or hands back next again if "
+                           "the wait runs out first. A call run in the background announces its completion only to "
+                           "something still there to receive it -- nothing is, in a `claude -p` run, a subagent or a "
+                           "scheduled job that ends with its turn.")
         payload["next"] = next_step(targets, group, root, cli)
     payload["runs"] = entries
     return payload
@@ -308,17 +319,16 @@ def _in_session(turn: evidence.Turn) -> dict[str, dict]:
 # --- search and resume ----------------------------------------------------------------
 
 
-def search(root: Path, prompts: list[str], *, wait: float, background: bool, label: str | None,
-           effort: str | None, model: str | None, speed: str | None, cli: str) -> Reply:
+def search(root: Path, prompts: list[str], *, label: str | None, effort: str | None, model: str | None,
+           speed: str | None, cli: str) -> Reply:
     group = runs.new_group_name() if len(prompts) > 1 else None
     aside.require_ready()
     started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, group=group)
                for p in prompts]
-    return _await_and_report(started, "search", root, group, wait=0.0 if background else wait, cli=cli)
+    return _started("search", started, root, group, cli)
 
 
-def resume(root: Path, target: str, prompt: str, *, wait: float, background: bool, label: str | None,
-           cli: str) -> Reply:
+def resume(root: Path, target: str, prompt: str, *, label: str | None, cli: str) -> Reply:
     """Continue an existing Aside session, whether or not this tool created it.
 
     A run id is looked up first because it carries state we can check. Anything else is
@@ -338,7 +348,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
         if state not in TERMINAL_STATES:
             raise ArgumentError(
                 f"run {run.run_id} is still {state}; resume only continues a session that has stopped working",
-                fix=f"Wait for it with `result --run {run.run_id} --wait {WAIT}`, or start a separate `search`.",
+                fix=f"Wait for it with `result {run.run_id} --wait {WAIT}`, or start a separate `search`.",
                 state=state,
             )
         session_id = meta.get("session_id")
@@ -355,7 +365,7 @@ def resume(root: Path, target: str, prompt: str, *, wait: float, background: boo
         root, prompt, cli, label=label, effort=None, model=None, speed=None, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,
     )
-    return _await_and_report([new_run], "resume", root, None, wait=0.0 if background else wait, cli=cli)
+    return _started("resume", [new_run], root, None, cli)
 
 
 def _resumable_session(session_id: str) -> str:
@@ -406,15 +416,11 @@ def _slug(prompt: str) -> str:
     return "-".join(words[:4])[:40] or "run"
 
 
-def _await_and_report(started: list, command: str, root: Path, group: str | None, *, wait: float, cli: str) -> Reply:
-    deadline = time.time() + wait
-    while time.time() < deadline:
-        if all((r.meta().get("state") or "") in TERMINAL_STATES for r in started):
-            break
-        time.sleep(0.1)
-
+def _started(command: str, started: list, root: Path, group: str | None, cli: str) -> Reply:
+    """The reply to work just started: each run as it stands, and the call that waits for them. Started is all it
+    says -- how a run ended is `result`'s to report, so the exit code does not depend on a run ending first."""
     entries = [_run_entry(r) for r in started]
-    return Reply(_envelope(command, started, entries, group, root, cli), _outcome(entries))
+    return Reply(_envelope(command, started, entries, group, root, cli), outcome.OK)
 
 
 def _outcome(entries: list[dict]) -> str:

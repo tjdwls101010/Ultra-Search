@@ -258,13 +258,27 @@ def test_a_data_response_is_saved_as_it_came(cli, routes, tmp_path: Path, ct: st
     ("application/json; charset=utf-8", "<!doctype html><html><body><form>Please sign in</form></body></html>"),
     ("text/xml", '<!DOCTYPE html><html lang="en"><body><div id=root></div></body></html>'),
     ("application/json", "\ufeff  <!-- served by a proxy -->\n<head><title>Sign in</title></head><body>x</body>"),
-], ids=["json-typed-html", "xml-typed-html", "json-typed-page-opening-with-head"])
+    ("application/json", "<body><h1>502 Bad Gateway</h1></body>"),
+    ("application/json", '<meta charset="utf-8"><title>Error</title><p>x</p>'),
+], ids=["json-typed-html", "xml-typed-html", "json-typed-page-opening-with-head", "opening-with-body", "opening-with-meta"])
 def test_an_html_page_served_as_data_is_still_a_page(cli, routes, ct: str, body: str) -> None:
     routes({"fetch_batch": {"https://s.test/login": page(body, ct=ct)}})
 
     _, payload, _ = cli("fetch", "https://s.test/login", "--via", "fetch")
 
     assert item_of(payload)["status"] == "shell"
+
+
+def test_a_body_opening_with_many_comments_is_classified_at_once(cli, routes) -> None:
+    """A comment banner of 200 lines before the document: the check for an HTML start must not try every way to read it."""
+    import time
+    body = '<?xml version="1.0"?>' + "<!-- c -->\n" * 200 + "<urlset/>"
+    routes({"fetch_batch": {"https://e.test/s.xml": page(body, ct="application/xml")}})
+
+    began = time.time()
+    _, payload, _ = cli("fetch", "https://e.test/s.xml")
+
+    assert item_of(payload)["status"] == "ok" and time.time() - began < 10
 
 
 @pytest.mark.parametrize("ct,body", [
@@ -359,8 +373,11 @@ ENGLISH = "<p>" + ("word " * 200) + "</p>"
     ("text/html", f'<html><head><script src="https://cdn.test/k.js" charset="euc-kr"></script></head><body><article>'
      f'{ENGLISH}<p>Content-Type: text/plain; charset=latin1 \ufffd\ufffd\ufffd</p></article></body></html>', "ok"),
     ("text/html; charset=unicode-1-1-utf-8", f"<html><body><article>{ENGLISH}<p>\ufffd</p></article></body></html>", "ok"),
+    ("text/html; charset=utf-8", mis_decoded(f'<html><head><meta charset="euc-kr"></head><body><article>{ENGLISH}'
+                                             "<p>한글 다섯자</p></article></body></html>"), "shell"),
 ], ids=["declared-utf8-with-real-replacement-characters", "declared-latin1", "meta-euc-kr", "script-charset-before-meta",
-        "header-says-utf8-body-is-not", "charset-in-a-script-or-text-is-not-a-declaration", "utf8-alias"])
+        "header-says-utf8-body-is-not", "charset-in-a-script-or-text-is-not-a-declaration", "utf8-alias",
+        "header-says-utf8-meta-says-euc-kr"])
 def test_a_declared_charset_and_the_count_decide_together(cli, routes, ct: str, body: str, status: str) -> None:
     """A page that names a charset other than UTF-8 -- in its header or a <meta> tag -- was decoded wrongly the moment
     it held a character outside ASCII. Saying UTF-8 proves nothing: a page whose every non-ASCII character was replaced
@@ -376,7 +393,8 @@ def test_a_declared_charset_and_the_count_decide_together(cli, routes, ct: str, 
     ("application/rss+xml", mis_decoded('<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>")),
     ("application/rss+xml", '<?xml version="1.0" encoding="ISO-8859-1"?><rss><item>caf\ufffd na\ufffdve</item></rss>'),
     ("application/json; charset=euc-kr", '{"title": "\ufffd\ufffd"}'),
-], ids=["euc-kr-feed", "latin1-feed-with-few-accents", "json-declared-euc-kr"])
+    ("text/xml; charset=UTF-8", mis_decoded('<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>")),
+], ids=["euc-kr-feed", "latin1-feed-with-few-accents", "json-declared-euc-kr", "feed-the-server-labels-utf8"])
 def test_data_not_in_utf8_is_not_sent_to_a_tab_that_cannot_read_it(cli, routes, fake_aside: Path, ct: str, body: str) -> None:
     routes({"fetch_batch": {"https://ko.test/rss": page(body, ct=ct)}})
 

@@ -142,8 +142,10 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
     return doc
 
 
-#: What opens an HTML page, once a BOM, whitespace, comments and an XML declaration are skipped.
-_PAGE_START = re.compile(r"(?:\ufeff|\s|<!--.*?-->|<\?xml[^>]*\?>)*(?:<!doctype\s+html|<html[\s>]|<head[\s>])", re.I | re.S)
+#: What opens an HTML page, once a BOM, whitespace, comments and an XML declaration are skipped. A comment cannot
+#: contain "-->": allowed to, a body opening with many comments has exponentially many readings to try.
+_PAGE_START = re.compile(r"(?:\ufeff|\s|<!--(?:(?!-->).)*-->|<\?xml[^>]*\?>)*"
+                         r"(?:<!doctype\s+html|<(?:html|head|body|meta|title)[\s>])", re.I | re.S)
 
 
 def _data_ext(content_type: str, text: str) -> str:
@@ -171,8 +173,8 @@ _NOT_UTF8_MIN = 20
 def _not_utf8(content_type: str, text: str, *, data: bool) -> bool:
     """Whether the browser's fetch decoded a body as UTF-8 though it was not -- each byte it could not read became U+FFFD.
 
-    A charset other than UTF-8 named in the header -- or, for a page, in a <meta> tag, for XML in its declaration -- means
-    the first U+FFFD is a misread. Naming UTF-8 proves nothing for a page: one whose every non-ASCII character was
+    A charset other than UTF-8 named anywhere it can be -- the header, or the body's own <meta> tag or XML declaration,
+    which a server's default header can contradict -- means the first U+FFFD is a misread. Naming UTF-8 proves nothing for a page: one whose every non-ASCII character was
     replaced is not UTF-8 whatever it says, so a page is also judged by the count. Data is not: JSON is UTF-8 by its own
     definition and XML says what it is, and a data response judged misread is not saved at all.
     """
@@ -181,8 +183,8 @@ def _not_utf8(content_type: str, text: str, *, data: bool) -> bool:
     if not bad:
         return False
     head = text[:4096]
-    declared = _HEADER_CHARSET.search(content_type) or (_XML_ENCODING.search(head) if data else _META_CHARSET.search(head))
-    if declared and declared.group(1).lower() not in _UTF8:
+    declared = [_HEADER_CHARSET.search(content_type), (_XML_ENCODING if data else _META_CHARSET).search(head)]
+    if any(d and d.group(1).lower() not in _UTF8 for d in declared):
         return True
     if data:
         return False

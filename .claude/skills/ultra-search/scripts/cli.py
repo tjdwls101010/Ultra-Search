@@ -111,7 +111,7 @@ ITEM_STATUS_HELP = (
         "challenge: a bot check answered instead of the page.\n"
         "blocked: an HTTP error, or a challenge a real tab could not clear.\n"
         "needs_ocr: a document with no text layer; nothing was sent anywhere for OCR.\n"
-        "unsupported: a response or document that could not be converted.\n"
+        "unsupported: a response or document that could not be converted, or data that is not UTF-8.\n"
         "error: the fetch failed (timeout, network), or the page could not be converted; the item's error says which.\n"
 )
 
@@ -373,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one or more URLs into files: markdown, or JSON and XML as they came.",
         description="Fetches with the user's cookies, so logged-in and bot-blocked pages work. Documents "
         "(PDF, HWP, HWPX, docx, pptx, xlsx, epub...) are converted too, told apart by their content rather than the MIME type the server gave; "
-        "a JSON or XML response is saved as it came, as .json, .jsonl or .xml. Full text always goes to a file, whose path is "
+        "a JSON or XML response is saved as it came, as .json, .jsonl or .xml, unless it is not UTF-8. Full text always goes to a file, whose path is "
         "absolute; use --print to also get it inline.\n"
         "Each item's status says what the page turned out to be; only an ok item's file is the page's text:\n"
         + ITEM_STATUS_HELP +

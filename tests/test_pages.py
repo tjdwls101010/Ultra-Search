@@ -257,13 +257,28 @@ def test_a_data_response_is_saved_as_it_came(cli, routes, tmp_path: Path, ct: st
 @pytest.mark.parametrize("ct,body", [
     ("application/json; charset=utf-8", "<!doctype html><html><body><form>Please sign in</form></body></html>"),
     ("text/xml", '<!DOCTYPE html><html lang="en"><body><div id=root></div></body></html>'),
-], ids=["json-typed-html", "xml-typed-html"])
+    ("application/json", "\ufeff  <!-- served by a proxy -->\n<head><title>Sign in</title></head><body>x</body>"),
+], ids=["json-typed-html", "xml-typed-html", "json-typed-page-opening-with-head"])
 def test_an_html_page_served_as_data_is_still_a_page(cli, routes, ct: str, body: str) -> None:
     routes({"fetch_batch": {"https://s.test/login": page(body, ct=ct)}})
 
     _, payload, _ = cli("fetch", "https://s.test/login", "--via", "fetch")
 
     assert item_of(payload)["status"] == "shell"
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/json", '{"rendered": "<!DOCTYPE html>\\n<html lang=\\"en\\"><body>x</body></html>"}'),
+    ("application/x-ipynb+json", '{"cells": [{"outputs": [{"data": {"text/html": ["<html>\\n<b>x</b>"]}}]}]}'),
+    ("application/rss+xml", '<?xml version="1.0"?><rss><item><description><![CDATA[<!DOCTYPE html><html><body>x</body>'
+     '</html>]]></description></item></rss>'),
+], ids=["json-holding-html", "notebook", "rss-cdata"])
+def test_data_that_carries_html_inside_is_still_data(cli, routes, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x")
+
+    assert item_of(payload)["status"] == "ok" and Path(item_of(payload)["path"]).read_text(encoding="utf-8") == body
 
 
 def test_xml_that_only_names_html_is_still_data(cli, routes) -> None:
@@ -329,15 +344,27 @@ def test_a_page_not_in_utf8_is_not_saved_broken(cli, routes, fake_aside: Path, b
         assert item_of(reply)["error"] == "the response is not UTF-8"
 
 
+ENGLISH = "<p>" + ("word " * 200) + "</p>"
+
+
 @pytest.mark.parametrize("ct,body,status", [
     ("text/html; charset=utf-8", ARTICLE.replace("단어 ", "단어\ufffd ", 25), "ok"),
-    ("text/html; charset=iso-8859-1", ARTICLE.replace("단어", "word").replace("word ", "caf\ufffd ", 3), "shell"),
-    ("text/html", '<html><head><meta charset="euc-kr"></head><body><article><p>' + ("word " * 200)
-     + "caf\ufffd</p></article></body></html>", "shell"),
-], ids=["declared-utf8-with-real-replacement-characters", "declared-latin1", "meta-euc-kr"])
-def test_a_declared_charset_decides_before_the_count(cli, routes, ct: str, body: str, status: str) -> None:
-    """A page that says it is UTF-8 is, whatever replacement characters it carries; one that names another charset was
-    decoded wrongly the moment it held a character outside ASCII."""
+    ("text/html; charset=iso-8859-1", f"<html><body><article>{ENGLISH}<p>caf\ufffd caf\ufffd</p></article></body></html>", "shell"),
+    ("text/html", f'<html><head><meta charset="euc-kr"></head><body><article>{ENGLISH}<p>caf\ufffd</p></article></body></html>',
+     "shell"),
+    ("text/html", '<html><head><script src="https://cdn.test/k.js" charset="utf-8"></script><meta http-equiv="Content-Type" '
+     'content="text/html; charset=euc-kr"></head>' + mis_decoded("<body><article><p>" + "한국어 문장입니다 " * 120
+                                                                   + "</p></article></body></html>"), "shell"),
+    ("text/html; charset=utf-8", mis_decoded(KOREAN_ARTICLE), "shell"),
+    ("text/html", f'<html><head><script src="https://cdn.test/k.js" charset="euc-kr"></script></head><body><article>'
+     f'{ENGLISH}<p>Content-Type: text/plain; charset=latin1 \ufffd\ufffd\ufffd</p></article></body></html>', "ok"),
+    ("text/html; charset=unicode-1-1-utf-8", f"<html><body><article>{ENGLISH}<p>\ufffd</p></article></body></html>", "ok"),
+], ids=["declared-utf8-with-real-replacement-characters", "declared-latin1", "meta-euc-kr", "script-charset-before-meta",
+        "header-says-utf8-body-is-not", "charset-in-a-script-or-text-is-not-a-declaration", "utf8-alias"])
+def test_a_declared_charset_and_the_count_decide_together(cli, routes, ct: str, body: str, status: str) -> None:
+    """A page that names a charset other than UTF-8 -- in its header or a <meta> tag -- was decoded wrongly the moment
+    it held a character outside ASCII. Saying UTF-8 proves nothing: a page whose every non-ASCII character was replaced
+    is not UTF-8 whatever its header says."""
     routes({"fetch_batch": {"https://e.test/a": page(body, ct=ct)}})
 
     _, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
@@ -345,14 +372,31 @@ def test_a_declared_charset_decides_before_the_count(cli, routes, ct: str, body:
     assert item_of(payload)["status"] == status
 
 
-def test_data_not_in_utf8_is_not_sent_to_a_tab_that_cannot_read_it(cli, routes, fake_aside: Path) -> None:
-    feed = '<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>"
-    routes({"fetch_batch": {"https://ko.test/rss": page(mis_decoded(feed), ct="application/rss+xml")}})
+@pytest.mark.parametrize("ct,body", [
+    ("application/rss+xml", mis_decoded('<?xml version="1.0" encoding="euc-kr"?><rss><item>' + "뉴스 " * 40 + "</item></rss>")),
+    ("application/rss+xml", '<?xml version="1.0" encoding="ISO-8859-1"?><rss><item>caf\ufffd na\ufffdve</item></rss>'),
+    ("application/json; charset=euc-kr", '{"title": "\ufffd\ufffd"}'),
+], ids=["euc-kr-feed", "latin1-feed-with-few-accents", "json-declared-euc-kr"])
+def test_data_not_in_utf8_is_not_sent_to_a_tab_that_cannot_read_it(cli, routes, fake_aside: Path, ct: str, body: str) -> None:
+    routes({"fetch_batch": {"https://ko.test/rss": page(body, ct=ct)}})
 
     _, payload, _ = cli("fetch", "https://ko.test/rss")
 
     assert repl_calls(fake_aside, "tab_one") == []
     assert (item_of(payload)["status"], item_of(payload)["error"]) == ("unsupported", "the response is not UTF-8")
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/json", '{"comment": "' + "\ufffd" * 25 + '"}'),
+    ("application/atom+xml", '<?xml version="1.0" encoding="UTF-8"?><feed><title>' + "\ufffd" * 25 + "</title></feed>"),
+], ids=["json", "xml-declaring-utf8"])
+def test_data_that_is_utf8_keeps_its_own_replacement_characters(cli, routes, ct: str, body: str) -> None:
+    """JSON is UTF-8 by its own definition, and XML says what it is: only a declared other charset makes it misread."""
+    routes({"fetch_batch": {"https://api.test/x": page(body, ct=ct)}})
+
+    _, payload, _ = cli("fetch", "https://api.test/x")
+
+    assert item_of(payload)["status"] == "ok" and Path(item_of(payload)["path"]).read_text(encoding="utf-8") == body
 
 
 def test_markup_heavy_cases_really_are_a_small_share() -> None:

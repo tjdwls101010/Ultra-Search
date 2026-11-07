@@ -108,7 +108,7 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
 
     ext = _data_ext(ct, text)
-    if _not_utf8(ct, text):
+    if _not_utf8(ct, text, data=bool(ext)):
         # A tab reads a page with the charset it declares; nothing here can undo the replacement. A tab shows data as
         # a page, though, which is not what was asked for.
         return Document(url=url, status="unsupported" if ext else "shell", kind="undecoded", http_status=status,
@@ -142,12 +142,14 @@ def classify_response(*, status: int, content_type: str, body: bytes, url: str =
     return doc
 
 
-_HTML_START = re.compile(r"<!doctype\s+html|<html[\s>]", re.I)
+#: What opens an HTML page, once a BOM, whitespace, comments and an XML declaration are skipped.
+_PAGE_START = re.compile(r"(?:\ufeff|\s|<!--.*?-->|<\?xml[^>]*\?>)*(?:<!doctype\s+html|<html[\s>]|<head[\s>])", re.I | re.S)
 
 
 def _data_ext(content_type: str, text: str) -> str:
-    """"json", "jsonl" or "xml" for a data response -- a JSON or XML type whose body is not an HTML page, XHTML aside -- else ""."""
-    if _HTML_START.search(text[:4096]):
+    """"json", "jsonl" or "xml" for a data response -- a JSON or XML type whose body does not open as an HTML page,
+    XHTML aside -- else "". HTML inside the data -- a string, a CDATA section -- leaves it data."""
+    if _PAGE_START.match(text[:4096]):
         return ""
     if "ndjson" in content_type or "jsonl" in content_type:
         return "jsonl"
@@ -158,23 +160,33 @@ def _data_ext(content_type: str, text: str) -> str:
     return ""
 
 
-_CHARSET = re.compile(r"""charset\s*=\s*["']?([\w.:-]+)""", re.I)
-_UTF8 = ("utf-8", "utf8")
-#: A body the browser's fetch decoded as UTF-8 though it was not: each byte it could not read became U+FFFD.
-# 성진: 선언된 charset(헤더, 없으면 앞부분의 <meta>)이 먼저 정한다: UTF-8이라 하면 U+FFFD는 원문의 것이고, 다른 것이라 하면 하나만 있어도 잘못 읽은 것이다. 선언이 없을 때만 개수로 본다(20자 이상이면서 비ASCII의 과반). 이 기준은 실제 EUC-KR 페이지 하나(6,943자 중 3,451자)와 마크업이 많아 전체의 0.1%에 그치는 합성 페이지로 잡았고, 전체 길이 대비 비율은 마크업에 묻혀 못 쓴다. JS에서 charset으로 다시 디코딩하지 않는 것은 샌드박스의 TextDecoder("euc-kr")가 틀린 값을 냈기 때문이다; 오판이 보이면 기준을 바꾸고, 샌드박스 디코더가 맞아지면 스니펫에서 푼다.
+#: Names browsers accept for UTF-8 (WHATWG Encoding).
+_UTF8 = frozenset({"utf-8", "utf8", "unicode-1-1-utf-8", "unicode11utf8", "unicode20utf8", "x-unicode20utf8"})
+_HEADER_CHARSET = re.compile(r"""charset\s*=\s*["']?([\w.:-]+)""", re.I)
+_META_CHARSET = re.compile(r"""<meta\b[^>]*?charset\s*=\s*["']?([\w.:-]+)""", re.I)
+_XML_ENCODING = re.compile(r"""\A\ufeff?\s*<\?xml[^>]*?encoding\s*=\s*["']([\w.:-]+)""", re.I)
 _NOT_UTF8_MIN = 20
 
 
-def _not_utf8(content_type: str, text: str) -> bool:
+def _not_utf8(content_type: str, text: str, *, data: bool) -> bool:
+    """Whether the browser's fetch decoded a body as UTF-8 though it was not -- each byte it could not read became U+FFFD.
+
+    A charset other than UTF-8 named in the header -- or, for a page, in a <meta> tag, for XML in its declaration -- means
+    the first U+FFFD is a misread. Naming UTF-8 proves nothing for a page: one whose every non-ASCII character was
+    replaced is not UTF-8 whatever it says, so a page is also judged by the count. Data is not: JSON is UTF-8 by its own
+    definition and XML says what it is, and a data response judged misread is not saved at all.
+    """
+    # 성진: 개수 기준(U+FFFD 20자 이상이면서 비ASCII의 과반)은 실제 EUC-KR 페이지 하나(6,943자 중 3,451자)와 마크업이 많아 전체의 0.1%에 그치는 합성 페이지로 잡았다; 전체 길이 대비 비율은 마크업에 묻혀 못 쓴다. 알려진 오판: 비ASCII가 적은 진짜 UTF-8 페이지에 U+FFFD가 20자 넘게 있으면 shell이 된다(auto는 탭으로 회복). 선언 없이 잘못 읽힌 데이터는 놓친다. JS에서 charset으로 다시 디코딩하지 않는 것은 샌드박스의 TextDecoder("euc-kr")가 틀린 값을 냈기 때문이다; 오판이 보이면 기준을 바꾸고, 샌드박스 디코더가 맞아지면 스니펫에서 푼다.
     bad = text.count("\ufffd")
     if not bad:
         return False
-    declared = _CHARSET.search(content_type) or _CHARSET.search(text[:4096])
-    if declared:
-        return declared.group(1).lower() not in _UTF8
-    if bad < _NOT_UTF8_MIN:
+    head = text[:4096]
+    declared = _HEADER_CHARSET.search(content_type) or (_XML_ENCODING.search(head) if data else _META_CHARSET.search(head))
+    if declared and declared.group(1).lower() not in _UTF8:
+        return True
+    if data:
         return False
-    return bad * 2 > sum(1 for ch in text if ord(ch) > 127)
+    return bad >= _NOT_UTF8_MIN and bad * 2 > sum(1 for ch in text if ord(ch) > 127)
 
 
 def _is_document_type(content_type: str, body: bytes) -> bool:

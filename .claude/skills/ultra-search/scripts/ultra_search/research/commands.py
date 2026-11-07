@@ -224,7 +224,8 @@ def _run_entry(run: runs.Run, *, sources: bool = False) -> dict:
                             for n, s in numbered]
     else:
         entry["answer"] = saved.get("answer", "")
-        entry["opened_sources"] = [{"n": n, "url": s.get("url"), "title": s.get("title") or ""}
+        entry["opened_sources"] = [{"n": n, "url": s.get("url"), "title": s.get("title") or "",
+                                    **({"file": s["file"]} if s.get("file") else {})}
                                    for n, s in numbered if s.get("opened")]
     if saved.get("artifacts"):
         entry["artifacts"] = saved["artifacts"]
@@ -255,8 +256,10 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
     # result is written -- still running, or abandoned -- they come from its transcript copy.
     saved = _saved_result(target)
     listed = ([{"url": s.get("url"), "title": s.get("title") or "", "id": s.get("id") or "", "ids": s.get("ids") or [],
-                "opened": bool(s.get("opened"))} for s in saved.get("sources") or []] if saved is not None else
-              [{"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened} for s in turn.sources()])
+                "opened": bool(s.get("opened")), "file": s.get("file") or "", "text_file": s.get("text_file") or ""}
+               for s in saved.get("sources") or []] if saved is not None else
+              [{"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, **_in_session(turn, s.url)}
+               for s in turn.sources()])
     hit = None
     if str(source).isdigit():
         i = int(source)
@@ -272,12 +275,29 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
         )
     # The text Aside already fetched, not a fresh request: re-fetching would cost a round
     # trip and could return something different from what the answer was based on.
+    file, text_file = hit.pop("file", ""), hit.pop("text_file", "")
     payload = {"ok": True, "command": "show", "run_id": target.run_id, "source": hit,
                "content": turn.source_text(hit["url"]) if turn.observed else ""}
+    if text_file:
+        payload["content"] = aside.saved_text(text_file) or payload["content"]
+    if file:
+        payload["content"] = ""
+        payload["file"] = file
+        payload["note"] = "a downloaded document: the transcript holds only where it was saved, and file is a copy of it"
     if not turn.observed:
         payload["note"] = ("no page text: this run's session transcript was never read, so all it has is what "
                            "`aside exec` printed on stdout")
     return Reply(payload)
+
+
+def _in_session(turn: evidence.Turn, url: str) -> dict:
+    """Before a run's result is written, where Aside saved what a tool received for this URL -- still in the session's folder."""
+    out = {"file": "", "text_file": ""}
+    for _, _, saved in turn.saved_files():
+        if saved.url == url:
+            key = "file" if saved.document else "text_file"
+            out[key] = out[key] or str(saved.path)
+    return out
 
 
 # --- search and resume ----------------------------------------------------------------

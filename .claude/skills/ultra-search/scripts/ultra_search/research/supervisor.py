@@ -262,6 +262,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         sources = turn.sources()
         if session_id:
             kept, missing = _keep_artifacts(run, session_id, turn, sources)
+            missing += _keep_downloads(run, turn, sources)
         answer = turn.answer(sources, rewrite=lambda cid, text: _point_at_copies(text, cid, session_id, kept))
         usage = turn.usage()
         # Aside writes why a turn stopped on an error beside the stop, and nowhere a caller would otherwise look.
@@ -286,7 +287,8 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         "state": state,
         "answer": answer,
         "sources": [
-            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published}
+            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published,
+             **({"file": s.file} if s.file else {}), **({"text_file": s.text_file} if s.text_file else {})}
             for s in sources
         ],
         "usage": usage,
@@ -297,6 +299,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     }
     notes.insert(0, result_note)
     copied = [str(path) for cid in [None, *turn.children] for path in kept.get(cid, {}).values()]
+    copied += [s.file for s in sources if s.file]
     if copied:
         result["artifacts"] = copied
         if state in ("completed_with_orphans", "abandoned"):
@@ -369,6 +372,54 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
     except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
         missing.append({"path": str(run.artifacts_dir), "error": f"{type(e).__name__}: {e}"})
     return kept, missing
+
+
+def _keep_downloads(run: runs.Run, turn: evidence.Turn, sources: list[evidence.Source]) -> list[dict]:
+    """Copy into the run the files Aside saved for this turn's tool results, and point each source at its copy: a document a fetch downloaded as ``file``, a result too large to keep inline as ``text_file``. Return the documents that could not be copied.
+
+    Aside deletes a session's folder on its own schedule, and the transcript names these files only there. They go under the run's `downloads/<session>/`, apart from the copies of the files the agent saved itself, whatever either is called; a second file of one name in a session gets `-2`. One a later turn of the session changed is no longer the one this run read, so it is reported rather than copied.
+    """
+    by_url = {s.url: s for s in sources}
+    missing: list[dict] = []
+    taken: set[Path] = set()
+    try:
+        for cid, sid, saved in turn.saved_files():
+            _, next_began = turn.window(cid)
+            source = by_url.get(saved.url)
+            if next_began is not None and saved.mtime >= next_began:
+                if saved.document:
+                    missing.append({"path": str(saved.path), "error": "changed after a later turn began"})
+                continue
+            dst = _unused(run.path / "downloads" / sid / saved.path.name, taken)
+            try:
+                copied = runs.copy_snapshot(saved.path, dst)
+            except OSError as e:
+                if saved.document:
+                    missing.append({"path": str(saved.path), "error": str(e)})
+                continue
+            if next_began is not None and copied.st_mtime >= next_began:  # rewritten between the listing and the copy
+                dst.unlink(missing_ok=True)
+                if saved.document:
+                    missing.append({"path": str(saved.path), "error": "changed after a later turn began"})
+                continue
+            taken.add(dst)
+            if source is not None:
+                if saved.document and not source.file:
+                    source.file = str(dst)
+                elif not saved.document and not source.text_file:
+                    source.text_file = str(dst)
+    except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
+        missing.append({"path": str(run.path / "downloads"), "error": f"{type(e).__name__}: {e}"})
+    return missing
+
+
+def _unused(path: Path, taken: set[Path]) -> Path:
+    """``path``, or the same name with -2, -3, ... before its extension when this run already took it."""
+    n, candidate = 1, path
+    while candidate in taken:
+        n += 1
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+    return candidate
 
 
 def _point_at_copies(text: str, cid: str | None, session_id: str | None,

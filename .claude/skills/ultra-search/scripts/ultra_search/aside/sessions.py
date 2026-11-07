@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-from ultra_search.aside.transcript import read_events, turn_finished
+from ultra_search.aside.transcript import Event, read_events, turn_finished
 
 DEFAULT_ASIDE_HOME = "~/.aside"
 ACCOUNT = "u/0"
@@ -229,6 +229,58 @@ def session_summaries(limit: int = 30) -> list[dict]:
 
 
 # --- the files the agent saved ------------------------------------------------------------
+
+
+@dataclass
+class SavedFile:
+    """A file Aside saved in a session's folder for a tool result."""
+
+    #: The page the result was for.
+    url: str
+    path: Path
+    mtime: float
+    #: A document a fetch downloaded, rather than a result too large to keep inline, whose text is the page.
+    document: bool
+
+
+def session_saved_files(session_id: str, events: list[Event]) -> list[SavedFile]:
+    """The files these events -- one session's -- say Aside saved, in order: regular files inside that session's folder only, since a path in a transcript can name any file on this machine and what is listed here is copied out."""
+    d = _session_dir(session_id)
+    try:
+        base = d.resolve(strict=True) if d else None
+    except OSError:
+        base = None
+    if base is None:
+        return []
+    out: list[SavedFile] = []
+    seen: set[str] = set()
+    for e in events:
+        for s in e.sources:
+            if not s.saved_path or s.saved_path in seen:
+                continue
+            seen.add(s.saved_path)
+            path = Path(s.saved_path)
+            try:
+                st = path.lstat()
+                inside = path.resolve(strict=True).is_relative_to(base)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and inside:
+                out.append(SavedFile(url=s.url, path=path, mtime=st.st_mtime, document=not s.holds_page))
+    return out
+
+
+_LEADING_TAG = re.compile(r"\A<webfetch-citation[^>]*/>\n\n?")
+
+
+def saved_text(path: str | os.PathLike[str]) -> str:
+    """The page text in a file that holds a result too large to keep inline, without the citation tag it opens with; "" when it cannot be read."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return _LEADING_TAG.sub("", text, count=1)
+
 
 
 def session_artifacts(session_id: str) -> list[tuple[str, Path, float]]:

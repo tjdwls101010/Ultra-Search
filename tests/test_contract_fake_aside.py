@@ -190,6 +190,20 @@ def test_a_replay_follows_the_prompt_and_keeps_a_torn_tail_torn(tmp_path: Path) 
     assert written.endswith('"content":"half')
 
 
+def test_a_replay_saves_a_download_where_aside_keeps_one_and_names_it_by_its_path(tmp_path: Path) -> None:
+    """A webfetch's download lands in the session's `tmp/`, and its result names the file by absolute path."""
+    home, calls = tmp_path / "home", tmp_path / "calls"
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({"__tmp__": "D1.pdf", "bytes_b64": base64.b64encode(b"%PDF-1").decode()}) + "\n"
+                      + json.dumps(tool("webfetch", "Downloaded to: __SESSION_DIR__/tmp/D1.pdf")) + "\n")
+
+    run_fake(["exec", "질문"], home, calls, FAKE_ASIDE_REPLAY=str(replay))
+
+    (session,) = (home / "u" / "0" / "sessions").iterdir()
+    assert (session / "tmp" / "D1.pdf").read_bytes() == b"%PDF-1"
+    assert f"Downloaded to: {session}/tmp/D1.pdf" in (session / "messages.jsonl").read_text()
+
+
 def test_a_replay_that_stops_mid_work_leaves_the_turn_open(tmp_path: Path) -> None:
     """Only a recording that ends on a finished answer gets the `finished` record the daemon
     would write; one that ends mid-tool is a turn still going, or cut off."""

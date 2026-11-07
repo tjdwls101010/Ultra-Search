@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from ultra_search import research, runs
-from conftest import SCRIPTS, aside_session, answer, calling, subagent_turn, tool, turn, user
+from conftest import SCRIPTS, aside_session, answer, calling, subagent_turn, tool, turn, user, webfetch
 
 SESSIONS = Path(__file__).parent / "fixtures" / "sessions"
 
@@ -433,6 +433,39 @@ def test_a_file_a_later_turn_rewrote_is_not_passed_off_as_this_runs(
     assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.txt", "changed after a later turn began")]
     assert result["answer"] == f"[a](artifacts/a.txt) [b]({copies / 'b.txt'})"
     assert "1 saved file" in result["note"]
+
+
+def test_a_download_a_later_turn_rewrote_is_reported_not_copied(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, replay
+) -> None:
+    """The session went on to a next turn that downloaded over a document this run read: the file is the next turn's."""
+    notice = "\n\nDownloaded to: __SESSION_DIR__/tmp/{}\nMIME type: application/pdf\nFile size: 4 bytes"
+    replay([{"__tmp__": "a.pdf", "text": "mine"}, webfetch("https://e.test/a", notice.format("a.pdf"), sid="a1"),
+            {"__tmp__": "b.pdf", "text": "only"}, webfetch("https://e.test/b", notice.format("b.pdf"), sid="b1"),
+            turn("final-started"), answer("답"), turn("finished"),
+            {"__sleep__": 0.05}, {**turn("started"), "timestamp": "__NOW__"}, user("다음 질문"), {"__sleep__": 0.05},
+            {"__tmp__": "a.pdf", "text": "next"}])
+    run = start(runs_dir)
+
+    supervise(run, settle=2.0)
+
+    result = result_of(run)
+    assert [Path(p).read_text() for p in result["artifacts"]] == ["only"]
+    assert [(Path(m["path"]).name, m["error"]) for m in result["artifacts_missing"]] == [("a.pdf", "changed after a later turn began")]
+    assert [s.get("file") is not None for s in result["sources"]] == [False, True]
+
+
+def test_a_download_that_cannot_be_copied_is_reported(runs_dir: Path, aside_home: Path, fake_aside: Path, replay) -> None:
+    replay([{"__tmp__": "locked.pdf", "text": "x", "mode": 0},
+            webfetch("https://e.test/a", "\n\nDownloaded to: __SESSION_DIR__/tmp/locked.pdf\nMIME type: application/pdf\n"
+                     "File size: 1 bytes", sid="a1"), answer("답")])
+    run = start(runs_dir)
+
+    supervise(run)
+
+    result = result_of(run)
+    assert "artifacts" not in result
+    assert [Path(m["path"]).name for m in result["artifacts_missing"]] == ["locked.pdf"]
 
 
 WRITER = """

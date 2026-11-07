@@ -59,13 +59,13 @@ async function one(u) {
   try {
     const res = await withTimeout(fetch(u, { redirect: 'follow' }), perUrlTimeoutMs);
     if (res === TIMED_OUT) {
-      say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: 'timeout', timed_out: true });
+      say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: 'timeout' });
       return;
     }
     const contentType = res.headers.get('content-type') || '';
     const body = await withTimeout(res.arrayBuffer(), Math.max(1000, perUrlTimeoutMs - (Date.now() - t0)));
     if (body === TIMED_OUT) {
-      say({ url: u, status: res.status, kind: 'error', ms: Date.now() - t0, error: 'timeout reading body', timed_out: true });
+      say({ url: u, status: res.status, kind: 'error', ms: Date.now() - t0, error: 'timeout reading body' });
       return;
     }
     const buf = Buffer.from(body);
@@ -83,7 +83,8 @@ async function one(u) {
       say({ ...base, kind: 'text', text: buf.toString('utf8') });
     }
   } catch (e) {
-    say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: String(e && e.message ? e.message : e) });
+    // The fetch itself failed on this URL -- a site that refuses the sandbox's fetch, a host that is down.
+    say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: String(e && e.message ? e.message : e), threw: true });
   }
 }
 

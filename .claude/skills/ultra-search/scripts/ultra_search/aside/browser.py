@@ -24,8 +24,8 @@ TAB_WAIT_MS = 45_000
 def fetch_pages(urls: list[str], *, into: Path, per_url_ms: int = DEFAULT_PER_URL_MS,
                 budget_ms: int = DEFAULT_BUDGET_MS) -> list[dict]:
     """Fetch a batch. A response that is not text -- a PDF, an HWP -- is written to a new file in ``into`` and its
-    record names it as ``saved_path``; the caller owns that folder and the files in it. A record the snippet marks
-    ``timed_out`` ran out of its own time; any other error is the browser's fetch failing on that URL."""
+    record names it as ``saved_path``; the caller owns that folder and the files in it. An error record marked
+    ``threw`` is the browser's fetch failing on that URL itself, rather than running out of time."""
     args = {"urls": list(urls), "perUrlTimeoutMs": per_url_ms, "budgetMs": budget_ms}
     try:
         records = repl.run_snippet("fetch_batch.js", args)

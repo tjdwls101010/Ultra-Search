@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ultra_search import aside, saved
 from ultra_search.fetch import classify
@@ -68,6 +69,8 @@ def fetch_urls(
 
         items = []
         used_names: set[str] = set()
+        #: Hosts a tab could not open either: a host that is down fails both, and each tab is a visible navigation.
+        unreachable: set[str] = set()
         for i, url in enumerate(urls):
             # Numbered names read in crawl order in a directory listing, which is usually the
             # order a site means its pages to be read. The final name is chosen here, once.
@@ -77,17 +80,22 @@ def fetch_urls(
             doc = _to_document(url, record) if record else classify.Document(
                 url=url, status="error", error="" if via == "tab" else "no response"
             )
-            if via == "tab" or (via == "auto" and (doc.status in ("shell", "challenge") or _refused(record))):
+            host = urlparse(url).netloc
+            if via == "auto" and _refused(record) and host in unreachable:
+                doc.error = f"{doc.error}; in a tab: not tried, one already failed on {host}"
+            elif via == "tab" or (via == "auto" and (doc.status in ("shell", "challenge") or _refused(record))):
                 doc = _escalate(url, doc)
+                if _refused(record) and doc.status == "error":
+                    unreachable.add(host)
             items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names,
                                record, stem))
     return {"ok": True, "command": "fetch", "items": items}
 
 
 def _refused(record: dict | None) -> bool:
-    """Whether the browser's fetch failed on the URL itself, rather than running out of time: some sites refuse the
-    sandbox's fetch outright and still open in a tab. A timeout already spent its budget twice; a tab would spend more."""
-    return bool(record) and record.get("kind") == "error" and not record.get("timed_out")
+    """Whether the browser's fetch failed on the URL itself: some sites refuse the sandbox's fetch outright and still
+    open in a tab. A timeout already spent its budget twice, and a tab would spend more."""
+    return bool(record) and record.get("kind") == "error" and bool(record.get("threw"))
 
 
 def _needs_retry(record: dict | None) -> bool:
@@ -128,8 +136,8 @@ def _escalate(url: str, doc: classify.Document) -> classify.Document:
     if not records:
         if doc.status == "error":
             # A page neither could open is not a page that refused: it stays an error, with what the tab said too.
-            said = next((r.get("error") for r in answered if r.get("error")), "")
-            doc.error = "; ".join(filter(None, [doc.error, f"in a tab: {said}" if said else ""])) or "no response"
+            said = next((r.get("error") for r in answered if r.get("error")), "") or "no answer"
+            doc.error = "; ".join(filter(None, [doc.error, f"in a tab: {said}"]))
             return doc
         doc.status = "shell_escalated" if doc.status == "shell" else "blocked"
         return doc
@@ -157,7 +165,9 @@ def _escalate(url: str, doc: classify.Document) -> classify.Document:
             )
 
     promoted.status = "shell_escalated" if promoted.status == "shell" else "blocked"
-    promoted.error = promoted.error or doc.error
+    # A fetch that failed outright said something the tab's verdict does not repeat.
+    promoted.error = (f"{doc.error}; in a tab: {promoted.error}" if doc.status == "error" and promoted.error
+                      else promoted.error or doc.error)
     return promoted
 
 

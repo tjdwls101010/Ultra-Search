@@ -8,8 +8,9 @@
 // avoid. Each result is printed the moment it resolves rather than collected at the end,
 // so even a hard kill leaves the caller everything that had finished.
 //
-// Anything that is not text is written to the session directory instead of being
-// stringified into the stream: a PDF through JSON.stringify is corrupt and enormous.
+// Anything that is not text travels as base64 rather than as a string, which would corrupt
+// it. Not as a file: the sandbox writes only in the REPL session's own folder, and since
+// Aside 1.26.1107 a one-shot `aside repl` removes that folder when the call returns.
 
 const { urls, perUrlTimeoutMs, budgetMs } = ARGS;
 
@@ -43,16 +44,6 @@ function extFor(contentType, buf) {
   return 'bin';
 }
 
-function safeName(u, ext) {
-  const cleaned = String(u).replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
-  return `${cleaned || 'download'}-${Date.now()}-${Math.floor(Math.random() * 10000)}.${ext}`;
-}
-
-// Always the session directory. The sandbox refuses writes outside the project and
-// session roots, so an arbitrary destination is not ours to choose -- the caller copies
-// the file where it wants it once it has the path.
-const dir = pwd;
-
 // The REPL sandbox has no AbortController, so a slow fetch cannot be cancelled -- only
 // abandoned. Racing it against a timer gives the caller its budget back on time; the
 // request itself keeps going until the sandbox is torn down, which is acceptable because
@@ -68,13 +59,13 @@ async function one(u) {
   try {
     const res = await withTimeout(fetch(u, { redirect: 'follow' }), perUrlTimeoutMs);
     if (res === TIMED_OUT) {
-      say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: 'timeout' });
+      say({ url: u, status: 0, kind: 'error', ms: Date.now() - t0, error: 'timeout', timed_out: true });
       return;
     }
     const contentType = res.headers.get('content-type') || '';
     const body = await withTimeout(res.arrayBuffer(), Math.max(1000, perUrlTimeoutMs - (Date.now() - t0)));
     if (body === TIMED_OUT) {
-      say({ url: u, status: res.status, kind: 'error', ms: Date.now() - t0, error: 'timeout reading body' });
+      say({ url: u, status: res.status, kind: 'error', ms: Date.now() - t0, error: 'timeout reading body', timed_out: true });
       return;
     }
     const buf = Buffer.from(body);
@@ -87,11 +78,7 @@ async function one(u) {
       bytes: buf.length,
     };
     if (looksBinary(buf, contentType)) {
-      const ext = extFor(contentType, buf);
-      const file = path.join(dir, safeName(u, ext));
-      // The sandbox's fs is promise-based and has no *Sync variants.
-      await fs.writeFile(file, buf);
-      say({ ...base, kind: 'file', saved_path: file, ext });
+      say({ ...base, kind: 'file', body_b64: buf.toString('base64'), ext: extFor(contentType, buf) });
     } else {
       say({ ...base, kind: 'text', text: buf.toString('utf8') });
     }

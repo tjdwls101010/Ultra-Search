@@ -13,6 +13,7 @@ where they are; `--print` makes that a decision instead of a default.
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from ultra_search import aside, saved
@@ -45,38 +46,48 @@ def fetch_urls(
     dest = out_file.parent if out_file else (out_dir or Path.cwd())
     dest.mkdir(parents=True, exist_ok=True)
 
-    raw: dict[str, dict] = {}
-    if via != "tab":
-        for batch in _chunks(urls, max(1, concurrency)):
-            for record in aside.fetch_pages(batch):
-                if record.get("kind") == "batch_done" or not record.get("url"):
-                    continue
-                raw[record["url"]] = record
-        for _ in range(max(0, retries)):
-            missing = [u for u in urls if _needs_retry(raw.get(u))]
-            if not missing:
-                break
-            for u in missing:
-                # Alone, not re-batched: it gets the whole per-URL budget rather than a
-                # share of the one it already used up.
-                for record in aside.fetch_pages([u]):
-                    if record.get("url"):
-                        raw[record["url"]] = record
+    # The documents the browser hands back are read and kept from here, then this folder goes.
+    with tempfile.TemporaryDirectory(prefix="ultra-search-") as downloads:
+        raw: dict[str, dict] = {}
+        if via != "tab":
+            for batch in _chunks(urls, max(1, concurrency)):
+                for record in aside.fetch_pages(batch, into=Path(downloads)):
+                    if record.get("kind") == "batch_done" or not record.get("url"):
+                        continue
+                    raw[record["url"]] = record
+            for _ in range(max(0, retries)):
+                missing = [u for u in urls if _needs_retry(raw.get(u))]
+                if not missing:
+                    break
+                for u in missing:
+                    # Alone, not re-batched: it gets the whole per-URL budget rather than a
+                    # share of the one it already used up.
+                    for record in aside.fetch_pages([u], into=Path(downloads)):
+                        if record.get("url"):
+                            raw[record["url"]] = record
 
-    items = []
-    used_names: set[str] = set()
-    for i, url in enumerate(urls):
-        # Numbered names read in crawl order in a directory listing, which is usually the
-        # order a site means its pages to be read. The final name is chosen here, once.
-        stem = f"{i:03d}-{classify.slug_for(url)}" if numbered else classify.slug_for(url)
-        record = raw.get(url)
-        doc = _to_document(url, record) if record else classify.Document(
-            url=url, status="error", error="no response"
-        )
-        if via == "tab" or (via == "auto" and doc.status in ("shell", "challenge")):
-            doc = _escalate(url, doc)
-        items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names, record, stem))
+        items = []
+        used_names: set[str] = set()
+        for i, url in enumerate(urls):
+            # Numbered names read in crawl order in a directory listing, which is usually the
+            # order a site means its pages to be read. The final name is chosen here, once.
+            stem = f"{i:03d}-{classify.slug_for(url)}" if numbered else classify.slug_for(url)
+            record = raw.get(url)
+            # With --via tab no fetch ran, so its missing answer says nothing; the tab's does.
+            doc = _to_document(url, record) if record else classify.Document(
+                url=url, status="error", error="" if via == "tab" else "no response"
+            )
+            if via == "tab" or (via == "auto" and (doc.status in ("shell", "challenge") or _refused(record))):
+                doc = _escalate(url, doc)
+            items.append(_save(doc, url, dest, out_file, frontmatter, fmt, print_content, max_chars, used_names,
+                               record, stem))
     return {"ok": True, "command": "fetch", "items": items}
+
+
+def _refused(record: dict | None) -> bool:
+    """Whether the browser's fetch failed on the URL itself, rather than running out of time: some sites refuse the
+    sandbox's fetch outright and still open in a tab. A timeout already spent its budget twice; a tab would spend more."""
+    return bool(record) and record.get("kind") == "error" and not record.get("timed_out")
 
 
 def _needs_retry(record: dict | None) -> bool:
@@ -112,8 +123,14 @@ def _escalate(url: str, doc: classify.Document) -> classify.Document:
     is still thin, the original verdict stands and is reported as escalated-and-still-empty
     rather than as a page.
     """
-    records = [r for r in (aside.open_tab(url) or []) if r.get("kind") == "text"]
+    answered = aside.open_tab(url) or []
+    records = [r for r in answered if r.get("kind") == "text"]
     if not records:
+        if doc.status == "error":
+            # A page neither could open is not a page that refused: it stays an error, with what the tab said too.
+            said = next((r.get("error") for r in answered if r.get("error")), "")
+            doc.error = "; ".join(filter(None, [doc.error, f"in a tab: {said}" if said else ""])) or "no response"
+            return doc
         doc.status = "shell_escalated" if doc.status == "shell" else "blocked"
         return doc
     record = records[0]

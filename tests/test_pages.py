@@ -39,9 +39,9 @@ def captured(name: str) -> str:
 
 
 def document(name: str, ct: str = "application/pdf") -> dict:
-    """What fetch_batch reports for a binary response: saved to disk, path handed back."""
+    """A binary response: the fake browser answers with this file's bytes, as fetch_batch does (see tests/fake_aside/aside)."""
     path = FIXTURES / "docs" / name
-    return {"status": 200, "content_type": ct, "kind": "file", "saved_path": str(path), "ext": path.suffix.lstrip(".")}
+    return {"status": 200, "content_type": ct, "kind": "file", "bytes_from": str(path), "ext": path.suffix.lstrip(".")}
 
 
 def item_of(payload: dict) -> dict:
@@ -267,6 +267,37 @@ def test_escalation_is_skipped_when_the_caller_forced_plain_fetch(cli, routes, f
     assert item_of(payload)["path"] is None
 
 
+def test_a_page_the_browsers_fetch_refuses_is_read_in_a_tab(cli, routes, fake_aside: Path) -> None:
+    """Some sites refuse the sandbox's fetch outright -- it throws "fetch failed" -- while a tab in the same browser
+    reads them: YouTube does, since Aside 1.26.1107."""
+    routes({"fetch_batch": {"https://video.test/feed": {"status": 0, "kind": "error", "error": "fetch failed"}},
+            "tab_one": {"https://video.test/feed": page(ARTICLE)}})
+
+    _, payload, _ = cli("fetch", "https://video.test/feed")
+
+    assert (item_of(payload)["status"], item_of(payload)["via"]) == ("ok", "tab")
+
+
+def test_a_fetch_that_timed_out_is_not_retried_in_a_tab(cli, routes, fake_aside: Path) -> None:
+    """A timeout already spent its budget once and again when retried; a tab would only spend more."""
+    routes({"fetch_batch": {"https://e.test/slow": {"status": 0, "kind": "error", "error": "timeout", "timed_out": True}},
+            "tab_one": {"https://e.test/slow": page(ARTICLE)}})
+
+    _, payload, _ = cli("fetch", "https://e.test/slow")
+
+    assert repl_calls(fake_aside, "tab_one") == []
+    assert item_of(payload)["status"] == "error"
+
+
+def test_a_page_neither_the_fetch_nor_a_tab_could_open_is_an_error_not_a_block(cli, routes) -> None:
+    routes({"fetch_batch": {"https://gone.test/": {"status": 0, "kind": "error", "error": "fetch failed"}}})
+
+    _, payload, _ = cli("fetch", "https://gone.test/")
+
+    assert item_of(payload)["status"] == "error"
+    assert "fetch failed" in item_of(payload)["error"]
+
+
 def test_a_page_that_is_still_a_shell_after_the_tab_says_so(cli, routes) -> None:
     routes({"fetch_batch": {"https://x.com/a": page(SHELL)}, "tab_one": {"https://x.com/a": page(SHELL)}})
 
@@ -283,7 +314,7 @@ def test_one_slow_url_does_not_lose_the_rest_of_its_batch(cli, routes, tmp_path:
     single hanging navigation would discard seven finished pages along with it."""
     urls = [f"https://example.org/p{i}" for i in range(8)]
     table = {u: page(ARTICLE) for u in urls}
-    table[urls[3]] = {"status": 0, "kind": "error", "error": "timeout"}
+    table[urls[3]] = {"status": 0, "kind": "error", "error": "timeout", "timed_out": True}
     routes({"fetch_batch": table})
     out = tmp_path / "out"
 
@@ -300,7 +331,7 @@ def test_a_timed_out_url_is_retried_on_its_own(cli, routes, fake_aside: Path) ->
     full per-URL budget instead of a share of one it already exhausted."""
     urls = [f"https://example.org/p{i}" for i in range(4)]
     table = {u: page(ARTICLE) for u in urls}
-    table[urls[2]] = {"sequence": [{"status": 0, "kind": "error", "error": "timeout"}, page(ARTICLE)]}
+    table[urls[2]] = {"sequence": [{"status": 0, "kind": "error", "error": "timeout", "timed_out": True}, page(ARTICLE)]}
     routes({"fetch_batch": table})
 
     _, payload, _ = cli("fetch", *urls)
@@ -341,9 +372,14 @@ def test_a_pdf_is_converted_from_the_file_the_browser_saved(cli, routes) -> None
     assert "Example Domain" in saved(item_of(payload))
 
 
-def test_the_original_document_is_kept_beside_the_markdown(cli, routes) -> None:
+def test_the_original_document_is_kept_beside_the_markdown(cli, routes, tmp_path: Path, monkeypatch) -> None:
     """The conversion is lossy and the download cost a round trip; keeping the original
-    means a better converter later does not need the network again."""
+    means a better converter later does not need the network again. The bytes arrive in the
+    browser's answer, and the copy they are read from on the way is not left behind."""
+    import tempfile
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     routes({"fetch_batch": {"https://example.org/paper.pdf": document("sample_en.pdf")}})
 
     _, payload, _ = cli("fetch", "https://example.org/paper.pdf")
@@ -351,6 +387,7 @@ def test_the_original_document_is_kept_beside_the_markdown(cli, routes) -> None:
     original = Path(item_of(payload)["original_path"])
     assert original.read_bytes() == (FIXTURES / "docs" / "sample_en.pdf").read_bytes()
     assert original.parent == Path(item_of(payload)["path"]).parent
+    assert list(scratch.iterdir()) == []
 
 
 @pytest.mark.parametrize("name,ct,snippet_ext,passage", [
@@ -379,7 +416,7 @@ def test_a_damaged_hancom_document_costs_only_itself(cli, routes, tmp_path: Path
     routes({"fetch_batch": {
         "https://example.org/whole": document("mss_evidence_form.hwpx", "application/octet-stream"),
         "https://example.org/cut": {"status": 200, "content_type": "application/x-hwp", "kind": "file",
-                                    "saved_path": str(damaged), "ext": "bin"},
+                                    "bytes_from": str(damaged), "ext": "bin"},
     }})
 
     code, payload, _ = cli("fetch", "https://example.org/whole", "https://example.org/cut")

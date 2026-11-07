@@ -32,7 +32,10 @@ A replay record carrying `"__session__": ID` goes to that session's transcript i
 snippet named on the snippet's `// snippet: <name>` line and then by URL:
 
     fetch_batch, tab_one  URL -> a record, or {"sequence": [record, ...]} answered in
-                          call order (the last one repeats). `url` is filled in.
+                          call order (the last one repeats). `url` is filled in. A
+                          fetch_batch record with "bytes_from": PATH is a binary response:
+                          it is answered as the snippet answers one, with that file's
+                          bytes in base64 as body_b64.
     sitemap               candidate URL -> the page URLs that sitemap lists
     links                 page URL -> the raw hrefs on that page; "__hit_budget__": true
                           ends the call the way a snippet cut off by its budget does
@@ -44,6 +47,7 @@ page, tab_one a navigation error, sitemap a miss, links a miss.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -466,6 +470,9 @@ def fetch_batch(args: dict, routes: dict):
         if rec is None:
             rec = {"status": 404, "content_type": "text/html", "kind": "text",
                    "text": "<html><body><h1>Not Found</h1></body></html>"}
+        if "bytes_from" in rec:
+            rec = {k: v for k, v in rec.items() if k != "bytes_from"} | {
+                "body_b64": base64.b64encode(Path(rec["bytes_from"]).read_bytes()).decode("ascii")}
         yield {"url": u, "final_url": u, **rec} if rec.get("kind") != "error" else {"url": u, **rec}
     yield {"kind": "batch_done", "requested": len(urls), "elapsed_ms": 1, "hit_budget": False}
 

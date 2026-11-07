@@ -10,6 +10,7 @@ so a divergence shows up as a failing test rather than as a production surprise.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -244,6 +245,23 @@ def test_fetch_batch_answers_each_url_and_a_missing_one_as_a_404(tmp_path: Path,
     assert done == {"kind": "batch_done", "requested": 2, "elapsed_ms": 1, "hit_budget": False}
 
 
+def test_fetch_batch_answers_a_binary_response_with_its_bytes(tmp_path: Path, sent: dict[str, str]) -> None:
+    """As the snippet does: in the stream, since a one-shot REPL session's folder is gone when the call returns."""
+    doc = Path(__file__).resolve().parent / "fixtures" / "docs" / "sample_en.pdf"
+    routes = tmp_path / "routes.json"
+    routes.write_text(json.dumps({"fetch_batch": {"https://e.test/a.pdf": {
+        "status": 200, "content_type": "application/pdf", "kind": "file", "bytes_from": str(doc), "ext": "pdf"}}}))
+
+    p = run_fake(["repl", snippet(sent, "fetch_batch", {"urls": ["https://e.test/a.pdf"], "perUrlTimeoutMs": 1,
+                                                        "budgetMs": 1})],
+                 tmp_path / "home", tmp_path / "calls", FAKE_ASIDE_REPL_ROUTES=str(routes))
+
+    got = ndjson(p)[0]
+    assert (got["kind"], got["ext"]) == ("file", "pdf")
+    assert base64.b64decode(got["body_b64"]) == doc.read_bytes()
+    assert "saved_path" not in got and "bytes_from" not in got
+
+
 def test_a_sequence_route_answers_in_call_order_and_repeats_its_last(tmp_path: Path, sent: dict[str, str]) -> None:
     routes = tmp_path / "routes.json"
     steps = [{"status": 0, "kind": "error", "error": "timeout"}, {"status": 200, "kind": "text", "text": "ok"}]
@@ -328,6 +346,28 @@ def test_the_real_repl_still_lacks_the_globals_the_snippets_avoid() -> None:
     assert got["Buffer"] == "function"
     assert got["fs"] == "object"
     assert got["pwd"] == "string"
+
+
+@pytest.mark.live
+def test_the_real_repl_removes_a_one_shot_sessions_folder_when_the_call_returns() -> None:
+    """Why fetch_batch hands a document back in its answer: since Aside 1.26.1107 a file the snippet writes -- and the
+    sandbox lets it write only in that folder -- is gone before the caller can read it."""
+    code = 'await fs.writeFile(pwd + "/probe.txt", "x"); console.log(JSON.stringify({pwd}));'
+    p = subprocess.run(["aside", "repl", code], capture_output=True, text=True, timeout=120)
+    folder = Path(json.loads(next(line for line in p.stdout.split("\n") if line.startswith("{")))["pwd"])
+
+    assert not (folder / "probe.txt").exists()
+
+
+@pytest.mark.live
+def test_the_real_fetch_batch_answers_a_document_with_its_bytes(sent: dict[str, str]) -> None:
+    code = snippet(sent, "fetch_batch", {"urls": ["https://arxiv.org/pdf/1706.03762"], "perUrlTimeoutMs": 60000,
+                                         "budgetMs": 100000})
+    p = subprocess.run(["aside", "repl", code], capture_output=True, text=True, timeout=150)
+
+    got = next(r for r in ndjson(p) if r.get("url"))
+    assert got["kind"] == "file" and "saved_path" not in got
+    assert base64.b64decode(got["body_b64"]).startswith(b"%PDF")
 
 
 @pytest.mark.live

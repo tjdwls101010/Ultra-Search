@@ -417,9 +417,10 @@ def _slug(prompt: str) -> str:
 
 
 def _started(command: str, started: list, root: Path, group: str | None, cli: str) -> Reply:
-    """The reply to work just started: each run as it stands, and the call that waits for them."""
+    """The reply to work just started: each run as it stands, and the call that waits for them. Started is all it
+    says -- how a run ended is `result`'s to report, so the exit code does not depend on a run ending first."""
     entries = [_run_entry(r) for r in started]
-    return Reply(_envelope(command, started, entries, group, root, cli), _outcome(entries))
+    return Reply(_envelope(command, started, entries, group, root, cli), outcome.OK)
 
 
 def _outcome(entries: list[dict]) -> str:

@@ -304,7 +304,7 @@ def test_every_help_stands_on_its_own(command: str) -> None:
 #: arguments, 3 Aside unavailable, 4 a run failed or was abandoned or nothing was saved or a
 #: file could not be read or written, 5 no result data.
 EXIT_CODES = {
-    "search": {0, 2, 3, 4, 5}, "resume": {0, 2, 3, 4, 5}, "log": {0, 2, 4},
+    "search": {0, 2, 3, 4}, "resume": {0, 2, 3, 4}, "log": {0, 2, 4},
     "result": {0, 2, 4, 5}, "show": {0, 2, 4}, "sessions": {0, 2, 5},
     "fetch": {0, 2, 3, 4}, "map": {0, 2, 3, 4, 5}, "crawl": {0, 2, 3, 4, 5},
     "doctor": {0, 2, 3}, "setup": {0, 2, 3},

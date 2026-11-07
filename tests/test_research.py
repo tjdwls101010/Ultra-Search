@@ -1063,7 +1063,7 @@ def test_child_activity_appears_in_the_parents_stream(cli, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("group", [False, True], ids=["run", "group"])
-def test_a_wait_that_runs_out_continues_with_only_what_is_new_and_collects_every_run(
+def test_a_wait_that_runs_out_hands_back_the_wait_that_collects_every_run(
     cli, replay, aside_home: Path, group: bool, tmp_path: Path
 ) -> None:
     """A wait that ran out hands back the same wait, which prints nothing but the result of every run it was waiting for once each has ended -- what they did meanwhile, in the parent and in every child, is the log's."""

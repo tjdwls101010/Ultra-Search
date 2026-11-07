@@ -31,10 +31,9 @@ _UNWRITABLE = "a file under the runs dir could not be read or written"
 _UNWRITABLE_OUT = "a file under the runs dir or --out could not be read or written"
 #: What each ending means for each command -- the Exit lines of its --help.
 ENDINGS = {
-    "search": {outcome.OK: "every run was started and reported; read each run's state",
+    "search": {outcome.OK: "every run was started; next waits for them",
                outcome.BAD_ARGUMENTS: _REFUSED, outcome.ASIDE_UNAVAILABLE: _NO_ASIDE,
-               outcome.FAILED: f"a run failed or was abandoned, or {_UNWRITABLE}",
-               outcome.EMPTY: "every run finished with no answer and no sources"},
+               outcome.FAILED: _UNWRITABLE},
     "log": {outcome.OK: "the log was read -- not that the research finished or succeeded",
             outcome.BAD_ARGUMENTS: _REFUSED, outcome.FAILED: _UNWRITABLE},
     "result": {outcome.OK: "every run has a result, or one is still going and next waits for it; read each run's state",

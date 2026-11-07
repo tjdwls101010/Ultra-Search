@@ -29,8 +29,11 @@ def origin(url: str) -> tuple[str, str, int] | None:
     """Scheme, host and port of a web URL; None for anything that is not http(s).
 
     The host name alone is not a site: http: and https: of one host, or two ports, can be
-    different servers, and a crawl acting as the user should not wander onto either.
+    different servers, and a crawl acting as the user should not wander onto either. A host
+    and its `www.` name are one site, though: a root that answers from the other -- the
+    commonest redirect there is -- would otherwise leave every one of its links behind.
     """
+    # 성진: apex와 www를 한 사이트로 보므로 둘 다 링크하는 사이트는 같은 페이지를 두 번 받을 수 있다; 그런 중복이 보이면 URL을 한쪽 호스트로 정규화한다.
     p = urlparse(url)
     if p.scheme not in ("http", "https") or not p.hostname:
         return None
@@ -38,7 +41,7 @@ def origin(url: str) -> tuple[str, str, int] | None:
         port = p.port if p.port is not None else (443 if p.scheme == "https" else 80)
     except ValueError:
         return None
-    return p.scheme, p.hostname.lower(), port
+    return p.scheme, p.hostname.lower().removeprefix("www."), port
 
 
 def sitemap_candidates(root: str) -> list[str]:
@@ -74,7 +77,7 @@ def discover(
     root = normalise(root)
     site = origin(root)
     coverage = {"sitemap": False, "pages_read": 0, "pages_missed": [],
-                "budget_exhausted": False, "max_urls_reached": False}
+                "budget_exhausted": False, "max_urls_reached": False, "dropped_other_origin": 0}
 
     def done(urls: list[str]) -> tuple[list[str], dict]:
         coverage["max_urls_reached"] = len(urls) > max_urls or coverage["max_urls_reached"]
@@ -85,6 +88,7 @@ def discover(
         found = [normalise(r["url"]) for r in records if r.get("kind") == "url" and r.get("url")]
         coverage["budget_exhausted"] = any(r.get("hit_budget") for r in records)
         same_site = [u for u in found if origin(u) == site]
+        coverage["dropped_other_origin"] += len(set(found) - set(same_site))
         if same_site:
             coverage["sitemap"] = True
             return done([u for u in _dedupe(same_site) if matches(u, include, exclude)])
@@ -116,6 +120,8 @@ def discover(
                     {k: record[k] for k in ("url", "status", "error") if record.get(k) is not None})
             elif kind == "links_done" and record.get("hit_budget"):
                 coverage["budget_exhausted"] = True
+            elif kind == "other_origin":
+                coverage["dropped_other_origin"] += 1
             # Past the cap, URLs are no longer taken, but the rest of the round is still read:
             # a page that failed after the cap was hit is still a page that was missed.
             if kind != "url" or not record.get("url") or coverage["max_urls_reached"]:
@@ -191,11 +197,14 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
     on, without fragments, on the same site, each once.
 
     A page with no usable links was still read; a `page_read` record says so, which is what
-    separates it from a page that could not be fetched at all.
+    separates it from a page that could not be fetched at all. A link to another site is
+    dropped and counted once as `other_origin`: a root that redirected to another domain
+    shows up as many of those and no pages, rather than as a site of one page.
     """
     site = origin(same_origin_as)
     out: list[dict] = []
     seen: set[str] = set()
+    elsewhere: set[str] = set()
     for rec in records:
         if rec.get("kind") != "hrefs":
             if rec.get("kind") in ("link_miss", "links_done"):
@@ -211,7 +220,12 @@ def resolve_links(records: list[dict], same_origin_as: str) -> list[dict]:
             except ValueError:
                 # One malformed href (an unclosed IPv6 bracket) is one link lost, not the page.
                 continue
-            if origin(absolute) != site or absolute in seen:
+            if origin(absolute) != site:
+                if origin(absolute) is not None and absolute not in elsewhere:
+                    elsewhere.add(absolute)
+                    out.append({"kind": "other_origin", "url": absolute})
+                continue
+            if absolute in seen:
                 continue
             seen.add(absolute)
             out.append({"kind": "url", "url": absolute, "from": rec.get("url")})

@@ -288,6 +288,16 @@ def test_a_sequence_route_answers_in_call_order_and_repeats_its_last(tmp_path: P
     assert [g.get("error") or g["text"] for g in got] == ["timeout", "ok", "ok"]
 
 
+def test_links_answers_a_redirected_page_with_where_it_landed(tmp_path: Path, sent: dict[str, str]) -> None:
+    routes = tmp_path / "routes.json"
+    routes.write_text(json.dumps({"links": {"https://e.test/": {"final_url": "https://www.e.test/", "hrefs": ["/a"]}}}))
+
+    p = run_fake(["repl", snippet(sent, "links", {"pages": ["https://e.test/"], "perUrlTimeoutMs": 1, "budgetMs": 1})],
+                 tmp_path / "home", tmp_path / "calls", FAKE_ASIDE_REPL_ROUTES=str(routes))
+
+    assert ndjson(p)[0] == {"kind": "hrefs", "url": "https://e.test/", "final_url": "https://www.e.test/", "hrefs": ["/a"]}
+
+
 def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path, sent: dict[str, str]) -> None:
     routes = tmp_path / "routes.json"
     routes.write_text(json.dumps({

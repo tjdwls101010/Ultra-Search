@@ -15,6 +15,9 @@ from ultra_search import aside, fetch, outcome, saved
 from ultra_search.outcome import ArgumentError, Reply
 from ultra_search.site import discover
 
+#: How many pages a crawl of a URL fetches when not told; a crawl of a manifest fetches all of it.
+DEFAULT_MAX_PAGES = 25
+
 
 def _discovery(depth: int | None, max_urls: int | None) -> dict:
     """The discovery settings the caller gave; discover() supplies the rest."""
@@ -59,7 +62,7 @@ def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, i
     return Reply(reply, outcome.OK if urls and saw_site else outcome.EMPTY)
 
 
-def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: int, depth: int | None,
+def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: int | None, depth: int | None,
           max_urls: int | None, include: list[str] | None, exclude: list[str] | None, no_sitemap: bool,
           via: str, concurrency: int, frontmatter: bool, out: str | None) -> Reply:
     if out:
@@ -99,7 +102,10 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
             **_providers(no_sitemap),
         )
 
-    urls = urls[:max_pages]
+    # A manifest is crawled as it is unless a cap is given; a crawl stopped at its cap says what it left.
+    limit = max_pages if max_pages is not None else (None if from_manifest else DEFAULT_MAX_PAGES)
+    discovered = len(urls)
+    urls, left = (urls[:limit], urls[limit:]) if limit is not None else (urls, [])
     if out:
         out_dir = Path(out).expanduser().absolute()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +124,7 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
     manifest = discover.build_manifest(site, items)
     if coverage is not None:
         manifest["coverage"] = coverage
+    manifest["not_crawled"] = left
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -134,6 +141,11 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
             "out_dir": str(out_dir),
             "manifest": str(manifest_path),
             "requested": len(urls),
+            # Discovery may itself have stopped at --max-urls; coverage.max_urls_reached says so.
+            "discovered": discovered,
+            "not_crawled": len(left),
+            **({"note": f"stopped at --max-pages ({limit}); the manifest's not_crawled lists the rest -- raise "
+                        "--max-pages, or map and crawl --from"} if left else {}),
             "saved": statuses.get("ok", 0),
             "statuses": statuses,
             "not_ok_count": len(not_ok),

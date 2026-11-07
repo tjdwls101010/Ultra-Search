@@ -22,8 +22,8 @@ SPEEDS = ("default", "fast")
 #: because they move independently and it is the daemon that decides what a run records:
 #: between two daemon builds, ephemeral CLI sessions stopped writing state.db rows
 #: entirely while still writing full transcripts to disk.
-VERIFIED_VERSION = "1.26.1008.1938"
-VERIFIED_DAEMON_VERSION = "1.26.1008.1938"
+VERIFIED_VERSION = "1.26.1107.24"
+VERIFIED_DAEMON_VERSION = "1.26.1107.24"
 
 
 def aside_bin() -> str:

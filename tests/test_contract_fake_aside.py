@@ -136,8 +136,8 @@ def test_the_fake_records_the_argv_it_was_given(tmp_path: Path) -> None:
 
 
 def test_the_fake_continues_a_session_only_through_session_resume(tmp_path: Path) -> None:
-    """`exec --session` is gone from the real binary: it prints its usage and exits 1, while `session resume` takes
-    the turn into the existing transcript."""
+    """`exec --session` is gone from the real binary: it refuses the option as bad usage, exit 2, while `session resume`
+    takes the turn into the existing transcript."""
     home, calls = tmp_path / "home", tmp_path / "calls"
     run_fake(["exec", "질문"], home, calls)
     (session,) = (home / "u" / "0" / "sessions").iterdir()
@@ -147,9 +147,9 @@ def test_the_fake_continues_a_session_only_through_session_resume(tmp_path: Path
     unsettable = run_fake(["session", "resume", sid, "후속", "--effort", "high"], home, calls)
     resumed = run_fake(["session", "resume", sid, "후속"], home, calls)
 
-    assert refused.returncode == 1
-    assert "unknown option '--session'" in refused.stdout + refused.stderr
-    assert unsettable.returncode == 1, "a continued session takes no effort, model or speed"
+    assert refused.returncode == 2
+    assert "Unknown option '--session'" in refused.stderr
+    assert unsettable.returncode == 2, "a continued session takes no effort, model or speed"
     assert resumed.returncode == 0
     assert lifecycle_frame(session / "messages.jsonl").count("started") == 2
 
@@ -320,8 +320,8 @@ def test_the_real_binary_continues_a_session_only_through_session_resume() -> No
     p = subprocess.run(["aside", "exec", "--session", "NoSuchSession01", "OK"], capture_output=True, text=True, timeout=60)
     usage = subprocess.run(["aside", "session", "resume", "--help"], capture_output=True, text=True, timeout=60)
 
-    assert p.returncode == 1
-    assert "unknown option '--session'" in p.stdout + p.stderr
+    assert p.returncode == 2
+    assert "Unknown option '--session'" in p.stderr
     assert "<id> [prompt...]" in usage.stdout
 
 

@@ -523,18 +523,18 @@ def main(argv: list[str]) -> int:
     positionals = [a for a in argv[2:] if not a.startswith("-")]
     flagged = {a for a in argv[2:] if a.startswith("-")}
     if "--version" in flagged or cmd == "--version":
-        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.1008.1938"))
+        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.1107.24"))
         return 0
     if cmd == "exec":
         if "--session" in argv:
-            print("error: unknown option '--session'\n\nUsage: aside exec [options] [prompt...]")
-            return 1
+            print("Error: Unknown option '--session'\n(add --help for usage)", file=sys.stderr)
+            return 2
         return do_exec(positionals[-1] if positionals else "")
     if cmd == "session" and positionals[:1] == ["resume"] and len(positionals) >= 2:
         unknown = sorted(flagged - {"--account"})
         if unknown:
-            print(f"error: unknown option '{unknown[0]}'")
-            return 1
+            print(f"Error: Unknown option '{unknown[0]}'\n(add --help for usage)", file=sys.stderr)
+            return 2
         return do_exec(positionals[2] if len(positionals) > 2 else "", positionals[1])
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")

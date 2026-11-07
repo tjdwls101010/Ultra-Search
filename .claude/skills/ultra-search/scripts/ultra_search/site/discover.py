@@ -47,7 +47,7 @@ def origin(url: str) -> tuple[str, str, int] | None:
 def _page(url: str) -> tuple:
     """One page whichever of its site's two names a URL uses."""
     p = urlparse(url)
-    return origin(url) or url, p.path, p.query
+    return origin(url) or url, p.path, p.params, p.query
 
 
 def _other_name(url: str) -> str:

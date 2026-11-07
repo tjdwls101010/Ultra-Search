@@ -26,6 +26,10 @@ class Source:
     #: Every id a citation may use for this URL. Two tools, or a parent and its child, can
     #: list one page under different ids, and a citation to either has to resolve.
     ids: list[str] = field(default_factory=list)
+    #: The run's copy of the document the agent downloaded from this URL, once one is taken; "" when none.
+    file: str = ""
+    #: The run's copy of a result about this URL too large to keep inline -- its page text; "" when none.
+    text_file: str = ""
 
     def absorb(self, other: "Source") -> None:
         self.opened = self.opened or other.opened
@@ -167,6 +171,8 @@ class Turn:
     #: Whether this run's prompt has appeared in its transcript. Until it has, everything
     #: there belongs to earlier turns, and none of it is this run's evidence.
     observed: bool
+    #: The session the turn is in; None when it was never found.
+    session_id: str | None = None
     #: Line index of this run's prompt in the transcript.
     start_line: int = 0
     #: Line index just past the turn's last record once something has ended it -- its `finished`, or a next turn's `started` -- and None while it is open.
@@ -255,6 +261,16 @@ class Turn:
                 total[k] = round(total.get(k, 0) + v, 6) if k == "cost" else total.get(k, 0) + v
         return total
 
+    def saved_files(self) -> list[tuple[str | None, str, aside.SavedFile]]:
+        """The files Aside saved for this turn's tool results -- documents downloaded, results too large to keep inline -- each with its stream (None for the turn's own, else the child's id) and the session it is in."""
+        out: list[tuple[str | None, str, aside.SavedFile]] = []
+        for cid in [None, *self.children]:
+            sid = cid or self.session_id
+            if sid:
+                events = self.events if cid is None else self.child_events[cid]
+                out += [(cid, sid, f) for f in aside.session_saved_files(sid, events)]
+        return out
+
     def tool_results(self) -> list[aside.Event]:
         """This turn's own tool results, in order -- what `show --item N` counts."""
         return [e for e in self.events if e.kind == "tool_result"]
@@ -268,6 +284,14 @@ class Turn:
         the page then read -- and the read page is the one worth returning, whichever stream
         and whichever order it came in.
         """
+        read, opened, excerpt, alone = self._texts(url)
+        return read or opened or excerpt or alone
+
+    def read_text(self, url: str) -> str:
+        """The fullest result of the turn that holds the page at a URL itself; "" when none does."""
+        return self._texts(url)[0]
+
+    def _texts(self, url: str) -> tuple[str, str, str, str]:
         read, opened, excerpt, alone = "", "", "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
@@ -281,7 +305,7 @@ class Turn:
                 excerpt = excerpt or next((s.excerpt for s in named if s.excerpt), "")
                 if len(e.sources) == 1:
                     alone = alone or e.content
-        return read or opened or excerpt or alone
+        return read, opened, excerpt, alone
 
 
 def turn_of(run: runs.Run) -> Turn:
@@ -312,6 +336,7 @@ def turn_of(run: runs.Run) -> Turn:
             child_next[cid] = full[cut].timestamp / 1000
     return Turn(
         observed=True,
+        session_id=meta.get("session_id") or meta.get("resume_session_id"),
         start_line=mine[0].index,
         end_line=None if end is None else mine[-1].index + 1,
         started_at=stamps[0] / 1000 if stamps else None,

@@ -10,6 +10,7 @@ run directory to check its answer would pass while `result` reported something e
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -501,6 +502,176 @@ def test_the_files_the_agent_saved_come_back_as_copies_its_answer_points_at(cli,
     assert run["answer"] == (f"[원문]({mine / 'KSPO 보고서 (최종).pdf'}) · [표]({mine / 'tmp' / '표.csv'}) · "
                              f"[보고서]({mine / 'report.txt'}) · [자식 것]({theirs / 'report.txt'})\n\n--- child {kid} ---\n"
                              f"자식 보고서: [보고서]({theirs / 'report.txt'})")
+
+
+def downloaded(url: str, name: str, data: bytes, *, sid: str, session: str = "__SESSION_DIR__",
+               after_tag: str | None = None) -> list[dict]:
+    """A webfetch that received a document: Aside saves it in the session's `tmp/` and names it in the result."""
+    notice = f"\n\nDownloaded to: {session}/tmp/{name}\nMIME type: application/pdf\nFile size: {len(data)} bytes"
+    return [{**({"__session__": session[len("__SESSION_DIR:"):-2]} if session != "__SESSION_DIR__" else {}),
+             "__tmp__": name, "bytes_b64": base64.b64encode(data).decode()},
+            {**({"__session__": session[len("__SESSION_DIR:"):-2]} if session != "__SESSION_DIR__" else {}),
+             **webfetch(url, after_tag if after_tag is not None else notice, sid=sid)}]
+
+
+def test_a_document_the_agent_downloaded_comes_back_as_a_copy(cli, replay) -> None:
+    """Aside saves a fetched document in the session's folder, which it deletes on its own schedule, and the result
+    names it there. Each comes back as a copy under the run, beside the files the agent saved itself and apart from a
+    child's, whatever their names."""
+    kid = "DownloadingKid01"
+    name = "[ë¶\x99ì\x9e\x841] 2026ë\x85\x84ë\x8f\x84 공모.pdf"
+    replay([
+        *downloaded("https://docs.test/a.pdf", name, b"%PDF-1.7 a", sid="d1"),
+        *downloaded("https://docs.test/report", "report.pdf", b"%PDF-1.7 parent", sid="d2"),
+        {"__artifact__": "report.pdf", "text": "the agent's own file"},
+        calling(("subagent", {"action": "spawn", "description": "c1"})),
+        {"__session__": kid, **turn("started")}, {"__session__": kid, **user("child task")},
+        *downloaded("https://docs.test/kid", "report.pdf", b"%PDF-1.7 child", sid="d3", session=f"__SESSION_DIR:{kid}__"),
+        {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer("자식 답")},
+        {"__session__": kid, **turn("finished")},
+        tool("subagent", "spawned", taskId=kid), turn("final-started"), answer("답"), turn("finished"),
+    ])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    files = {s["url"]: Path(s["file"]) for s in run["opened_sources"] if "file" in s}
+    assert {u: p.read_bytes() for u, p in files.items()} == {
+        "https://docs.test/a.pdf": b"%PDF-1.7 a", "https://docs.test/report": b"%PDF-1.7 parent",
+        "https://docs.test/kid": b"%PDF-1.7 child"}
+    assert files["https://docs.test/a.pdf"].name == name
+    assert all(p.is_relative_to(Path(run["result_path"]).parent) for p in files.values())
+    assert set(map(str, files.values())) <= set(run["artifacts"])
+    own = [Path(p) for p in run["artifacts"] if Path(p).name == "report.pdf" and Path(p) not in files.values()]
+    assert [p.read_text(encoding="utf-8") for p in own] == ["the agent's own file"]
+
+
+def test_only_a_whole_document_inside_the_session_is_copied(cli, replay, tmp_path: Path) -> None:
+    """A path in a transcript could name any file on this machine; an empty download, or one sent with an error
+    status, is not the document."""
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF not the agent's")
+    replay([
+        webfetch("https://e.test/outside", f"\n\nDownloaded to: {outside}\nMIME type: application/pdf\nFile size: 20 bytes",
+                 sid="o1"),
+        {"__tmp__": "linked.pdf", "link": str(outside)},
+        webfetch("https://e.test/linked", "\n\nDownloaded to: __SESSION_DIR__/tmp/linked.pdf\nMIME type: application/pdf\n"
+                 "File size: 20 bytes", sid="l1"),
+        *downloaded("https://e.test/empty", "empty.pdf", b"", sid="e1"),
+        *downloaded("https://e.test/refused", "92379499007", b"<html>no</html>", sid="r1",
+                    after_tag="\nHTTP 406 Not Acceptable\nDownloaded to: __SESSION_DIR__/tmp/92379499007\n"
+                              "MIME type: application/octet-stream\nFile size: 15 bytes"),
+        answer("답"),
+    ])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    assert "artifacts" not in run
+    assert not any("file" in s for s in run["opened_sources"])
+
+
+def test_show_gives_a_downloaded_documents_file_and_a_long_results_whole_text(cli, replay) -> None:
+    pointer = ("[Output too large (12.0KB). Full output saved to: __SESSION_DIR__/tmp/webfetch-result-W1.txt — read it "
+               "with read_file({ path, offset: 1 }), 36.0KB per read.]\n\nPreview (first 4.0KB):\n"
+               '<webfetch-citation source_id="w1" />\n\n전문의')
+    replay([
+        *downloaded("https://docs.test/a.pdf", "a.pdf", b"%PDF-1.7 a", sid="d1"),
+        {"__tmp__": "webfetch-result-W1.txt", "text": '<webfetch-citation source_id="w1" />\n\n전문의 첫 줄\n끝 줄'},
+        {**webfetch("https://e.test/long", ""), "content": [{"type": "text", "text": pointer}],
+         "details": {"sources": [{"id": "w1", "url": "https://e.test/long", "title": "L", "excerpt": ""}]}},
+        answer("답"),
+    ])
+    run_id = finished_run_id(cli)
+    copied = {s["url"]: s.get("file") for s in first_run(cli("result", "--run", run_id)[1])["opened_sources"]}
+
+    _, doc, _ = cli("show", "--run", run_id, "--source", "d1")
+    _, long, _ = cli("show", "--run", run_id, "--source", "w1")
+
+    assert doc["file"] == copied["https://docs.test/a.pdf"] and Path(doc["file"]).read_bytes() == b"%PDF-1.7 a"
+    assert doc["content"] == "" and "file" in doc["note"]
+    assert long["content"] == "전문의 첫 줄\n끝 줄"
+    assert copied["https://e.test/long"] is None, "a long result is the page's text, not a document"
+
+
+def test_a_document_also_read_as_a_page_shows_both(cli, replay) -> None:
+    url = "https://docs.test/a.hwpx"
+    replay([*downloaded(url, "a.hwpx", b"PK hwpx", sid="d1"),
+            {"role": "toolResult", "toolName": "repl", "content": [{"type": "text", "text": f'- title: "A" [url={url}]\n  - text: 본문'}],
+             "details": {}, "isError": False},
+            answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "d1")
+
+    assert "본문" in shown["content"] and Path(shown["file"]).read_bytes() == b"PK hwpx"
+
+
+def test_a_download_the_agent_kept_among_its_own_files_is_copied_once(cli, replay) -> None:
+    replay([{"__artifact__": "tmp/doc.hwpx", "text": "doc"},
+            webfetch("https://docs.test/doc", "\n\nDownloaded to: __SESSION_DIR__/artifacts/tmp/doc.hwpx\n"
+                     "MIME type: application/octet-stream\nFile size: 3 bytes", sid="d1"),
+            answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    (file,) = [s["file"] for s in run["opened_sources"] if "file" in s]
+    assert run["artifacts"] == [file]
+
+
+def test_a_path_two_downloads_wrote_belongs_to_the_later(cli, replay) -> None:
+    """Two servers can name their files alike, and Aside then saves the second over the first."""
+    replay([*downloaded("https://a.test/report", "report.pdf", b"from A", sid="a1"),
+            *downloaded("https://b.test/report", "report.pdf", b"from B", sid="b1"), answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    files = {s["url"]: s.get("file") for s in first_run(payload)["opened_sources"]}
+    assert files["https://a.test/report"] is None
+    assert Path(files["https://b.test/report"]).read_bytes() == b"from B"
+
+
+def test_a_document_downloaded_twice_keeps_both_and_points_at_the_later(cli, replay) -> None:
+    url = "https://docs.test/a.pdf"
+    replay([*downloaded(url, "a1.pdf", b"first", sid="d1"), *downloaded(url, "a2.pdf", b"second", sid="d2"),
+            answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    (file,) = [s["file"] for s in run["opened_sources"] if "file" in s]
+    assert Path(file).read_bytes() == b"second"
+    assert sorted(Path(p).read_bytes() for p in run["artifacts"]) == [b"first", b"second"]
+
+
+def test_the_later_download_of_a_url_wins_whichever_stream_made_it(cli, replay) -> None:
+    kid = "EarlierKid000001"
+    url = "https://docs.test/a.pdf"
+    replay([calling(("subagent", {"action": "spawn", "description": "c1"})),
+            {"__session__": kid, **turn("started")}, {"__session__": kid, **user("child task")},
+            *downloaded(url, "kid.pdf", b"child, earlier", sid="k1", session=f"__SESSION_DIR:{kid}__"),
+            {"__session__": kid, **turn("final-started")}, {"__session__": kid, **answer("자식 답")},
+            {"__session__": kid, **turn("finished")}, tool("subagent", "spawned", taskId=kid),
+            {"__sleep__": 0.05}, *downloaded(url, "parent.pdf", b"parent, later", sid="p1"),
+            turn("final-started"), answer("답"), turn("finished")])
+
+    _, payload, _ = search(cli, "질문")
+
+    (file,) = [s["file"] for s in first_run(payload)["opened_sources"] if "file" in s]
+    assert Path(file).read_bytes() == b"parent, later"
+
+
+def test_show_reads_a_download_from_the_session_while_the_run_is_still_going(cli, replay) -> None:
+    replay([*downloaded("https://docs.test/a.pdf", "a.pdf", b"%PDF-1.7 a", sid="d1"), {"__sleep__": 4}, answer("답")])
+    _, payload, _ = search(cli, "질문", wait="0")
+    run_id = first_run(payload)["run_id"]
+
+    shown = poll(lambda: (lambda r: r if r.get("file") else None)(cli("show", "--run", run_id, "--source", "d1")[1]))
+    cli("result", "--run", run_id, "--wait", "30")
+
+    assert Path(shown["file"]).read_bytes() == b"%PDF-1.7 a"
+    assert "/tmp/" in shown["file"] and Path(shown["file"]).name == "a.pdf"
 
 
 def test_a_failed_run_exits_four(cli, monkeypatch) -> None:

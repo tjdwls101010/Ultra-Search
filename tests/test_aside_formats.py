@@ -400,6 +400,17 @@ def test_another_sessions_answer_names_a_file_only_by_its_absolute_path(saved: P
     assert aside.referenced_artifacts(text, PARENT_ID, list(copies), absolute_only=True) == ["tmp/bohun_rfp.hwpx"]
 
 
+def test_a_linked_session_folder_names_no_saved_file(home: Path, tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "tmp").mkdir(parents=True)
+    (elsewhere / "tmp" / "a.pdf").write_bytes(b"%PDF")
+    (home / "2026-10-02_LinkedSession001").symlink_to(elsewhere)
+    path = jsonl(tmp_path, webfetch("https://e.test/a.pdf", f"\n\nDownloaded to: {home}/2026-10-02_LinkedSession001/tmp/a.pdf\n"
+                                    "MIME type: application/pdf\nFile size: 4 bytes"))
+
+    assert aside.session_saved_files("LinkedSession001", events(path)) == []
+
+
 def test_a_linked_artifacts_folder_is_not_read(home: Path, tmp_path: Path) -> None:
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

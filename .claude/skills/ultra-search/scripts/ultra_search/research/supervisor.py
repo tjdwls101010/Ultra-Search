@@ -257,11 +257,15 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     # to this run -- and strictly this turn's children, for the same reason.
     kept: dict[str | None, dict[str, Path]] = {}
     missing: list[dict] = []
+    documents: list[str] = []
     notes: list[str | None] = []
     if turn.observed:
         sources = turn.sources()
         if session_id:
-            kept, missing = _keep_artifacts(run, session_id, turn, sources)
+            originals: dict[Path, Path | None] = {}
+            kept, missing = _keep_artifacts(run, session_id, turn, sources, originals)
+            lost, documents = _keep_downloads(run, turn, sources, originals)
+            missing += lost
         answer = turn.answer(sources, rewrite=lambda cid, text: _point_at_copies(text, cid, session_id, kept))
         usage = turn.usage()
         # Aside writes why a turn stopped on an error beside the stop, and nowhere a caller would otherwise look.
@@ -286,7 +290,8 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
         "state": state,
         "answer": answer,
         "sources": [
-            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published}
+            {"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, "published": s.published,
+             **({"file": s.file} if s.file else {}), **({"text_file": s.text_file} if s.text_file else {})}
             for s in sources
         ],
         "usage": usage,
@@ -297,6 +302,7 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     }
     notes.insert(0, result_note)
     copied = [str(path) for cid in [None, *turn.children] for path in kept.get(cid, {}).values()]
+    copied += documents
     if copied:
         result["artifacts"] = copied
         if state in ("completed_with_orphans", "abandoned"):
@@ -319,8 +325,8 @@ def _finish(run: runs.Run, session_id: str | None, turn: evidence.Turn, state: s
     )
 
 
-def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
-                    sources: list[evidence.Source]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
+def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn, sources: list[evidence.Source],
+                    originals: dict[Path, Path | None]) -> tuple[dict[str | None, dict[str, Path]], list[dict]]:
     """Copy into the run the files this turn's sessions saved -- each session's under its own id, since a parent's folder can be named like a child -- and say which could not be copied.
 
     A session keeps every turn's saved files together. This turn's are the ones changed since its part in the turn began and before its session's next turn did; an older one is kept only when an answer names it, as a run collecting an earlier child's late result names what that child saved, and where the transcript gives no start only a named file is. A file a later turn changed is no longer the one this turn's answer meant, so it is reported rather than copied. The copies are taken now, so a child still at work, or an abandoned turn, leaves them as they were at this moment.
@@ -351,6 +357,7 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
                 if later(mtime):
                     if rel in named:
                         missing.append({"path": str(path), "error": "changed after a later turn began"})
+                        originals[path.resolve()] = None
                     continue
                 if rel not in named and (began is None or mtime < began):
                     continue
@@ -359,16 +366,72 @@ def _keep_artifacts(run: runs.Run, session_id: str, turn: evidence.Turn,
                     copied = runs.copy_snapshot(path, dst)
                 except OSError as e:
                     missing.append({"path": str(path), "error": str(e)})
+                    originals[path.resolve()] = None
                     continue
                 if later(copied.st_mtime):  # rewritten between the listing and the copy
                     dst.unlink(missing_ok=True)
                     if rel in named:
                         missing.append({"path": str(path), "error": "changed after a later turn began"})
+                        originals[path.resolve()] = None
                     continue
                 kept.setdefault(cid, {})[rel] = dst
+                originals[path.resolve()] = dst
     except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
         missing.append({"path": str(run.artifacts_dir), "error": f"{type(e).__name__}: {e}"})
     return kept, missing
+
+
+def _keep_downloads(run: runs.Run, turn: evidence.Turn, sources: list[evidence.Source],
+                    originals: dict[Path, Path | None]) -> tuple[list[dict], list[str]]:
+    """Copy into the run the files Aside saved for this turn's tool results, and point each source at its copy: a document a fetch downloaded as ``file``, a result too large to keep inline as ``text_file`` -- the latest of each, when a URL was fetched more than once. Return the files that could not be copied, and the copies of documents.
+
+    Aside deletes a session's folder on its own schedule, and the transcript names these files only there. They go under the run's `downloads/<session>/`, apart from the copies of the files the agent saved itself, whatever either is called; a second file of one name in a session gets `-2`, and one the agent's own files already dealt with (``originals``: its copy, or None when that copy was refused and reported) is not copied or reported again. One a later turn of the session changed is no longer the one this run read, so it is reported rather than copied.
+    """
+    by_url = {s.url: s for s in sources}
+    missing: list[dict] = []
+    documents: list[str] = []
+    taken: set[Path] = set()
+    try:
+        # Oldest first, whichever stream wrote it, so a URL fetched twice ends on its latest file.
+        for cid, sid, saved in sorted(turn.saved_files(), key=lambda found: found[2].mtime):
+            resolved = saved.path.resolve()
+            if resolved in originals and originals[resolved] is None:
+                continue
+            _, next_began = turn.window(cid)
+            if next_began is not None and saved.mtime >= next_began:
+                missing.append({"path": str(saved.path), "error": "changed after a later turn began"})
+                continue
+            dst = originals.get(resolved)
+            if dst is None:
+                dst = _unused(run.path / "downloads" / sid / saved.path.name, taken)
+                try:
+                    copied = runs.copy_snapshot(saved.path, dst)
+                except OSError as e:
+                    missing.append({"path": str(saved.path), "error": str(e)})
+                    continue
+                if next_began is not None and copied.st_mtime >= next_began:  # rewritten between the listing and the copy
+                    dst.unlink(missing_ok=True)
+                    missing.append({"path": str(saved.path), "error": "changed after a later turn began"})
+                    continue
+                taken.add(dst)
+                if saved.document:
+                    documents.append(str(dst))
+            for url in saved.urls:
+                source = by_url.get(url)
+                if source is not None:
+                    setattr(source, "file" if saved.document else "text_file", str(dst))
+    except Exception as e:  # noqa: BLE001 - the result is written whatever happens to its copies
+        missing.append({"path": str(run.path / "downloads"), "error": f"{type(e).__name__}: {e}"})
+    return missing, documents
+
+
+def _unused(path: Path, taken: set[Path]) -> Path:
+    """``path``, or the same name with -2, -3, ... before its extension when this run already took it."""
+    n, candidate = 1, path
+    while candidate in taken:
+        n += 1
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+    return candidate
 
 
 def _point_at_copies(text: str, cid: str | None, session_id: str | None,

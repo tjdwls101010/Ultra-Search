@@ -312,7 +312,8 @@ def _saved_by_fetch(text: str, refused: bool) -> tuple[str, bool]:
     """Where a webfetch result says Aside saved what it received, and whether the result's text is the page itself."""
     whole = _SAVED_OUTPUT.match(text)
     if whole:
-        return whole.group("path"), True
+        # A refusal kept in a file is the refusal, not the page.
+        return ("" if refused else whole.group("path")), True
     download = _DOWNLOADED.match(text)
     if not download:
         return "", True

@@ -255,7 +255,7 @@ def test_a_refusal_too_large_to_keep_inline_is_still_a_refusal(tmp_path: Path) -
                '<webfetch-citation source_id="src1" />\nHTTP 403 Forbidden\n<html>challenge')
     record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": pointer}]}
 
-    assert [s.opened for s in one(tmp_path, record).sources] == [False]
+    assert [(s.opened, s.saved_path) for s in one(tmp_path, record).sources] == [(False, "")]
 
 
 def test_a_result_of_text_blocks_reads_as_its_text(tmp_path: Path) -> None:

@@ -85,8 +85,8 @@ ENTRY_HELP = (
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
         "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
-        "`opened` means a tool that opens pages returned that URL without an error -- for a plain fetch, without an "
-        "HTTP error status either: an inference that the page was read, not a check of what it said. A source only "
+        "`opened` means a tool that opens pages returned that URL without an error -- for the agent's own fetch of a "
+        "page, without an HTTP error status either: an inference that the page was read, not a check of what it said. A source only "
         "listed by a search is not opened.\n"
 )
 #: The states a run ends in, for every command that reports a run.
@@ -348,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="The third layer under `result`: what Aside already has, returned without fetching anything "
         "again. A source is found by its n from `result` or `result --sources`, or by any of its ids; its content is "
         "the fullest text a tool returned for it -- the page, or a notice that a tab opened on it or a document was "
-        "saved -- and for a source never opened, the excerpt a listing gave it, else what a request for it alone "
+        "saved -- and for a source never opened, the excerpt a result gave it, else what a request for it alone "
         "returned, such as an HTTP error. An item's content is that tool result's text. A run still going, or "
         "abandoned, is read from its transcript so far.",
     )

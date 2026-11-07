@@ -409,9 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
         "what is worth crawling; the manifest it writes is what `crawl --from` consumes so the site is only "
         "walked once.\n"
         "The reply is a summary whatever the site's size: count, coverage (how many pages could not be read with the "
-        "first 10 of them, whether a budget or --max-urls cut discovery short, and dropped_other_origin -- links and "
-        "listings to another site, which a root that redirected elsewhere turns into nearly all of them), the first 10 "
-        "URLs, and manifest_path, the file holding every URL and the full coverage. A host and its www. name are one site.",
+        "first 10 of them, whether a budget or --max-urls cut discovery short, and dropped_other_origin -- how many distinct "
+        "URLs links and listings pointed to off the site, which a root that redirected elsewhere turns into nearly all "
+        "of them), the first 10 URLs, and manifest_path, the file holding every URL and the full coverage. A site is a "
+        "scheme, host and port, a host and its www. name being one; a page under both names is listed once.",
     )
     m.add_argument("url", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole origin -- its "
                    "sitemap, else same-origin links from URL -- not only URL's path: select a section with --include.")
@@ -437,9 +438,10 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("url", nargs="?", type=_web_url, metavar="URL", help="Where to start. Discovery covers URL's whole "
                      "origin -- its sitemap, else same-origin links from URL -- not only URL's path: select a section with "
                      "--include.")
-    src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map`, crawled as-is.")
+    src.add_argument("--from", dest="from_manifest", type=_user_path, metavar="FILE", help="A manifest.json from `map` "
+                     "or `crawl`, crawled as it is: every URL it lists, a crawl's not_crawled included.")
     c.add_argument("--max-pages", type=_count(1), metavar="N", help="Fetch at most this many pages. Default "
-                   f"{site.DEFAULT_MAX_PAGES} from URL; with --from, every page the manifest lists.")
+                   f"{site.DEFAULT_MAX_PAGES} from URL; with --from, every URL the manifest lists.")
     _add_discovery_opts(c)
     _add_fetch_opts(c)
     c.add_argument("--out", type=_user_path, metavar="DIR", help="An empty or new output directory. Default: a new "

@@ -33,15 +33,29 @@ def origin(url: str) -> tuple[str, str, int] | None:
     and its `www.` name are one site, though: a root that answers from the other -- the
     commonest redirect there is -- would otherwise leave every one of its links behind.
     """
-    # 성진: apex와 www를 한 사이트로 보므로 둘 다 링크하는 사이트는 같은 페이지를 두 번 받을 수 있다; 그런 중복이 보이면 URL을 한쪽 호스트로 정규화한다.
     p = urlparse(url)
-    if p.scheme not in ("http", "https") or not p.hostname:
+    host = (p.hostname or "").lower().removeprefix("www.")
+    if p.scheme not in ("http", "https") or not host:
         return None
     try:
         port = p.port if p.port is not None else (443 if p.scheme == "https" else 80)
     except ValueError:
         return None
-    return p.scheme, p.hostname.lower().removeprefix("www."), port
+    return p.scheme, host, port
+
+
+def _page(url: str) -> tuple:
+    """One page whichever of its site's two names a URL uses."""
+    p = urlparse(url)
+    return origin(url) or url, p.path, p.query
+
+
+def _other_name(url: str) -> str:
+    """The same URL under its host's other name: with `www.` added, or taken away."""
+    p = urlparse(url)
+    host = p.netloc
+    other = host[4:] if host.lower().startswith("www.") else f"www.{host}"
+    return urlunparse(p._replace(netloc=other)) if host else url
 
 
 def sitemap_candidates(root: str) -> list[str]:
@@ -51,10 +65,13 @@ def sitemap_candidates(root: str) -> list[str]:
 
 
 def matches(url: str, include: list[str] | None, exclude: list[str] | None) -> bool:
-    if exclude and any(fnmatch.fnmatch(url, pat) for pat in exclude):
+    """Whether the globs keep a URL, under either of its site's names: a section named as the caller typed the root
+    is the same section after the site answers from its other name."""
+    names = (url, _other_name(url))
+    if exclude and any(fnmatch.fnmatch(n, pat) for n in names for pat in exclude):
         return False
     if include:
-        return any(fnmatch.fnmatch(url, pat) for pat in include)
+        return any(fnmatch.fnmatch(n, pat) for n in names for pat in include)
     return True
 
 
@@ -79,8 +96,12 @@ def discover(
     coverage = {"sitemap": False, "pages_read": 0, "pages_missed": [],
                 "budget_exhausted": False, "max_urls_reached": False, "dropped_other_origin": 0}
 
+    #: Links and listings to another site, each URL once.
+    elsewhere: set[str] = set()
+
     def done(urls: list[str]) -> tuple[list[str], dict]:
         coverage["max_urls_reached"] = len(urls) > max_urls or coverage["max_urls_reached"]
+        coverage["dropped_other_origin"] = len(elsewhere)
         return urls[:max_urls], coverage
 
     if use_sitemap and sitemap_provider:
@@ -88,7 +109,7 @@ def discover(
         found = [normalise(r["url"]) for r in records if r.get("kind") == "url" and r.get("url")]
         coverage["budget_exhausted"] = any(r.get("hit_budget") for r in records)
         same_site = [u for u in found if origin(u) == site]
-        coverage["dropped_other_origin"] += len(set(found) - set(same_site))
+        elsewhere.update(u for u in found if origin(u) not in (None, site))
         if same_site:
             coverage["sitemap"] = True
             return done([u for u in _dedupe(same_site) if matches(u, include, exclude)])
@@ -99,7 +120,7 @@ def discover(
     # Breadth-first, and the frontier is walked whether or not a page passes the filters:
     # a glob selects what to keep, and docs sites routinely reach every article through an
     # index page the glob itself excludes.
-    seen = {root}
+    seen = {_page(root)}
     frontier = [root]
     kept: list[str] = []
     if matches(root, include, exclude):
@@ -120,16 +141,16 @@ def discover(
                     {k: record[k] for k in ("url", "status", "error") if record.get(k) is not None})
             elif kind == "links_done" and record.get("hit_budget"):
                 coverage["budget_exhausted"] = True
-            elif kind == "other_origin":
-                coverage["dropped_other_origin"] += 1
+            elif kind == "other_origin" and record.get("url"):
+                elsewhere.add(record["url"])
             # Past the cap, URLs are no longer taken, but the rest of the round is still read:
             # a page that failed after the cap was hit is still a page that was missed.
             if kind != "url" or not record.get("url") or coverage["max_urls_reached"]:
                 continue
             u = normalise(record["url"])
-            if u in seen or origin(u) != site:
+            if _page(u) in seen or origin(u) != site:
                 continue
-            seen.add(u)
+            seen.add(_page(u))
             frontier.append(u)
             if matches(u, include, exclude):
                 kept.append(u)
@@ -139,9 +160,12 @@ def discover(
 
 
 def _dedupe(seq: list[str]) -> list[str]:
+    """Each page once, under the first name it was listed by."""
     out: list[str] = []
+    seen: set[tuple] = set()
     for s in seq:
-        if s not in out:
+        if _page(s) not in seen:
+            seen.add(_page(s))
             out.append(s)
     return out
 
@@ -175,16 +199,19 @@ def build_manifest(root: str, pages: list[dict], urls: list[str] | None = None) 
 
 
 def urls_from_manifest(manifest: object) -> list[str] | None:
-    """The URLs a manifest lists, or None when it is not shaped like one `map` or `crawl` wrote."""
+    """The URLs a manifest lists, or None when it is not shaped like one `map` or `crawl` wrote: a crawl's pages, then
+    the ones it left at its page cap; else a map's URLs."""
     if not isinstance(manifest, dict) or not isinstance(manifest.get("root") or "", str):
         return None
-    pages, urls = manifest.get("pages"), manifest.get("urls")
+    pages, urls, left = manifest.get("pages"), manifest.get("urls"), manifest.get("not_crawled") or []
+    if not isinstance(left, list) or not all(isinstance(u, str) for u in left):
+        return None
     if pages:
         if not isinstance(pages, list) or not all(
             isinstance(p, dict) and isinstance(p.get("url") or "", str) for p in pages
         ):
             return None
-        return [p["url"] for p in pages if p.get("url")]
+        return [p["url"] for p in pages if p.get("url")] + left
     if urls is None:
         return []
     if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):

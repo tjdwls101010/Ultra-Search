@@ -37,6 +37,8 @@ def render(event: Event, level: str = "progress", ordinal: int | None = None) ->
         return f"system: {_clip(event.text, 200 if level == 'steps' else 2000)}"
     if event.kind == "lifecycle":
         return f"turn {event.lifecycle}"
+    if event.kind == "meta":
+        return ""
     return f"raw[{event.index}]: {_clip(event.content, 200)}"
 
 
@@ -63,8 +65,8 @@ def _progress(event: Event) -> str:
         return f"{event.tool_name} ERROR: {_first_line(event.content, 120)}" if event.is_error else ""
     if event.kind == "system":
         return f"system: {_first_line(event.text, 100)}"
-    if event.kind == "lifecycle":
-        # A turn's frame, not something the run did; the answer line already says it ended.
+    if event.kind in ("lifecycle", "meta"):
+        # A turn's frame, or a note about the conversation -- not something the run did.
         return ""
     return f"raw: {_first_line(event.content, 100)}"
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from ultra_search import aside
+from conftest import answer, user, webfetch
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = FIXTURES / "runs" / "261002-lifecycle-subagent"
@@ -147,6 +148,120 @@ def test_an_unfamiliar_record_or_block_is_kept() -> None:
 
     assert any(e.kind == "raw" for e in got)
     assert any(e.unknown_blocks for e in got if e.kind == "assistant")
+
+
+# --- records as Aside writes them now -------------------------------------------------------------
+#
+# Shaped after records seen in real sessions (daemon 1.26.1101-1107): content as a list of text blocks, a webfetch result
+# opened by its citation tag. None of these is a copy of one: the repository is public.
+
+
+def jsonl(tmp_path: Path, *records: dict) -> Path:
+    path = tmp_path / "messages.jsonl"
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def one(tmp_path: Path, record: dict) -> aside.Event:
+    got = events(jsonl(tmp_path, record))
+    assert len(got) == 1
+    return got[0]
+
+
+#: A Korean file name read as Latin-1 and written back as UTF-8: "년" becomes "ë\x85\x84", and \x85 is U+0085.
+MOJIBAKE = "2026ë\x85\x84ë\x8f\x84 ê³µëª¨.pdf"
+
+
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"], ids=["NEL", "LS", "PS"])
+def test_a_record_holding_a_unicode_line_separator_is_one_event(tmp_path: Path, separator: str) -> None:
+    """Aside ends a record at "\\n" alone, and JSON leaves these three unescaped inside a string."""
+    path = jsonl(tmp_path, user("q"),
+                 webfetch("https://docs.test/a.pdf", f"\n\n공고{separator}안내서.pdf"),
+                 answer("a"))
+
+    got = events(path)
+
+    assert [(e.kind, e.index) for e in got] == [("user", 0), ("tool_result", 1), ("assistant", 2)]
+    assert [s.url for s in got[1].sources] == ["https://docs.test/a.pdf"]
+    first = len(path.read_bytes().split(b"\n")[0]) + 1
+    assert [(e.kind, e.index) for e in aside.read_events(path, first)[0]] == [("tool_result", 1), ("assistant", 2)]
+
+
+@pytest.mark.parametrize("after_tag,opened", [
+    ("\n\nThe page text.", True),
+    ("\nHTTP 403 Forbidden\nAccess denied", False),
+    ("\nHTTP 401 HTTP Forbidden\nPlease enable JS and disable any ad blocker", False),
+    ("\nHTTP 404 Not Found", False),
+    ("\nHTTP 503 Service Unavailable", False),
+    ("\n\nHTTP 403 Forbidden is what this guide is about.", True),
+    ("\n\nThe server answered HTTP 403 to robots.", True),
+], ids=["page", "403", "401", "404", "503", "page-starting-with-a-status", "page-mentioning-a-status"])
+def test_a_fetch_that_got_an_http_error_did_not_open_its_page(tmp_path: Path, after_tag: str, opened: bool) -> None:
+    """Aside records an error status as a successful result whose text is the status line right after the tag; a page
+    it read has a blank line there."""
+    event = one(tmp_path, webfetch("https://e.test/a", after_tag))
+
+    assert [s.opened for s in event.sources] == [opened]
+
+
+@pytest.mark.parametrize("after_tag,saved_path", [
+    ("\n\nDownloaded to: /s/tmp/D2603327.pdf\nMIME type: application/octet-stream\nFile size: 359165 bytes",
+     "/s/tmp/D2603327.pdf"),
+    (f"\n\nDownloaded to: /s/tmp/[붙임1] 'AX' {MOJIBAKE}\nMIME type: application/pdf\nFile size: 10 bytes",
+     f"/s/tmp/[붙임1] 'AX' {MOJIBAKE}"),
+    ("\n\nDownloaded to: /s/tmp/92379499007\nMIME type: application/octet-stream\nFile size: 12 bytes", "/s/tmp/92379499007"),
+], ids=["pdf", "brackets-quote-mojibake", "no-extension"])
+def test_a_fetch_that_downloaded_a_document_names_the_file_not_the_page(tmp_path: Path, after_tag: str,
+                                                                       saved_path: str) -> None:
+    source = one(tmp_path, webfetch("https://e.test/a.pdf", after_tag)).sources[0]
+
+    assert (source.opened, source.holds_page, source.saved_path) == (True, False, saved_path)
+
+
+@pytest.mark.parametrize("after_tag", [
+    "\nHTTP 406 Not Acceptable\nDownloaded to: /s/tmp/92379499007\nMIME type: application/octet-stream\nFile size: 0 bytes",
+    "\n\nDownloaded to: /s/tmp/empty.pdf\nMIME type: application/pdf\nFile size: 0 bytes",
+], ids=["with-an-http-error", "empty"])
+def test_a_download_that_holds_nothing_names_no_file(tmp_path: Path, after_tag: str) -> None:
+    source = one(tmp_path, webfetch("https://e.test/a.pdf", after_tag)).sources[0]
+
+    assert source.saved_path == ""
+
+
+def test_a_result_too_large_to_keep_inline_names_the_file_that_holds_it(tmp_path: Path) -> None:
+    pointer = ("[Output too large (91.5KB). Full output saved to: /s/tmp/webfetch-result-pZXA.txt — read it with "
+               "read_file({ path, offset: 1 }), 36.0KB per read.]\n\nPreview (first 4.0KB):\n"
+               '<webfetch-citation source_id="src1" />\n\nNews Summary')
+    record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": pointer}]}
+
+    source = one(tmp_path, record).sources[0]
+
+    assert (source.opened, source.holds_page, source.saved_path) == (True, True, "/s/tmp/webfetch-result-pZXA.txt")
+
+
+def test_a_result_of_text_blocks_reads_as_its_text(tmp_path: Path) -> None:
+    record = {**webfetch("https://e.test/a", ""), "content": [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]}
+    mixed = {**record, "content": [{"type": "text", "text": "one"}, {"type": "image", "data": "AAAA"}]}
+
+    assert one(tmp_path, record).content == "one\ntwo"
+    assert json.loads(one(tmp_path, mixed).content) == mixed["content"], "a block that is not text is kept, as JSON"
+
+
+def test_a_message_that_stopped_on_an_error_carries_the_error(tmp_path: Path) -> None:
+    record = {"role": "assistant", "content": [], "stopReason": "error", "timestamp": 1,
+              "errorMessage": 'aside API error (402): 402 "Insufficient credits"'}
+
+    event = one(tmp_path, record)
+
+    assert (event.stop, event.error) == ("error", 'aside API error (402): 402 "Insufficient credits"')
+
+
+@pytest.mark.parametrize("record", [
+    {"role": "user-message-metadata", "attachments": [{"id": "tab:1", "type": "tab", "url": "https://e.test/"}]},
+    {"role": "compaction", "summary": "earlier turns, summarised"},
+], ids=["attachments", "compaction"])
+def test_records_about_the_conversation_are_read_as_such(tmp_path: Path, record: dict) -> None:
+    assert one(tmp_path, record).kind == "meta"
 
 
 # --- when a turn is over --------------------------------------------------------------------------

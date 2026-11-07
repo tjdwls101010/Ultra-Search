@@ -98,7 +98,7 @@ def mcp_tools() -> list[dict]:
         raise AsideUnavailable(f"could not run `aside mcp`: {e}") from e
 
     tools = []
-    for line in (proc.stdout or "").splitlines():
+    for line in (proc.stdout or "").split("\n"):
         line = line.strip()
         if not line.startswith("{"):
             continue

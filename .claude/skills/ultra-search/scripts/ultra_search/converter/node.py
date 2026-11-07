@@ -36,7 +36,7 @@ def to_markdown(html: str, url: str) -> dict:
         return {"ok": False, "error": "node is not installed; run `setup`"}
     except subprocess.SubprocessError as e:
         return {"ok": False, "error": f"markdown conversion failed: {e}"}
-    for line in (proc.stdout or "").splitlines():
+    for line in (proc.stdout or "").split("\n"):
         if line.startswith("{"):
             try:
                 result = json.loads(line)

@@ -119,6 +119,7 @@ def find_session_by_marker(marker: str) -> str | None:
     A session whose prompt has not been written yet is a session in progress, not a
     mismatch, and is passed over until it has one.
     """
+    # 성진: fork_self 자식은 부모의 프롬프트를 그대로 받아 같은 마커를 갖는다. 여기서는 둘을 가르지 않고 가장 최근 세션을 택한다; 자식에 잘못 붙은 런이 다시 보이면 부모를 가를 관측 기준을 정한다.
     for ref in _sessions():
         prompt = _opening_prompt(ref.transcript)
         if prompt and marker in prompt:

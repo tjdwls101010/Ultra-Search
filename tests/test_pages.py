@@ -73,6 +73,18 @@ def test_a_page_is_saved_as_markdown_and_reported(cli, routes, tmp_path: Path) -
     assert "단어" in saved(item)
 
 
+def test_a_page_holding_a_unicode_line_separator_is_read_whole(cli, routes) -> None:
+    """The browser's answer and the converter's are each one JSON line ended by "\\n" alone, and JSON leaves U+0085,
+    U+2028 and U+2029 unescaped: split anywhere else, the page came back as no response at all."""
+    body = ARTICLE.replace("단어 단어 ", "단어\x85단어 단어 단어 ", 1)
+    routes({"fetch_batch": {"https://example.org/a": page(body)}})
+
+    code, payload, _ = cli("fetch", "https://example.org/a")
+
+    assert (code, item_of(payload)["status"]) == (0, "ok")
+    assert item_of(payload)["words"] > 100
+
+
 def test_a_fetch_reply_leads_with_its_statuses(cli, routes) -> None:
     routes({"fetch_batch": {"https://example.org/a": page(ARTICLE),
                             "https://example.org/x": page("<p>no</p>", status=403)}})

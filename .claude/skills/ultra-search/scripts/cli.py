@@ -85,6 +85,8 @@ ENTRY_HELP = (
         "tags resolved to URLs, then opened_sources -- the sources it opened, each with n, its number among all of them -- "
         "then artifacts -- copies of the files the agent saved, which the answer's links now name -- "
         "and result_path, the saved result. Every source is in `result --sources`; usage and children are in the saved result. A run with no result yet has only run_id, state, empty and a note.\n"
+        "`opened` means a tool that opens pages returned that URL without an error or an HTTP error status: an "
+        "inference that the page was read, not a check of what it said. A source only listed by a search is not opened.\n"
 )
 #: The states a run ends in, for every command that reports a run.
 STATES_HELP = (
@@ -94,7 +96,7 @@ STATES_HELP = (
         "late results are not collected.\n"
         "completed_unstructured: the session transcript, or this run's turn in it, never appeared; answer and "
         "sources come from stdout only.\n"
-        "failed: aside exited non-zero, or the turn ended on an error.\n"
+        "failed: aside exited non-zero, or the turn ended on an error -- the note quotes the error Aside recorded, if any.\n"
         f"abandoned: watching stopped -- the turn wrote nothing for {research.IDLE_LIMIT / 60:g} minutes before it "
         "finished, or its supervisor is gone; the daemon's work and its credit use did not.\n"
 )
@@ -322,10 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
         "or with the result its supervisor wrote before it died. Results are saved in the runs directory and "
         "outlive Aside's session. empty means no answer and no sources, not that a claim was disproved; a textual "
         "negative finding is still an answer.\n"
-        + ENTRY_HELP +
-        "`opened` means a tool that opens pages returned that URL without an error: an inference that the "
-        "page was read, not a check of what it said. A source only listed by a search is not opened.\n"
-        + STATES_HELP.rstrip("\n"),
+        + ENTRY_HELP + STATES_HELP.rstrip("\n"),
         epilog=NEXT_HELP,
     )
     _add_target(rs)
@@ -345,9 +344,12 @@ def build_parser() -> argparse.ArgumentParser:
     sh = sub.add_parser(
         "show",
         help="Full text of one source or one tool result.",
-        description="The third layer under `result`: the page text Aside already fetched, returned without "
-        "fetching anything again. A source is found by its n from `result` or `result --sources`, or by any of its ids; "
-        "a run still going, or abandoned, is read from its transcript so far.",
+        description="The third layer under `result`: what Aside already has, returned without fetching anything "
+        "again. A source is found by its n from `result` or `result --sources`, or by any of its ids; its content is "
+        "the fullest text a tool returned for it -- the page, or a notice that a tab opened on it or a document was "
+        "saved -- and for a source never opened, the excerpt a search listed it with, or what the one request for it "
+        "returned, such as an HTTP error. An item's content is that tool result's text. A run still going, or "
+        "abandoned, is read from its transcript so far.",
     )
     sh.add_argument("--run", metavar="ID", help="A run id, or any beginning of one that only that run has. Defaults to the most recent run.")
     g = sh.add_mutually_exclusive_group(required=True)

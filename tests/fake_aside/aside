@@ -175,7 +175,8 @@ def replay(d: Path, prompt: str) -> bool:
     if not source:
         return False
     text = Path(source).read_text(encoding="utf-8")
-    lines = text.splitlines()
+    # One record per "\n", as Aside writes them: JSON leaves U+0085, U+2028 and U+2029 unescaped inside a string.
+    lines = text.split("\n")
     opening = True
     recorded_lifecycle = False
     answered = False

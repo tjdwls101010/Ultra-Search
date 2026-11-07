@@ -40,6 +40,8 @@ from conftest import (
     tool,
     turn,
     user,
+    webfetch,
+    websearch,
 )
 
 SESSIONS = FIXTURES / "sessions"
@@ -1660,6 +1662,99 @@ def test_every_prompt_carries_the_read_only_scope(cli, fake_aside: Path) -> None
     assert len(prompts) == 2 and all(scope in p for p in prompts)
     for command in ("search", "resume"):
         assert "Read-only research" in cli(command, "--help")[2]
+
+
+# --- results read as what they say -------------------------------------------------------------
+#
+# Records shaped the way Aside writes them now (see `webfetch` in conftest): what each test expects is what the record
+# itself says -- a status line, an excerpt, an error -- not what this code made of it before.
+
+
+def test_a_turn_that_stopped_on_an_error_says_why(cli, replay) -> None:
+    """Aside records why a turn stopped on an error -- credits spent, a provider's usage limit -- beside the stop itself."""
+    replay([calling(("websearch", {"objective": "o"})), websearch(("s1", "https://e.test/a", "발췌")),
+            {"role": "assistant", "content": [], "stopReason": "error", "timestamp": 4,
+             "errorMessage": 'aside API error (402): 402 "Insufficient credits"'}])
+
+    code, payload, _ = search(cli, "질문")
+    _, again, _ = cli("result", "--run", first_run(payload)["run_id"])
+
+    assert (code, first_run(payload)["state"]) == (4, "failed")
+    for reply in (payload, again):
+        assert 'aside API error (402): 402 "Insufficient credits"' in first_run(reply)["note"]
+
+
+def test_records_about_the_conversation_are_neither_steps_nor_unread(cli, replay) -> None:
+    replay([{"role": "user-message-metadata", "attachments": [{"id": "tab:1", "type": "tab", "url": "https://e.test/"}]},
+            answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+    _, _, steps = cli("log", "--run", first_run(payload)["run_id"], "--level", "steps")
+
+    assert "could not be read" not in first_run(payload).get("note", "")
+    assert "attachments" not in steps and "raw" not in rendered(steps)
+
+
+def test_records_this_skill_cannot_read_are_counted(cli, replay) -> None:
+    """A role Aside adds later must not pass unnoticed: the run says how many of its records it could not read."""
+    replay([{"role": "tool-progress", "n": 1}, {"role": "tool-progress", "n": 2}, answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    assert "2 records in this run's transcript could not be read" in first_run(payload)["note"]
+
+
+def test_show_gives_a_pages_text_as_text(cli, replay) -> None:
+    replay([webfetch("https://e.test/a", "\n\n페이지 전문", sid="s1"), answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "0")
+    _, item, _ = cli("show", "--run", run_id, "--item", "0")
+
+    assert shown["content"] == item["content"] == '<webfetch-citation source_id="s1" />\n\n페이지 전문'
+
+
+def test_show_gives_a_listed_source_its_own_excerpt_not_the_whole_listing(cli, replay) -> None:
+    replay([websearch(("s1", "https://e.test/a", "A의 발췌"), ("s2", "https://e.test/b", "B의 발췌")), answer("답")])
+    run_id = finished_run_id(cli)
+
+    shown = [cli("show", "--run", run_id, "--source", ref)[1]["content"] for ref in ("s1", "1")]
+
+    assert shown == ["A의 발췌", "B의 발췌"]
+
+
+def test_a_page_refused_with_an_http_error_is_not_opened_and_shows_the_refusal(cli, replay) -> None:
+    url = "https://e.test/forbidden"
+    replay([calling(("webfetch", {"url": url})), webfetch(url, "\nHTTP 403 Forbidden\nAccess denied", sid="f1"),
+            answer("못 읽었다")])
+
+    _, payload, _ = search(cli, "질문")
+    run_id = first_run(payload)["run_id"]
+    _, shown, _ = cli("show", "--run", run_id, "--source", "f1")
+
+    assert first_run(payload)["opened_sources"] == []
+    assert [(s["url"], s["opened"]) for s in every_source(cli, run_id)] == [(url, False)]
+    assert "HTTP 403 Forbidden" in shown["content"]
+
+
+def test_a_record_holding_a_line_separator_keeps_its_page_and_the_numbering_show_uses(cli, replay) -> None:
+    """A document's name decoded with the wrong charset is full of U+0085, which is a line break to Python's
+    `splitlines` though not to Aside: read that way, the record split in pieces and its page was lost."""
+    name = "2026ë\x85\x84ë\x8f\x84 ê³µëª¨.pdf"
+    replay([webfetch("https://docs.test/a.pdf", f"\n\nDownloaded to: /s/tmp/{name}\nMIME type: application/pdf\n"
+                                                f"File size: 10 bytes", sid="d1", title=name),
+            webfetch("https://e.test/b", "\n\nB 본문", sid="b1"), answer('답 <citation refs="d1">공고</citation>')])
+
+    _, payload, _ = search(cli, "질문")
+    run_id = first_run(payload)["run_id"]
+    _, _, steps = cli("log", "--run", run_id, "--level", "steps")
+    _, item, _ = cli("show", "--run", run_id, "--item", "1")
+
+    assert [s["url"] for s in first_run(payload)["opened_sources"]] == ["https://docs.test/a.pdf", "https://e.test/b"]
+    assert first_run(payload)["answer"] == "답 공고 (https://docs.test/a.pdf)"
+    assert [line.split(" ", 2)[:2] for line in steps.split("\n") if line.startswith("#")] == [["#0", "webfetch"],
+                                                                                               ["#1", "webfetch"]]
+    assert item["content"].endswith("B 본문")
 
 
 # --- the transcript format the daemon writes now ------------------------------------------

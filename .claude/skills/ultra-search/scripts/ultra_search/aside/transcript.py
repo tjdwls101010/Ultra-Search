@@ -20,6 +20,17 @@ from pathlib import Path
 
 #: Tools whose result means the agent read a page, rather than being shown it in a list.
 _OPENING_TOOLS = frozenset({"webfetch", "repl", "read_file"})
+#: A webfetch result is its citation tag, a blank line and the page. An error status comes instead on the line right
+#: after the tag, in a result Aside does not mark as an error -- 403 to a bot, 401 behind a login, 404.
+_HTTP_ERROR = re.compile(r"^<webfetch-citation[^>]*/>\nHTTP [3-5]\d\d\b")
+#: A webfetch that received a document saves it in the session's folder and says where in place of the page, after
+#: the blank line -- or after the status line, when the server refused and sent something anyway.
+_DOWNLOADED = re.compile(r"^<webfetch-citation[^>]*/>\n(?:\n|HTTP [^\n]*\n)Downloaded to: (?P<path>[^\n]+)")
+_EMPTY_DOWNLOAD = re.compile(r"^File size: 0 bytes$", re.M)
+#: A result too large to keep inline is kept whole in a file, and the record says where, then shows its start.
+_SAVED_OUTPUT = re.compile(r"^\[Output too large \([^)]*\)\. Full output saved to: (?P<path>.+?) — ")
+#: Records about the conversation rather than in it: a message's attachments, a summary standing in for earlier turns.
+_META_ROLES = frozenset({"user-message-metadata", "compaction"})
 #: The browser REPL lists no sources; it prints the pages it touched, each on a line of its
 #: own: opening a tab says "...Opened a new tab ..., page → <title> (<url>)", and a snapshot of
 #: a page starts `- title: "<title>" [url=<url>]`. Anchored to those lines, so page text that
@@ -58,13 +69,16 @@ class SourceRef:
     #: Whether a page-opening tool returned it -- an inference that it was read, not a check of what it said.
     opened: bool = False
     #: Whether the result's content is the page itself, as a fetch or a snapshot is, rather than
-    #: a notice that a tab opened on it.
+    #: a notice that a tab opened on it or that a document was saved.
     holds_page: bool = True
+    #: Where Aside saved what the tool received, in the session's folder: a document it downloaded, or a result too
+    #: large to keep inline; "" when nothing was saved -- an empty download, or one that came with an error status.
+    saved_path: str = ""
 
 
 @dataclass
 class Event:
-    """One transcript record: user, assistant, tool_result, system, lifecycle, or raw (anything unfamiliar)."""
+    """One transcript record: user, assistant, tool_result, system, lifecycle, meta (about the conversation, not part of it), or raw (anything unfamiliar)."""
 
     kind: str
     index: int
@@ -76,6 +90,8 @@ class Event:
     is_error: bool = False
     #: Why an assistant message stopped: "tool" to call one, "error", "end" for anything else, "" when not recorded.
     stop: str = ""
+    #: For a message that stopped on an error, the error as Aside recorded it -- spent credits, a usage limit; "" when none.
+    error: str = ""
     #: For a `lifecycle` event, which boundary of a turn it marks: started, final-started, finished.
     lifecycle: str = ""
     sources: list[SourceRef] = field(default_factory=list)
@@ -130,7 +146,9 @@ def _count_lines_before(path: Path, offset: int) -> int:
 
 def parse_lines(text: str, start_index: int = 0) -> list[Event]:
     out: list[Event] = []
-    for i, line in enumerate(text.splitlines()):
+    # Split where Aside ends a record, at "\n" alone: JSON leaves U+0085, U+2028 and U+2029 unescaped inside a string,
+    # and a document name read with the wrong charset is full of U+0085.
+    for i, line in enumerate(text.split("\n")):
         if not line.strip():
             continue
         out.append(parse_record(line, start_index + i))
@@ -159,6 +177,8 @@ def parse_record(line: str, index: int = 0) -> Event:
         # Aside reports a subagent finishing this way. It is the one record a supervisor
         # most wants to see, so it gets a kind of its own rather than the raw fallback.
         return Event(kind="system", index=index, raw=obj, text=_as_text(obj.get("content")), timestamp=ts)
+    if role in _META_ROLES:
+        return Event(kind="meta", index=index, raw=obj, timestamp=ts)
     return Event(kind="raw", index=index, raw=obj, content=json.dumps(obj, ensure_ascii=False), timestamp=ts)
 
 
@@ -222,6 +242,7 @@ def _assistant(obj: dict, index: int, ts: int) -> Event:
         tool_calls=calls,
         usage=_usage(obj.get("usage")),
         stop={"": "", "toolUse": "tool", "error": "error"}.get(reason, "end"),
+        error=str(obj.get("errorMessage") or ""),
         timestamp=ts,
         unknown_blocks=unknown,
     )
@@ -233,8 +254,11 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
     if not isinstance(details, dict):
         details = {}
     is_error = bool(obj.get("isError"))
+    text = _flatten_text(obj.get("content"))
+    refused = name == "webfetch" and bool(_HTTP_ERROR.match(text))
     # A tool that opens pages can still fail on the one it was given -- a 403, a timeout.
-    opened = name in _OPENING_TOOLS and not is_error
+    opened = name in _OPENING_TOOLS and not is_error and not refused
+    saved_path, holds_page = _saved_by_fetch(text, refused) if name == "webfetch" else ("", True)
     content = _as_text(obj.get("content"))
     sources = []
     for raw in details.get("sources") or []:
@@ -250,12 +274,15 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
             excerpt=str(raw.get("excerpt") or ""),
             published=str(raw.get("publishDate") or raw.get("published") or ""),
             opened=opened,
+            holds_page=holds_page,
+            saved_path=saved_path,
         ))
     if name == "repl":
+        # 성진: REPL 코드가 직접 부른 fetch()나 API 호출로 읽은 페이지는 출력에 아래 줄이 없어 opened로 잡지 못한다(SKILL.md가 이 사실을 말한다); REPL이 읽은 URL을 기록하게 되면 그 기록을 읽는다.
         # Each printed page is evidence on its own: a call that opened a tab and then failed on
         # its next statement still opened that page.
         found: dict[str, SourceRef] = {s.url: s for s in sources}
-        for m in _PAGE_PRINTED.finditer(_flatten_text(obj.get("content"))):
+        for m in _PAGE_PRINTED.finditer(text):
             url = m.group("tab_url") or m.group("snap_url")
             snapshot = m.group("snap_url") is not None
             if url in found:
@@ -276,6 +303,18 @@ def _tool_result(obj: dict, index: int, ts: int) -> Event:
         child_ids=_child_ids(name, details),
         timestamp=ts,
     )
+
+
+def _saved_by_fetch(text: str, refused: bool) -> tuple[str, bool]:
+    """Where a webfetch result says Aside saved what it received, and whether the result's text is the page itself."""
+    whole = _SAVED_OUTPUT.match(text)
+    if whole:
+        return whole.group("path"), True
+    download = _DOWNLOADED.match(text)
+    if not download:
+        return "", True
+    # An empty file, or one the server sent with its refusal, is not the document.
+    return ("" if refused or _EMPTY_DOWNLOAD.search(text) else download.group("path")), False
 
 
 def _child_ids(tool: str, details: dict) -> list[str]:
@@ -339,10 +378,14 @@ def _flatten_text(content: object) -> str:
 
 
 def _as_text(content: object) -> str:
+    """A record's content as text: its text blocks joined as `_flatten_text` joins them, or the whole of it as JSON when it holds anything else -- an image, a block this code has not seen -- which joining would drop."""
     if isinstance(content, str):
         return content
     if content is None:
         return ""
+    if isinstance(content, list) and all(isinstance(b, str) or (isinstance(b, dict) and b.get("type") == "text")
+                                         for b in content):
+        return _flatten_text(content)
     return json.dumps(content, ensure_ascii=False)
 
 

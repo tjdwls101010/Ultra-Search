@@ -372,7 +372,7 @@ def test_the_entry_point_checker_and_the_test_path_checker_catch_their_cases() -
 
 def test_the_format_checkers_catch_a_leak() -> None:
     assert opaque_reads("x = event.details['sources']\n", "ultra_search.research.evidence")
-    assert opaque_reads("x = event.raw\n", "ultra_search.research.follow")
+    assert opaque_reads("x = event.raw\n", "ultra_search.research.timeline")
     assert not opaque_reads("x = json.dumps(event.raw)\n", "ultra_search.research.render")
     assert not opaque_reads('payload = {"details": e.details}\n', "ultra_search.research.commands")
     assert opaque_reads('x = event.raw["content"]\n', "ultra_search.research.render")

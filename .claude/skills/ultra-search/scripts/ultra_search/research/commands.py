@@ -22,7 +22,7 @@ from pathlib import Path
 from ultra_search import aside, outcome, runs
 from ultra_search.ids import is_safe_id, normal
 from ultra_search.outcome import ArgumentError, Reply, RunFailed, RunNotFound
-from ultra_search.research import evidence, follow, supervisor
+from ultra_search.research import evidence, supervisor, timeline
 from ultra_search.research.marker import marker_for, run_id_in
 from ultra_search.research.states import FAILED_STATES, TERMINAL_STATES
 
@@ -93,7 +93,7 @@ def run_summary(run: runs.Run) -> dict:
 
 def log(root: Path, *, run: str | None, group: str | None, level: str) -> Reply:
     targets = _targets(root, run, group)
-    follow.print_log(targets, level=level)
+    timeline.print_log(targets, level=level)
     return Reply({"ok": True, "command": "log", "runs": [run_summary(r) for r in targets]})
 
 
@@ -120,7 +120,7 @@ def result(root: Path, *, run: str | None, group: str | None, sources: bool, wai
     for r in targets:
         _settle_unwatched(r)
     if wait:
-        follow.wait(targets, seconds=wait, check=_settle_unwatched)
+        timeline.wait(targets, seconds=wait, check=_settle_unwatched)
     entries = [_run_entry(r, sources=sources) for r in targets]
     return Reply(_envelope("result", targets, entries, group, root, cli), _outcome(entries))
 

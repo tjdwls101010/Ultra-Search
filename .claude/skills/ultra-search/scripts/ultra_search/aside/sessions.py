@@ -235,8 +235,8 @@ def session_summaries(limit: int = 30) -> list[dict]:
 class SavedFile:
     """A file Aside saved in a session's folder for a tool result."""
 
-    #: The page the result was for.
-    url: str
+    #: The pages the result that last wrote it was for.
+    urls: list[str]
     path: Path
     mtime: float
     #: A document a fetch downloaded, rather than a result too large to keep inline, whose text is the page.
@@ -244,29 +244,36 @@ class SavedFile:
 
 
 def session_saved_files(session_id: str, events: list[Event]) -> list[SavedFile]:
-    """The files these events -- one session's -- say Aside saved, in order: regular files inside that session's folder only, since a path in a transcript can name any file on this machine and what is listed here is copied out."""
+    """The files these events -- one session's -- say Aside saved, in the order they were last written: regular files inside that session's folder only, and none when the folder is a link, since a path in a transcript can name any file on this machine and what is listed here is copied out.
+
+    Two downloads can land on one path -- two servers naming their files alike -- and the file is then the later one's, so a path belongs to the last result that named it.
+    """
     d = _session_dir(session_id)
     try:
-        base = d.resolve(strict=True) if d else None
+        base = d.resolve(strict=True) if d and not d.is_symlink() else None
     except OSError:
         base = None
     if base is None:
         return []
-    out: list[SavedFile] = []
-    seen: set[str] = set()
+    named: dict[str, tuple[list[str], bool]] = {}
     for e in events:
+        here: dict[str, tuple[list[str], bool]] = {}
         for s in e.sources:
-            if not s.saved_path or s.saved_path in seen:
-                continue
-            seen.add(s.saved_path)
-            path = Path(s.saved_path)
-            try:
-                st = path.lstat()
-                inside = path.resolve(strict=True).is_relative_to(base)
-            except OSError:
-                continue
-            if stat.S_ISREG(st.st_mode) and inside:
-                out.append(SavedFile(url=s.url, path=path, mtime=st.st_mtime, document=not s.holds_page))
+            if s.saved_path:
+                here.setdefault(s.saved_path, ([], not s.holds_page))[0].append(s.url)
+        for path, value in here.items():
+            named.pop(path, None)
+            named[path] = value
+    out: list[SavedFile] = []
+    for name, (urls, document) in named.items():
+        path = Path(name)
+        try:
+            st = path.lstat()
+            inside = path.resolve(strict=True).is_relative_to(base)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and inside:
+            out.append(SavedFile(urls=urls, path=path, mtime=st.st_mtime, document=document))
     return out
 
 

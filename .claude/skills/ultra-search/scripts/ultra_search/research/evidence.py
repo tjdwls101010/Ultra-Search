@@ -284,6 +284,14 @@ class Turn:
         the page then read -- and the read page is the one worth returning, whichever stream
         and whichever order it came in.
         """
+        read, opened, excerpt, alone = self._texts(url)
+        return read or opened or excerpt or alone
+
+    def read_text(self, url: str) -> str:
+        """The fullest result of the turn that holds the page at a URL itself; "" when none does."""
+        return self._texts(url)[0]
+
+    def _texts(self, url: str) -> tuple[str, str, str, str]:
         read, opened, excerpt, alone = "", "", "", ""
         for events in [self.events, *(self.child_events[cid] for cid in self.children)]:
             for e in events:
@@ -297,7 +305,7 @@ class Turn:
                 excerpt = excerpt or next((s.excerpt for s in named if s.excerpt), "")
                 if len(e.sources) == 1:
                     alone = alone or e.content
-        return read or opened or excerpt or alone
+        return read, opened, excerpt, alone
 
 
 def turn_of(run: runs.Run) -> Turn:

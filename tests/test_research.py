@@ -594,6 +594,57 @@ def test_show_gives_a_downloaded_documents_file_and_a_long_results_whole_text(cl
     assert copied["https://e.test/long"] is None, "a long result is the page's text, not a document"
 
 
+def test_a_document_also_read_as_a_page_shows_both(cli, replay) -> None:
+    url = "https://docs.test/a.hwpx"
+    replay([*downloaded(url, "a.hwpx", b"PK hwpx", sid="d1"),
+            {"role": "toolResult", "toolName": "repl", "content": [{"type": "text", "text": f'- title: "A" [url={url}]\n  - text: 본문'}],
+             "details": {}, "isError": False},
+            answer("답")])
+    run_id = finished_run_id(cli)
+
+    _, shown, _ = cli("show", "--run", run_id, "--source", "d1")
+
+    assert "본문" in shown["content"] and Path(shown["file"]).read_bytes() == b"PK hwpx"
+
+
+def test_a_download_the_agent_kept_among_its_own_files_is_copied_once(cli, replay) -> None:
+    replay([{"__artifact__": "tmp/doc.hwpx", "text": "doc"},
+            webfetch("https://docs.test/doc", "\n\nDownloaded to: __SESSION_DIR__/artifacts/tmp/doc.hwpx\n"
+                     "MIME type: application/octet-stream\nFile size: 3 bytes", sid="d1"),
+            answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    (file,) = [s["file"] for s in run["opened_sources"] if "file" in s]
+    assert run["artifacts"] == [file]
+
+
+def test_a_path_two_downloads_wrote_belongs_to_the_later(cli, replay) -> None:
+    """Two servers can name their files alike, and Aside then saves the second over the first."""
+    replay([*downloaded("https://a.test/report", "report.pdf", b"from A", sid="a1"),
+            *downloaded("https://b.test/report", "report.pdf", b"from B", sid="b1"), answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    files = {s["url"]: s.get("file") for s in first_run(payload)["opened_sources"]}
+    assert files["https://a.test/report"] is None
+    assert Path(files["https://b.test/report"]).read_bytes() == b"from B"
+
+
+def test_a_document_downloaded_twice_keeps_both_and_points_at_the_later(cli, replay) -> None:
+    url = "https://docs.test/a.pdf"
+    replay([*downloaded(url, "a1.pdf", b"first", sid="d1"), *downloaded(url, "a2.pdf", b"second", sid="d2"),
+            answer("답")])
+
+    _, payload, _ = search(cli, "질문")
+
+    run = first_run(payload)
+    (file,) = [s["file"] for s in run["opened_sources"] if "file" in s]
+    assert Path(file).read_bytes() == b"second"
+    assert sorted(Path(p).read_bytes() for p in run["artifacts"]) == [b"first", b"second"]
+
+
 def test_show_reads_a_download_from_the_session_while_the_run_is_still_going(cli, replay) -> None:
     replay([*downloaded("https://docs.test/a.pdf", "a.pdf", b"%PDF-1.7 a", sid="d1"), {"__sleep__": 4}, answer("답")])
     _, payload, _ = search(cli, "질문", wait="0")

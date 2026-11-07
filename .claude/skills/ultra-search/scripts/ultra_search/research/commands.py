@@ -255,11 +255,12 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
     # A finished run's sources are the saved ones, numbered as `result` numbers them. Before the
     # result is written -- still running, or abandoned -- they come from its transcript copy.
     saved = _saved_result(target)
+    in_session = _in_session(turn) if saved is None and turn.observed else {}
     listed = ([{"url": s.get("url"), "title": s.get("title") or "", "id": s.get("id") or "", "ids": s.get("ids") or [],
                 "opened": bool(s.get("opened")), "file": s.get("file") or "", "text_file": s.get("text_file") or ""}
                for s in saved.get("sources") or []] if saved is not None else
-              [{"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened, **_in_session(turn, s.url)}
-               for s in turn.sources()])
+              [{"url": s.url, "title": s.title, "id": s.id, "ids": s.ids, "opened": s.opened,
+                **in_session.get(s.url, {})} for s in turn.sources()])
     hit = None
     if str(source).isdigit():
         i = int(source)
@@ -280,23 +281,27 @@ def show(root: Path, *, run: str | None, source: str | None, item: int | None) -
                "content": turn.source_text(hit["url"]) if turn.observed else ""}
     if text_file:
         payload["content"] = aside.saved_text(text_file) or payload["content"]
+    elif file:
+        # Not the notice that says where it was saved: a page read of it, if any tool read one.
+        payload["content"] = turn.read_text(hit["url"])
     if file:
-        payload["content"] = ""
         payload["file"] = file
-        payload["note"] = "a downloaded document: the transcript holds only where it was saved, and file is a copy of it"
+        payload["note"] = "file is a copy of the document the agent downloaded from this URL; the transcript holds only where it was saved"
     if not turn.observed:
         payload["note"] = ("no page text: this run's session transcript was never read, so all it has is what "
                            "`aside exec` printed on stdout")
     return Reply(payload)
 
 
-def _in_session(turn: evidence.Turn, url: str) -> dict:
-    """Before a run's result is written, where Aside saved what a tool received for this URL -- still in the session's folder."""
-    out = {"file": "", "text_file": ""}
-    for _, _, saved in turn.saved_files():
-        if saved.url == url:
-            key = "file" if saved.document else "text_file"
-            out[key] = out[key] or str(saved.path)
+def _in_session(turn: evidence.Turn) -> dict[str, dict]:
+    """Before a run's result is written, where Aside saved what a tool received for each URL -- still in the session's folder -- the latest of each kind, and none a later turn of the session has changed since."""
+    out: dict[str, dict] = {}
+    for cid, _, saved in turn.saved_files():
+        _, next_began = turn.window(cid)
+        if next_began is not None and saved.mtime >= next_began:
+            continue
+        for url in saved.urls:
+            out.setdefault(url, {"file": "", "text_file": ""})["file" if saved.document else "text_file"] = str(saved.path)
     return out
 
 

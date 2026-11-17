@@ -26,13 +26,27 @@ SCRIPTS = REPO / ".claude" / "skills" / "ultra-search" / "scripts"
 FIXTURES = TESTS / "fixtures"
 
 
+def cold_runs(markexpr: str) -> bool:
+    """Whether a `-m` expression selects the cold tests because it names them -- `-m cold`, `-m "live or cold"` -- and
+    never the default run, `-m live`, `-m "not cold"` or `-m "not live"`: each of them quits the user's browser."""
+    if not markexpr.strip():
+        return False
+    from _pytest.mark.expression import Expression
+
+    expr = Expression.compile(markexpr)
+    return expr.evaluate(lambda name, **_: name == "cold") and not expr.evaluate(lambda name, **_: False)
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if "live" in (config.getoption("-m") or ""):
-        return
-    skip = pytest.mark.skip(reason="live test: run with -m live and the Aside app open")
+    markexpr = config.getoption("-m") or ""
+    skip_cold = pytest.mark.skip(reason="cold test: quits the Aside app; run with -m cold")
+    skip_live = pytest.mark.skip(reason="live test: run with -m live and the Aside app open")
     for item in items:
-        if "live" in item.keywords:
-            item.add_marker(skip)
+        if "cold" in item.keywords:
+            if not cold_runs(markexpr):
+                item.add_marker(skip_cold)
+        elif "live" in item.keywords and "live" not in markexpr:
+            item.add_marker(skip_live)
 
 
 @pytest.fixture(scope="session")
@@ -80,7 +94,7 @@ def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
     argument handling does. `fake_aside` and `aside_home` override these for the tests that
     want them.
     """
-    if "live" in request.keywords:
+    if "live" in request.keywords or "cold" in request.keywords:
         return
     monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", request.getfixturevalue("ready_daemon"))
     # The fake answers as the real CLI does when DAEMON_BASE_URL points nowhere; one inherited from a developer's shell

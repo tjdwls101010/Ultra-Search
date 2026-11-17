@@ -265,6 +265,17 @@ def test_doctor_without_the_aside_binary_says_how_to_get_one(runs_dir: Path, asi
     assert check(payload, "aside binary")["fix"]
 
 
+@pytest.mark.parametrize("markexpr, runs", [
+    ("", False), ("live", False), ("not cold", False), ("not live", False), ("live and not cold", False),
+    ("cold", True), ("live or cold", True),
+])
+def test_cold_tests_run_only_when_the_marker_expression_names_them(markexpr: str, runs: bool) -> None:
+    """The cold tests quit the user's browser; no run that did not ask for them may reach them."""
+    from conftest import cold_runs
+
+    assert cold_runs(markexpr) is runs
+
+
 # --- setup -------------------------------------------------------------------------------
 
 

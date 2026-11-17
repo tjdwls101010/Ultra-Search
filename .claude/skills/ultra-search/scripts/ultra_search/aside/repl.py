@@ -108,8 +108,11 @@ def round_trip(timeout: float) -> tuple[bool, str, str]:
     try:
         proc = subprocess.run([aside_bin(), "repl", code], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        # Ours, not Aside's: kept apart from anything the CLI says, which would say why.
-        raise AsideUnavailable(f"`aside repl` gave no answer in {timeout:g} s") from e
+        # Ours, not Aside's: kept apart from anything the CLI says, which would say why -- and with what it had said by
+        # then, since "opening it" and then nothing is not the same as nothing.
+        said = _text(e.stderr).strip()[:400]
+        raise AsideUnavailable(f"`aside repl` gave no answer in {timeout:g} s"
+                               + (f"; it had said: {said}" if said else "")) from e
     except (OSError, subprocess.SubprocessError) as e:
         raise AsideUnavailable(f"repl round trip failed: {e}") from e
     if proc.returncode == 0 and {"ok": True} in parse_ndjson(proc.stdout):

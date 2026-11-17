@@ -163,6 +163,23 @@ def test_a_round_trip_that_never_answers_is_told_apart_from_aside_saying_why(fak
     assert said in e.value.message and not_said not in e.value.message
 
 
+def test_what_aside_said_before_a_round_trip_ran_out_of_time_is_kept(fake_aside: Path, monkeypatch,
+                                                                     daemon_silent) -> None:
+    """"It is opening" and then nothing in time is a different story from nothing at all."""
+    from ultra_search import aside
+    from ultra_search.outcome import AsideUnavailable
+
+    monkeypatch.setenv("FAKE_ASIDE_OPENS", "1")
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "repl_timeout")
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "10")
+
+    with pytest.raises(AsideUnavailable) as e:
+        aside.ensure_ready(timeout=1)
+
+    assert "gave no answer in 1 s" in e.value.message
+    assert "Aside isn't running. Opening it in the background..." in e.value.message
+
+
 def test_versions_other_than_the_measured_ones_are_named_not_failed(
     runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
 ) -> None:

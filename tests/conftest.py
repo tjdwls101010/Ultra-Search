@@ -59,6 +59,18 @@ def ready_daemon() -> str:
     server.shutdown()
 
 
+@pytest.fixture
+def daemon_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The daemon's health endpoint answering nothing -- a port no one listens on, as a closed Aside looks to the skill.
+    Nothing here starts: what the round trip that follows does is the fake's scenario."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+
+
 @pytest.fixture(autouse=True)
 def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Outside `-m live`, nothing reaches the real aside, ~/.aside or this repository.
@@ -189,6 +201,13 @@ def repl_calls(calls_dir: Path, snippet: str) -> list[dict]:
         if len(code) > 1 and code[1] == f"// snippet: {snippet}":
             out.append(json.loads(code[0][len("const ARGS = "):].rstrip(";")))
     return out
+
+
+def round_trips(calls_dir: Path) -> list[str]:
+    """The code of every `aside repl` call that was not a page snippet -- the round trip that checks, or starts, Aside."""
+    log = calls_dir / "calls.jsonl"
+    rows = [json.loads(line)["argv"] for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+    return [argv[-1] for argv in rows if argv[1:2] == ["repl"] and "// snippet:" not in argv[-1]]
 
 
 def exec_calls(calls_dir: Path) -> list[list[str]]:

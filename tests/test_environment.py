@@ -25,14 +25,31 @@ VERIFIED_DAEMON = {"ready": True, "version": "1.26.1115.1556", "runningSessionCo
                    "semaphore": {"available": 4, "capacity": 4}}
 
 
+class Health:
+    """The health endpoint's replies: ``health(**body)`` sets the one it gives, ``health.in_turn(a, b)`` gives each in
+    turn and then repeats the last -- a daemon that comes up between two looks."""
+
+    def __init__(self) -> None:
+        self.bodies = [dict(VERIFIED_DAEMON)]
+
+    def __call__(self, **body) -> None:
+        self.bodies = [body]
+
+    def in_turn(self, *bodies: dict) -> None:
+        self.bodies = list(bodies)
+
+    def next(self) -> dict:
+        return self.bodies.pop(0) if len(self.bodies) > 1 else self.bodies[0]
+
+
 @pytest.fixture
 def daemon(monkeypatch: pytest.MonkeyPatch):
     """A stand-in for the daemon's health endpoint; returns a setter for its reply."""
-    state = {"body": dict(VERIFIED_DAEMON)}
+    state = Health()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
-            data = json.dumps(state["body"]).encode()
+            data = json.dumps(state.next()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -44,7 +61,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{server.server_address[1]}/")
-    yield lambda **body: state.update(body=body)
+    yield state
     server.shutdown()
 
 
@@ -74,26 +91,76 @@ def test_doctor_passes_when_everything_a_command_needs_is_there(
     assert all(c["ok"] and "fix" not in c for c in payload["checks"])
 
 
-def test_a_closed_daemon_fails_doctor(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch) -> None:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+def test_an_aside_that_cannot_be_started_fails_doctor_in_its_own_words(runs_dir: Path, aside_home: Path, fake_aside: Path,
+                                                                       monkeypatch, daemon_silent) -> None:
+    """doctor starts a closed Aside as any command would. When that fails too, the fix is to open the app by hand:
+    whether the app will not open or only the CLI could not open it is then plain."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "aside_down")
 
     code, payload = doctor(runs_dir)
 
     assert code == 3
     assert check(payload, "aside daemon")["ok"] is False
-    assert check(payload, "aside daemon")["fix"] == "Open the Aside app."
+    assert "Aside isn't running on this machine." in check(payload, "aside daemon")["detail"]
+    assert check(payload, "aside daemon")["fix"] == "Open the Aside app by hand, then re-run `doctor`."
+    assert {"browser repl", "aside account"}.isdisjoint(c["check"] for c in payload["checks"])
 
 
-def test_a_daemon_that_is_up_but_not_ready_fails_doctor(runs_dir: Path, aside_home: Path, fake_aside: Path, daemon) -> None:
+def test_a_round_trip_that_ran_and_failed_fails_doctor(runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch,
+                                                       daemon_silent) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_REPL_PROBE", "fail")
+
+    code, payload = doctor(runs_dir)
+
+    assert code == 3
+    assert check(payload, "aside daemon")["ok"] is False
+    assert "sandbox refused the snippet" in check(payload, "aside daemon")["detail"]
+
+
+def test_a_daemon_still_not_ready_after_a_round_trip_fails_doctor(runs_dir: Path, aside_home: Path, fake_aside: Path,
+                                                                  daemon) -> None:
     daemon(**{**VERIFIED_DAEMON, "ready": False})
 
     code, payload = doctor(runs_dir)
 
     assert code == 3
     assert check(payload, "aside daemon")["ok"] is False
+
+
+def test_doctor_names_a_daemon_that_answered_only_after_a_round_trip_and_checks_the_rest(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
+) -> None:
+    """Not that Aside was closed, nor that this opened it: it may have been starting, or something else may have."""
+    monkeypatch.setenv("FAKE_ASIDE_VERSION", "2.0.0")
+    daemon.in_turn({**VERIFIED_DAEMON, "ready": False, "version": "2.0.0"}, {**VERIFIED_DAEMON, "version": "2.0.0"})
+
+    code, payload = doctor(runs_dir)
+
+    assert code == 0, [c for c in payload["checks"] if not c["ok"]]
+    note = check(payload, "aside daemon")["note"]
+    assert "did not answer" in note and "round trip" in note
+    assert "measured against" in note, "the version's note stays"
+    assert check(payload, "browser repl")["ok"] is True and check(payload, "aside account")["ok"] is True
+
+
+@pytest.mark.parametrize("scenario, said, not_said", [
+    ("repl_timeout", "gave no answer in 0.5 s", "Could not connect"),
+    ("aside_down", "Aside isn't running on this machine.", "gave no answer"),
+], ids=["no-answer", "aside-said-why"])
+def test_a_round_trip_that_never_answers_is_told_apart_from_aside_saying_why(fake_aside: Path, monkeypatch,
+                                                                             daemon_silent, scenario: str, said: str,
+                                                                             not_said: str) -> None:
+    from ultra_search import aside
+    from ultra_search.outcome import AsideUnavailable
+
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", scenario)
+    monkeypatch.setenv("FAKE_ASIDE_DELAY", "10")
+
+    with pytest.raises(AsideUnavailable) as e:
+        aside.ensure_ready(timeout=0.5)
+
+    assert "the Aside daemon did not" in e.value.message
+    assert said in e.value.message and not_said not in e.value.message
 
 
 def test_versions_other_than_the_measured_ones_are_named_not_failed(
@@ -327,6 +394,15 @@ def test_next_is_explained_for_a_caller_nothing_will_wake(command: str) -> None:
     text = help_of(command)
 
     assert "run_in_background" in text and "bash_timeout_ms" in text and "note" in text
+
+
+@pytest.mark.parametrize("command", ["search", "resume", "fetch", "map", "crawl", "doctor"])
+def test_help_says_the_command_starts_a_closed_aside_and_leaves_it_running(command: str) -> None:
+    """A side effect on the user's machine, and the reason the command can take longer than usual."""
+    text = " ".join(help_of(command).split())
+
+    assert "starts Aside when it is closed" in text and "Aside is left running" in text
+    assert "started" in next(line for line in help_of(command).splitlines() if line.startswith("3 "))
 
 
 def test_result_help_names_every_end_state_and_what_opened_means() -> None:

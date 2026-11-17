@@ -35,6 +35,7 @@ from conftest import (
     answer,
     calling,
     exec_calls,
+    round_trips,
     run_cli,
     run_cli_streams,
     subagent_turn,
@@ -800,24 +801,65 @@ def test_a_negative_finding_is_an_answer_not_empty_output(cli, monkeypatch) -> N
     assert first_run(payload)["empty"] is False
 
 
-def test_a_daemon_that_does_not_answer_exits_three_before_reserving_a_run(
-    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch
+def test_an_aside_that_cannot_be_started_exits_three_before_reserving_a_run(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, daemon_silent
 ) -> None:
-    """With the Aside app closed, `aside exec` exits with an error that used to be reported as a
-    failed run whose answer was the error text."""
-    import socket
-
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+    """With the Aside app closed, `aside exec` exits with an error that used to be reported as a failed run whose
+    answer was the error text. Started from the detached supervisor instead, the failure would wait for `result`
+    behind a reserved run, and the CLI's start-up line would land in the run's stdout."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "aside_down")
 
     code, payload, _ = run_cli("search", "질문", "--runs-dir", str(runs_dir))
 
     assert code == 3
     assert payload["error"] == "aside_unavailable" and "doctor" in payload["fix"]
+    assert "Aside isn't running on this machine." in payload["message"]
     assert run_cli("result", "--runs-dir", str(runs_dir))[0] == 2, "no run was reserved"
     assert exec_calls(fake_aside) == []
+
+
+def test_a_search_whose_daemon_does_not_answer_is_started_through_aside(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, monkeypatch, daemon_silent
+) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+    monkeypatch.setenv("FAKE_ASIDE_OPENS", "1")
+
+    code, out, err = run_cli_streams("search", "질문", "--runs-dir", str(runs_dir))
+    assert code == 0 and out.count("\n") == 1, out
+    done, result, _ = run_cli("result", json.loads(out)["runs"][0]["run_id"], "--wait", "30", "--runs-dir", str(runs_dir))
+
+    assert "Aside isn't running. Opening it in the background...\n" in err
+    assert (done, first_run(result)["state"]) == (0, "completed")
+    assert "Opening it in the background" not in first_run(result)["answer"]
+
+
+def test_a_resume_whose_daemon_does_not_answer_is_started_through_aside(cli, fake_aside: Path, monkeypatch,
+                                                                        daemon_silent) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_OPENS", "1")
+
+    code, payload, _ = resume(cli, "SimpleSearch00001", "그래서 결론은?")
+
+    assert code == 0
+    assert first_run(payload)["answer"] == "이어서 답합니다."
+    assert len(round_trips(fake_aside)) == 1
+
+
+def test_a_resume_of_no_session_is_refused_before_aside_is_started(cli, fake_aside: Path, daemon_silent) -> None:
+    code, _, _ = cli("resume", "NoSuchThing00001", "후속")
+
+    assert code == 2
+    assert round_trips(fake_aside) == []
+
+
+def test_a_daemon_that_answers_ready_costs_a_search_no_round_trip(runs_dir: Path, aside_home: Path,
+                                                                   fake_aside: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "simple")
+
+    code, _, err = run_cli_streams("search", "질문", "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert round_trips(fake_aside) == []
+    assert err == ""
 
 
 def test_a_missing_aside_binary_exits_three_before_reserving_a_run(runs_dir: Path, aside_home: Path, monkeypatch) -> None:

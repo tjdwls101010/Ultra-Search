@@ -47,6 +47,8 @@ A URL with no route answers as the real browser would: fetch_batch gets an HTTP 
 page, tab_one a navigation error, sitemap a miss, links a miss.
 
 The commands that talk to the daemon fail the way the real CLI (1.26.1115) does, on stderr with exit 1: FAKE_ASIDE_SCENARIO=aside_down -- or a DAEMON_BASE_URL nothing accepts a TCP connection at -- is the daemon refusing the connection, aside_unreachable a connection that fails some other way, and repl_timeout, like a `"__timeout__"` route, the 120s snippet kill, which the real CLI words as that same other failure and which drops everything the snippet printed. Only ASIDE_DEBUG=1 adds the `Details:` line that says which, followed by a stack, as it does for the real one.
+
+FAKE_ASIDE_OPENS=1 is a closed Aside the CLI opens: the first daemon command prints the CLI's line for that on stderr and then works. The fake opens nothing, so it says only what the CLI says, not that anything started; with a health stand-in that does not answer, it is "the daemon did not answer, and the round trip that followed worked". A repl that worked ends with the status line the real one prints on stderr.
 """
 from __future__ import annotations
 
@@ -406,6 +408,7 @@ def do_repl(code: str) -> int:
                 print(json.dumps({"ok": False, "error": "sandbox refused the snippet"}))
                 return 1
             print(json.dumps({"ok": True}))
+            print("[ok | 1ms]", file=sys.stderr)
             return 0
         print("the fake aside cannot evaluate arbitrary JavaScript", file=sys.stderr)
         return 2
@@ -416,6 +419,7 @@ def do_repl(code: str) -> int:
     for rec in SNIPPETS[snippet](args, routes):
         print(json.dumps(rec, ensure_ascii=False))
         sys.stdout.flush()
+    print("[ok | 1ms]", file=sys.stderr)
     return 0
 
 
@@ -583,6 +587,8 @@ def main(argv: list[str]) -> int:
             return refused()
         if SCENARIO == "aside_unreachable":
             return unreachable()
+        if os.environ.get("FAKE_ASIDE_OPENS") == "1" and bump("__opened__") == 0:
+            print("Aside isn't running. Opening it in the background...", file=sys.stderr)
     if cmd == "exec":
         if "--session" in argv:
             print("Error: Unknown option '--session'\n(add --help for usage)", file=sys.stderr)

@@ -419,7 +419,8 @@ def test_help_says_the_command_starts_a_closed_aside_and_leaves_it_running(comma
     text = " ".join(help_of(command).split())
 
     assert "starts Aside when it is closed" in text and "Aside is left running" in text
-    assert "started" in next(line for line in help_of(command).splitlines() if line.startswith("3 "))
+    if command != "doctor":  # doctor's 3 is a failed check, each with its own detail
+        assert "started" in next(line for line in help_of(command).splitlines() if line.startswith("3 "))
 
 
 def test_result_help_names_every_end_state_and_what_opened_means() -> None:

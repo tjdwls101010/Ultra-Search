@@ -71,6 +71,9 @@ def no_real_aside(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
     if "live" in request.keywords:
         return
     monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", request.getfixturevalue("ready_daemon"))
+    # The fake answers as the real CLI does when DAEMON_BASE_URL points nowhere; one inherited from a developer's shell
+    # would have it refuse while the skill checks ULTRA_SEARCH_DAEMON_URL. Tests about that variable set it themselves.
+    monkeypatch.delenv("DAEMON_BASE_URL", raising=False)
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_BIN", str(tmp_path / "no-real-aside-in-tests"))
     monkeypatch.setenv("ULTRA_SEARCH_ASIDE_HOME", str(tmp_path / "no-real-aside-home"))
     cwd = tmp_path / "cwd"

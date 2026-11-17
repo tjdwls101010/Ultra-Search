@@ -40,11 +40,13 @@ snippet named on the snippet's `// snippet: <name>` line and then by URL:
     links                 page URL -> the raw hrefs on that page, or {"final_url": URL,
                           "hrefs": [...]} for a page that redirected there; "__hit_budget__":
                           true ends the call the way a snippet cut off by its budget does
-    sitemap, links        "__timeout__": true prints what was found and then dies the way
-                          the daemon's 120s snippet kill does, with no closing record
+    sitemap, links        "__timeout__": true dies the way the daemon's 120s snippet kill
+                          does: no record reaches stdout, not even what was found first
 
 A URL with no route answers as the real browser would: fetch_batch gets an HTTP 404
 page, tab_one a navigation error, sitemap a miss, links a miss.
+
+The commands that talk to the daemon fail the way the real CLI (1.26.1115) does, on stderr with exit 1: FAKE_ASIDE_SCENARIO=aside_down -- or a DAEMON_BASE_URL nothing accepts a TCP connection at -- is the daemon refusing the connection, aside_unreachable a connection that fails some other way, and repl_timeout, like a `"__timeout__"` route, the 120s snippet kill, which the real CLI words as that same other failure and which drops everything the snippet printed. Only ASIDE_DEBUG=1 adds the `Details:` line that says which, followed by a stack, as it does for the real one.
 """
 from __future__ import annotations
 
@@ -53,10 +55,12 @@ import json
 import os
 import random
 import re
+import socket
 import string
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 SCENARIO = os.environ.get("FAKE_ASIDE_SCENARIO", "simple")
 LIFECYCLE = os.environ.get("FAKE_ASIDE_FORMAT", "lifecycle") != "legacy"
@@ -71,7 +75,8 @@ def record_call(argv: list[str]) -> None:
     p = Path(d) / "calls.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"argv": argv, "scenario": SCENARIO, "at": time.time()}, ensure_ascii=False) + "\n")
+        env = {k: os.environ[k] for k in ("ASIDE_DEBUG", "DAEMON_BASE_URL") if k in os.environ}
+        f.write(json.dumps({"argv": argv, "scenario": SCENARIO, "env": env, "at": time.time()}, ensure_ascii=False) + "\n")
 
 
 def new_session_id() -> str:
@@ -285,10 +290,6 @@ def do_exec(prompt: str, session: str | None = None) -> int:
         print(answer)
         return 0
 
-    if SCENARIO == "aside_down":
-        print("Aside daemon is not reachable", file=sys.stderr)
-        return 1
-
     if SCENARIO == "no_session":
         # The session never appears on disk: the supervisor has to fall back to stdout
         # alone rather than waiting forever for a correlation that will not happen. What is
@@ -390,16 +391,9 @@ def do_exec(prompt: str, session: str | None = None) -> int:
 
 
 def do_repl(code: str) -> int:
-    if SCENARIO == "aside_down":
-        print("fetch failed: other side closed", file=sys.stderr)
-        print("Aside daemon is not reachable", file=sys.stderr)
-        return 1
     if SCENARIO == "repl_timeout":
-        # The real daemon reports a 120s snippet overrun as though it had died.
         time.sleep(float(os.environ.get("FAKE_ASIDE_DELAY", "0.2")))
-        print("fetch failed: other side closed", file=sys.stderr)
-        print("Aside daemon is not reachable", file=sys.stderr)
-        return 1
+        return snippet_killed()
 
     snippet, args = snippet_of(code)
     if snippet is None:
@@ -416,14 +410,65 @@ def do_repl(code: str) -> int:
         print("the fake aside cannot evaluate arbitrary JavaScript", file=sys.stderr)
         return 2
     routes = load_routes().get(snippet) or {}
+    if routes.get("__timeout__"):
+        # Killed before its closing record, and nothing it printed reaches stdout.
+        return snippet_killed()
     for rec in SNIPPETS[snippet](args, routes):
-        if routes.get("__timeout__") and rec.get("kind") in ("sitemap_done", "links_done"):
-            print("fetch failed: other side closed", file=sys.stderr)
-            print("Aside daemon is not reachable", file=sys.stderr)
-            return 1
         print(json.dumps(rec, ensure_ascii=False))
         sys.stdout.flush()
     return 0
+
+
+DEFAULT_DAEMON = "http://127.0.0.1:21420"
+REMOTE_HINT = ("  - Or control another machine / Aside Cloud instead: run 'aside login' once, then "
+               "'aside exec --host <host>' (see 'aside host list').")
+
+
+def daemon_base() -> str:
+    return (os.environ.get("DAEMON_BASE_URL") or DEFAULT_DAEMON).rstrip("/")
+
+
+def cli_error(said: str, cause: str) -> int:
+    """A daemon error as the real CLI prints it: the message and the remote-host hint, then -- under ASIDE_DEBUG=1 --
+    the cause and a stack that repeats both."""
+    lines = [f"Error: {said}", REMOTE_HINT]
+    if os.environ.get("ASIDE_DEBUG") == "1":
+        lines += [f"Details: {cause}", f"TRPCClientError: {said}", REMOTE_HINT, f"Details: {cause}",
+                  "    at TRPCClientError.from (file:///fake/aside:1:1)"]
+    print("\n".join(lines), file=sys.stderr)
+    return 1
+
+
+def refused() -> int:
+    return cli_error(
+        "Aside isn't running on this machine. Ask the user to open Aside, then retry the same command. Don't switch "
+        "to another browser: only Aside has the user's logged-in sessions.",
+        f"Failed to request daemon auth challenge: fetch failed: connect ECONNREFUSED {urlparse(daemon_base()).netloc}")
+
+
+def unreachable(cause: str = "Failed to request daemon auth challenge: fetch failed: bad port") -> int:
+    return cli_error(f"Could not connect to Aside at {daemon_base()}. Check the browser and local network permissions.",
+                     cause)
+
+
+def snippet_killed() -> int:
+    """The 120s snippet kill, worded by the real CLI as a connection it could not make; only its cause says otherwise."""
+    return unreachable("fetch failed: other side closed")
+
+
+def daemon_refuses() -> bool:
+    """Whether DAEMON_BASE_URL, when it is set, accepts no TCP connection -- not whether a daemon answers there, and not
+    the ports Node's fetch refuses before connecting (9, for one), which the real CLI words as aside_unreachable. Left
+    unset, the fake stands in for a daemon that is up, and never touches the real one's port."""
+    base = os.environ.get("DAEMON_BASE_URL")
+    if not base:
+        return False
+    u = urlparse(base)
+    try:
+        socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=2).close()
+        return False
+    except OSError:
+        return True
 
 
 DOCTOR_PROBE = "console.log(JSON.stringify({ok:true}));"
@@ -531,8 +576,13 @@ def main(argv: list[str]) -> int:
     positionals = [a for a in argv[2:] if not a.startswith("-")]
     flagged = {a for a in argv[2:] if a.startswith("-")}
     if "--version" in flagged or cmd == "--version":
-        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.1107.24"))
+        print(os.environ.get("FAKE_ASIDE_VERSION", "1.26.1115.1556"))
         return 0
+    if cmd in ("exec", "session", "repl", "account"):
+        if SCENARIO == "aside_down" or daemon_refuses():
+            return refused()
+        if SCENARIO == "aside_unreachable":
+            return unreachable()
     if cmd == "exec":
         if "--session" in argv:
             print("Error: Unknown option '--session'\n(add --help for usage)", file=sys.stderr)

@@ -1,13 +1,15 @@
 """Running JavaScript in the user's browser and reading back NDJSON.
 
-The one thing worth knowing: a snippet that runs past 120 seconds is killed, and the
-daemon reports that as "fetch failed: other side closed / Aside daemon is not reachable".
-The daemon is fine. Taking that message at face value sends a caller to restart an app
-that was never broken, so it is translated here into what actually happened.
+The one thing worth knowing: a snippet that runs past 120 seconds is killed, and the CLI
+reports that as "Could not connect to Aside", the words it uses for a connection that
+failed. The daemon is fine. Taking that message at face value sends a caller to restart an
+app that was never broken, so it is translated here into what actually happened -- by the
+cause ASIDE_DEBUG=1 makes the CLI add, the only thing that tells the two apart.
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -21,11 +23,14 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 #: The daemon kills a snippet here. Everything a snippet does is budgeted below this.
 REPL_HARD_LIMIT = 120.0
-_TIMEOUT_SIGNS = ("other side closed", "daemon is not reachable", "fetch failed")
+#: The cause the CLI gives the kill under ASIDE_DEBUG=1. "fetch failed" is not one: it comes before a refused or blocked
+#: connection's cause too.
+_KILLED = "other side closed"
 
 
 class ReplTimeout(Exception):
-    """The snippet was killed at the 120s limit. Partial output is still usable."""
+    """The snippet was killed at the 120s limit. ``lines`` is what reached stdout before that, which the CLI has been
+    seen to drop entirely: a snippet's defence is finishing inside its own budget."""
 
     def __init__(self, lines: list[dict]) -> None:
         super().__init__("repl snippet exceeded the 120s limit")
@@ -33,17 +38,14 @@ class ReplTimeout(Exception):
 
 
 def run_code(code: str, *, timeout: float = REPL_HARD_LIMIT + 15) -> list[dict]:
-    """Run code in the REPL and return the JSON objects it printed, in order.
-
-    Partial output survives a timeout on purpose: the snippets print each result as it
-    lands precisely so that a batch cut short still yields the URLs that finished.
-    """
+    """Run code in the REPL and return the JSON objects it printed, in order."""
     try:
         proc = subprocess.run(
             [aside_bin(), "repl", code],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env={**os.environ, "ASIDE_DEBUG": "1"},
         )
     except subprocess.TimeoutExpired as e:
         raise ReplTimeout(parse_ndjson(_text(e.stdout))) from e
@@ -52,16 +54,23 @@ def run_code(code: str, *, timeout: float = REPL_HARD_LIMIT + 15) -> list[dict]:
 
     lines = parse_ndjson(proc.stdout)
     if proc.returncode != 0:
-        blob = f"{proc.stdout}\n{proc.stderr}".lower()
-        if any(sign in blob for sign in _TIMEOUT_SIGNS):
-            # The message names the daemon, but the daemon is running: this is the 120s
-            # snippet kill wearing a misleading label.
+        # stderr alone: stdout is the page's output, and a page can say anything.
+        if _KILLED in (proc.stderr or ""):
             raise ReplTimeout(lines)
         raise AsideUnavailable(
-            f"`aside repl` failed: {(proc.stderr or proc.stdout or '').strip()[:400]}",
+            f"`aside repl` failed: {_said(proc.stderr or proc.stdout or '')}",
             fix="Check the Aside app is running, then re-run `doctor`.",
         )
     return lines
+
+
+def _said(text: str) -> str:
+    """What the CLI said, through the cause on its first `Details:` line; the stack it prints after that repeats both."""
+    lines = text.strip().splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("Details:"):
+            return "\n".join(lines[:i + 1])
+    return text.strip()[:400]
 
 
 def run_snippet(name: str, args: dict, *, timeout: float = REPL_HARD_LIMIT + 15) -> list[dict]:

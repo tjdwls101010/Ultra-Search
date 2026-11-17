@@ -170,6 +170,50 @@ def test_the_fake_can_fail_the_way_a_real_failure_looks(tmp_path: Path) -> None:
     assert run_fake(["exec", "질문"], home, calls, scenario="fail").returncode == 1
 
 
+def closed_port() -> str:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return f"127.0.0.1:{s.getsockname()[1]}"
+
+
+def assert_refused(p: subprocess.CompletedProcess, where: str) -> None:
+    """How the CLI (1.26.1115) says nothing accepted its connection: the message, and under ASIDE_DEBUG the cause."""
+    lines = p.stderr.splitlines()
+    assert (p.returncode, p.stdout) == (1, "")
+    assert lines[0].startswith("Error: Aside isn't running on this machine.")
+    assert next(line for line in lines if line.startswith("Details:")).endswith(f"ECONNREFUSED {where}")
+
+
+def assert_killed(p: subprocess.CompletedProcess) -> None:
+    """How the CLI (1.26.1115) says a snippet was killed at 120 seconds: in the words of a failed connection, with
+    `other side closed` as the cause, and nothing the snippet printed."""
+    lines = p.stderr.splitlines()
+    assert (p.returncode, p.stdout) == (1, "")
+    assert lines[0].startswith("Error: Could not connect to Aside at ")
+    assert next(line for line in lines if line.startswith("Details:")) == "Details: fetch failed: other side closed"
+
+
+KILLED_SNIPPET = 'console.log(JSON.stringify({part:1})); await new Promise(r => setTimeout(r, 130000));'
+
+
+def test_the_fake_refuses_where_daemon_base_url_takes_no_connection(tmp_path: Path) -> None:
+    where = closed_port()
+
+    p = run_fake(["repl", "console.log(1)"], tmp_path / "home", tmp_path / "calls", DAEMON_BASE_URL=f"http://{where}",
+                 ASIDE_DEBUG="1")
+
+    assert_refused(p, where)
+
+
+def test_the_fake_words_a_snippet_kill_as_the_real_one_does(tmp_path: Path) -> None:
+    p = run_fake(["repl", KILLED_SNIPPET], tmp_path / "home", tmp_path / "calls", scenario="repl_timeout",
+                 ASIDE_DEBUG="1")
+
+    assert_killed(p)
+
+
 def test_a_replay_follows_the_prompt_and_keeps_a_torn_tail_torn(tmp_path: Path) -> None:
     home, calls = tmp_path / "home", tmp_path / "calls"
     replay = tmp_path / "replay.jsonl"
@@ -347,6 +391,25 @@ def test_the_real_binary_continues_a_session_only_through_session_resume() -> No
     assert p.returncode == 2
     assert "Unknown option '--session'" in p.stderr
     assert "<id> [prompt...]" in usage.stdout
+
+
+@pytest.mark.live
+def test_the_real_binary_refuses_where_daemon_base_url_takes_no_connection() -> None:
+    where = closed_port()
+
+    p = subprocess.run(["aside", "repl", "console.log(1)"], capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "DAEMON_BASE_URL": f"http://{where}", "ASIDE_DEBUG": "1"})
+
+    assert_refused(p, where)
+
+
+@pytest.mark.live
+def test_the_real_binary_words_a_snippet_kill_as_the_fake_does() -> None:
+    """Two minutes: the kill comes at 120 seconds. Without its cause the kill reads as Aside being unreachable."""
+    p = subprocess.run(["aside", "repl", KILLED_SNIPPET], capture_output=True, text=True, timeout=200,
+                       env={**os.environ, "ASIDE_DEBUG": "1"})
+
+    assert_killed(p)
 
 
 @pytest.mark.live

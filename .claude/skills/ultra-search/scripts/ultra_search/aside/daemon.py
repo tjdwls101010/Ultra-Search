@@ -5,8 +5,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 from ultra_search.aside.process import aside_bin
+from ultra_search.aside.repl import START_LIMIT, round_trip
 from ultra_search.outcome import AsideUnavailable
 
 DAEMON_URL = "http://127.0.0.1:21420/"
@@ -50,14 +52,37 @@ def daemon_status() -> dict:
         return {"ok": False, "version": None, "detail": f"no answer from {url} ({e})"}
 
 
-def require_ready() -> None:
-    """Refuse before any work when Aside cannot take it -- the binary missing, the daemon not answering or not ready.
-    Work started anyway fails in shapes that read as findings: a fetch's `no response`, a map of an empty site, a failed
-    investigation whose answer is the error text."""
+#: After Aside could not be started there is nothing more to open: what it said is in the message, and doctor checks
+#: each part of the environment apart.
+START_FIX = "Run `doctor`: it reports each part of the environment on its own."
+
+
+def ensure_ready(*, timeout: float = START_LIMIT) -> bool:
+    """Make Aside able to take work, before any: True when the daemon did not answer ready and the `aside repl` round
+    trip that followed worked -- not that Aside was closed or that this started it, since it may have been starting
+    already, or something else may have opened it.
+
+    A daemon answering ready costs one local request and nothing more. Otherwise the round trip: the CLI opens a closed
+    Aside itself and waits for it, and a snippet coming back proves the browser takes work, which a health answer does
+    not. What the CLI said meanwhile goes to stderr as it said it.
+
+    Before the work rather than inside it: work started on an Aside that cannot take it fails in shapes that read as
+    findings -- a fetch's `no response`, a map of an empty site -- and a `search` would reserve a run, leave the
+    failure to `result`, and get the CLI's start-up line in its stdout.
+    """
     aside_bin()
-    status = daemon_status()
-    if not status["ok"]:
-        raise AsideUnavailable(f"the Aside daemon is not ready: {status['detail']}")
+    if daemon_status()["ok"]:
+        return False
+    try:
+        worked, detail, said = round_trip(timeout)
+    except AsideUnavailable as e:
+        raise AsideUnavailable(f"the Aside daemon did not report ready and {e.message}", fix=START_FIX) from e
+    if not worked:
+        raise AsideUnavailable(f"the Aside daemon did not report ready and `aside repl` failed: {detail}",
+                               fix=START_FIX)
+    if said:
+        sys.stderr.write(said if said.endswith("\n") else said + "\n")
+    return True
 
 
 def account_status() -> dict:

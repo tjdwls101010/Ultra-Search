@@ -322,7 +322,7 @@ def _in_session(turn: evidence.Turn) -> dict[str, dict]:
 def search(root: Path, prompts: list[str], *, label: str | None, effort: str | None, model: str | None,
            speed: str | None, cli: str) -> Reply:
     group = runs.new_group_name() if len(prompts) > 1 else None
-    aside.require_ready()
+    aside.ensure_ready()
     started = [_start_run(root, p, cli, label=label, effort=effort, model=model, speed=speed, group=group)
                for p in prompts]
     return _started("search", started, root, group, cli)
@@ -360,7 +360,7 @@ def resume(root: Path, target: str, prompt: str, *, label: str | None, cli: str)
             )
         _resumable_session(session_id)
 
-    aside.require_ready()
+    aside.ensure_ready()
     new_run = _start_run(
         root, prompt, cli, label=label, effort=None, model=None, speed=None, group=None,
         resume_session_id=session_id, resumed_from=resumed_from,

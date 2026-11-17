@@ -86,22 +86,37 @@ def _load_snippet(name: str) -> str:
         raise AsideUnavailable(f"missing repl snippet {name}", fix=f"Reinstall the skill; expected {path}") from e
 
 
-def repl_probe() -> tuple[bool, str]:
+#: How long the round trip that starts a closed Aside may take: past the CLI's own waits (60 s for the app to answer,
+#: 45 s more for its browser to take work), so a start that fails is reported in Aside's words, not cut off here first.
+START_LIMIT = 120.0
+
+
+def repl_probe(timeout: float = 60) -> tuple[bool, str]:
     """Run a snippet whose output is known and check that exact output came back.
 
     A round trip, not just a health endpoint: the daemon answering HTTP and the daemon
     running a snippet are different things, and only the second one matters. Any output is
     not enough either: a sandbox that refuses the snippet still prints its refusal.
     """
+    worked, detail, _ = round_trip(timeout)
+    return worked, detail
+
+
+def round_trip(timeout: float) -> tuple[bool, str, str]:
+    """`repl_probe`, with what the CLI said on stderr besides, whichever way it went."""
     code = 'console.log(JSON.stringify({ok:true}));'
     try:
-        proc = subprocess.run([aside_bin(), "repl", code], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run([aside_bin(), "repl", code], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        # Ours, not Aside's: kept apart from anything the CLI says, which would say why.
+        raise AsideUnavailable(f"`aside repl` gave no answer in {timeout:g} s") from e
     except (OSError, subprocess.SubprocessError) as e:
         raise AsideUnavailable(f"repl round trip failed: {e}") from e
     if proc.returncode == 0 and {"ok": True} in parse_ndjson(proc.stdout):
-        return True, "round trip ok"
-    said = (proc.stdout or proc.stderr or "").strip()[:200] or "no output"
-    return False, f"exit {proc.returncode}: {said}"
+        return True, "round trip ok", proc.stderr or ""
+    # Both streams: a sandbox refusing the snippet answers on stdout, the CLI failing to reach Aside on stderr.
+    said = "\n".join(t for t in ((proc.stderr or "").strip(), (proc.stdout or "").strip()) if t)[:400] or "no output"
+    return False, f"exit {proc.returncode}: {said}", proc.stderr or ""
 
 
 def _text(raw: object) -> str:

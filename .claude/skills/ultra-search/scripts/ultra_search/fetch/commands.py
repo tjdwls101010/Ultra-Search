@@ -16,7 +16,7 @@ def fetch(root: Path, urls: list[str], *, out: str | None, fmt: str, via: str, c
           frontmatter: bool, print_content: bool, max_chars: int) -> Reply:
     if out:
         _out_path(urls, out)  # a bad --out is the caller's to fix, and said before anything else
-    aside.require_ready()
+    aside.ensure_ready()
     out_file, out_dir = _destinations(urls, out, root)
     envelope = acquire.fetch_urls(
         urls,

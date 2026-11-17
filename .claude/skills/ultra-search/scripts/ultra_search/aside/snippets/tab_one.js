@@ -18,6 +18,7 @@ try {
   const deadline = Date.now() + waitMs;
   let html = '';
   let finalUrl = url;
+  let lastError = '';
   // Poll rather than waiting a fixed time: a challenge page rewrites itself once it
   // clears, so the useful DOM is whichever one is there after it stops growing.
   let previous = -1;
@@ -28,11 +29,16 @@ try {
       finalUrl = page.url();
     } catch (e) {
       // A navigation mid-read invalidates the handle; the next poll gets the new document.
+      lastError = String(e && e.message ? e.message : e);
       continue;
     }
-    if (html.length === previous) break;
+    // An empty read is not a settled page: two of them in a row would otherwise end the wait with nothing.
+    if (html && html.length === previous) break;
     previous = html.length;
   }
+  // No DOM was read at all -- seen once right after a cold start, every read throwing. That is the tab failing, said
+  // with what the last read threw, not a page that turned out empty.
+  if (!html) throw new Error(lastError || 'the tab never yielded a DOM');
   // The rendered text as well as the DOM. An article extractor finds no article in a
   // feed, an inbox or a dashboard -- pages that are legitimately not articles but are
   // exactly what a logged-in fetch is for -- and returning nothing for them would make

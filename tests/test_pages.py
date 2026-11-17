@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, SCRIPTS, repl_calls, run_cli
+from conftest import FIXTURES, SCRIPTS, repl_calls, round_trips, run_cli, run_cli_streams
 
 ARTICLE = "<html><head><title>제목</title></head><body><article><p>" + ("단어 " * 300) + "</p></article></body></html>"
 SHELL = "<html><head><title>shell</title></head><body><div id=root></div></body></html>"
@@ -429,26 +429,60 @@ def test_a_page_with_a_few_replacement_characters_is_still_a_page(cli, routes) -
     assert item_of(payload)["status"] == "ok"
 
 
-@pytest.mark.parametrize("argv", [["fetch", "https://e.test/a"], ["map", "https://e.test/"], ["crawl", "https://e.test/"]],
-                         ids=["fetch", "map", "crawl"])
-def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv,
-                                                                runs_dir: Path) -> None:
-    """With the Aside app closed, a fetch came back as `error: no response` and a map as an empty site."""
-    import socket
+COMMANDS = pytest.mark.parametrize(
+    "argv", [["fetch", "https://e.test/a"], ["map", "https://e.test/"], ["crawl", "https://e.test/"]],
+    ids=["fetch", "map", "crawl"])
+SNIPPET_NAMES = ("fetch_batch", "tab_one", "sitemap", "links")
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    monkeypatch.setenv("ULTRA_SEARCH_DAEMON_URL", f"http://127.0.0.1:{port}/")
+
+@COMMANDS
+def test_an_aside_that_cannot_be_started_is_said_before_any_work(cli, routes, fake_aside: Path, monkeypatch, argv,
+                                                                 runs_dir: Path, daemon_silent) -> None:
+    """With the Aside app closed, a fetch came back as `error: no response` and a map as an empty site. When the
+    daemon does not answer and the round trip that would start it fails too, the command stops there, in Aside's
+    words, before any page is asked for or any file made."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", "aside_down")
 
     code, payload, _ = cli(*argv)
 
     assert (code, payload["error"]) == (3, "aside_unavailable")
+    assert "Aside isn't running on this machine." in payload["message"]
     assert "doctor" in payload["fix"]
-    assert not (fake_aside / "calls.jsonl").exists()
+    assert len(round_trips(fake_aside)) == 1
+    assert all(repl_calls(fake_aside, name) == [] for name in SNIPPET_NAMES)
     assert list(runs_dir.iterdir()) == [], "nothing was made before the refusal"
     code, _, _ = run_cli(*argv, "--out", "made/")
     assert code == 3 and list(Path.cwd().iterdir()) == []
+
+
+@COMMANDS
+def test_a_daemon_that_does_not_answer_is_started_through_aside_and_the_work_goes_on(
+        routes, fake_aside: Path, aside_home: Path, runs_dir: Path, monkeypatch, daemon_silent, argv) -> None:
+    """The aside CLI opens a closed Aside and waits for it, inside the one round trip made when the daemon does not
+    answer. What Aside said meanwhile reaches stderr as it said it; stdout stays one JSON document."""
+    monkeypatch.setenv("FAKE_ASIDE_OPENS", "1")
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE)}, "links": {"https://e.test/": ["/a"]}})
+
+    code, out, err = run_cli_streams(*argv, "--runs-dir", str(runs_dir))
+
+    assert code == 0, out
+    assert "Aside isn't running. Opening it in the background...\n" in err
+    assert out.count("\n") == 1 and json.loads(out)["ok"] is True
+    assert len(round_trips(fake_aside)) == 1
+
+
+@COMMANDS
+def test_a_daemon_that_answers_ready_costs_no_round_trip(routes, fake_aside: Path, aside_home: Path, runs_dir: Path,
+                                                         argv) -> None:
+    """With Aside up, its health endpoint is the whole price of being sure: a round trip would add most of a second to
+    every command, and only a daemon that does not answer ready is worth one."""
+    routes({"fetch_batch": {"https://e.test/a": page(ARTICLE)}, "links": {"https://e.test/": ["/a"]}})
+
+    code, _, err = run_cli_streams(*argv, "--runs-dir", str(runs_dir))
+
+    assert code == 0
+    assert round_trips(fake_aside) == []
+    assert err == ""
 
 
 @pytest.mark.parametrize("scenario, said, cause", [
@@ -485,6 +519,41 @@ def test_a_shell_is_escalated_to_a_browser_tab(cli, routes, fake_aside: Path) ->
     item = item_of(payload)
     assert item["status"] == "ok"
     assert item["via"] == "tab"
+
+
+#: What opening a tab in the first seconds after Aside starts was measured returning (A15), and the same call made again
+#: then succeeding (A21).
+DETACHED = {"status": 0, "kind": "error", "error": "CDP session detached: target closed"}
+
+
+def test_a_tab_whose_cdp_session_detached_is_opened_once_more(cli, routes, fake_aside: Path) -> None:
+    routes({"tab_one": {"https://x.com/a": {"sequence": [DETACHED, page(ARTICLE)]}}})
+
+    _, payload, _ = cli("fetch", "https://x.com/a", "--via", "tab")
+
+    assert item_of(payload)["status"] == "ok"
+    assert len(repl_calls(fake_aside, "tab_one")) == 2
+
+
+def test_a_tab_that_detaches_twice_is_reported_as_it_failed(cli, routes, fake_aside: Path) -> None:
+    routes({"tab_one": {"https://x.com/a": {"sequence": [DETACHED, DETACHED, page(ARTICLE)]}}})
+
+    _, payload, _ = cli("fetch", "https://x.com/a", "--via", "tab")
+
+    assert item_of(payload)["status"] != "ok"
+    assert "CDP session detached" in item_of(payload)["error"]
+    assert len(repl_calls(fake_aside, "tab_one")) == 2
+
+
+def test_a_tab_that_fails_any_other_way_is_opened_once(cli, routes, fake_aside: Path) -> None:
+    """Navigating twice is the retry's price; an error a second try would not change is not worth it."""
+    routes({"tab_one": {"https://x.com/a": {"sequence": [
+        {"status": 0, "kind": "error", "error": "net::ERR_NAME_NOT_RESOLVED"}, page(ARTICLE)]}}})
+
+    _, payload, _ = cli("fetch", "https://x.com/a", "--via", "tab")
+
+    assert item_of(payload)["status"] != "ok"
+    assert len(repl_calls(fake_aside, "tab_one")) == 1
 
 
 def test_frontmatter_records_where_the_text_came_from(cli, routes) -> None:

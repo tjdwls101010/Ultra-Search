@@ -13,7 +13,7 @@ from dataclasses import dataclass
 OK = "ok"
 #: Refused before any work: the arguments ask for something the CLI will not do.
 BAD_ARGUMENTS = "bad_arguments"
-#: The aside binary is missing, or its daemon will not answer.
+#: The aside binary is missing, or Aside could not be reached or started.
 ASIDE_UNAVAILABLE = "aside_unavailable"
 #: A run failed or was abandoned, nothing was saved, or a file could not be read or written.
 FAILED = "failed"
@@ -61,7 +61,8 @@ class AmbiguousRun(ArgumentError):
 
 
 class AsideUnavailable(UltraSearchError):
-    """The aside binary is missing, or its daemon will not answer.
+    """The aside binary is missing, or Aside could not be reached or started: the message says which, in Aside's own
+    words where it gave any.
 
     Never a hang: a command that cannot reach the daemon says so and exits, because a
     caller waiting on a dead daemon is indistinguishable from one waiting on slow work.

@@ -16,7 +16,7 @@
 
 ## 설치
 
-전제: [uv](https://docs.astral.sh/uv/)(스킬을 실행할 Python과 의존성 `olefile`도 uv가 고른다), Node 20.19 이상(변환 패키지 lockfile의 요구치이며 `doctor`가 확인한다), 실행 중이고 계정이 로그인된 Aside 앱과 PATH의 `aside` CLI.
+전제: [uv](https://docs.astral.sh/uv/)(스킬을 실행할 Python과 의존성 `olefile`도 uv가 고른다), Node 20.19 이상(변환 패키지 lockfile의 요구치이며 `doctor`가 확인한다), 설치되어 있고 계정이 로그인된 Aside 앱(꺼져 있으면 스킬이 켠다)과 PATH의 `aside` CLI.
 
 ```bash
 git clone <this repo> ~/Coding/Ultra-Search
@@ -55,7 +55,8 @@ $US result --help           # 플래그·기본값·출력·상태·종료 코�
 - **차단된 페이지는 저장되지 않는다.** 봇 챌린지·로그인 벽도 HTTP 200에 본문이 있다. 그걸 본문으로 저장하면 출처가 조용히 빠진다. `ok`가 아닌 항목은 그 출처를 확보하지 못한 것이다.
 - **`ok`와 `opened`는 근거가 아니라 단서다.** `ok`는 텍스트가 저장됐다는 뜻이지 원한 내용이라는 뜻이 아니다(긴 로그인 안내도 통과한다). `opened`는 페이지를 여는 도구가 오류 없이 그 URL을 돌려줬다는 뜻이다. 답이 인용한 출처가 `opened_sources`에 없을 수 있다. 검색 목록에만 있었거나, 에이전트가 REPL 스크립트로 읽어 기록이 남지 않은 경우다.
 - **산출물은 작업 디렉터리의 `./.ultra-search/`에 쌓인다.** 런·에이전트 저장 파일의 사본·저장한 페이지·맵·크롤이 여기 들어가고, 스킬이 처음 쓸 때 `*` 한 줄짜리 `.gitignore`를 만들어 그 프로젝트의 git에 섞이지 않게 한다. `--runs-dir`·`--out`으로 고른 곳은 건드리지 않는다.
-- **네이티브 툴은 같은 일을 하지 못한다.** `WebSearch`·`WebFetch`는 사용자의 로그인·세션을 쓰지 못하고, `WebFetch`는 원문이 아니라 요약을 돌려준다. 실패했을 때 어떻게 할지는 스킬 본문이 정하지 않는다.
+- **꺼져 있으면 켠다.** 데몬이 답하지 않으면 명령이 일하기 전에 `aside`를 한 번 부르고, 켜는 일은 `aside` CLI가 한다. 숨김 상태로 뜨고 탭을 복원하며 맨 앞 앱은 바뀌지 않는다(2026-11 macOS에서 잰 것). 켠 뒤에는 닫지 않는다. 못 켜면 종료 3과 함께 Aside가 한 말이 나온다. 화면 세션 밖(ssh 등)에서 켜지는지와 예약 작업자 안에서 켜지는지는 재지 않았다.
+- **네이티브 툴은 같은 일을 하지 못한다.** `WebSearch`·`WebFetch`는 사용자의 로그인·세션을 쓰지 못하고, `WebFetch`는 원문이 아니라 요약을 돌려준다. 실패했을 때 다른 도구로 이어 갈지는 스킬 본문이 정하지 않지만, 이어 갔다면 답에 그렇다고 쓰게 한다. 답만 봐서는 어떤 도구로 얻었는지 보이지 않기 때문이다.
 
 ## 구조
 
@@ -80,12 +81,14 @@ $US result --help           # 플래그·기본값·출력·상태·종료 코�
 ## 개발
 
 ```bash
-uv run --python 3.10 --with pytest --with olefile pytest -q          # 572개, 실제 aside 없이 통과
-uv run --python 3.10 --with pytest --with olefile pytest -q -m live  # 25개, 실제 Aside 앱 필요
+uv run --python 3.10 --with pytest --with olefile pytest -q          # 609개, 실제 aside 없이 통과
+uv run --python 3.10 --with pytest --with olefile pytest -q -m live  # 27개, 실제 Aside 앱 필요
+uv run --python 3.10 --with pytest --with olefile pytest -q -m cold  # 29개, Aside 앱을 끄고 켠다
 ```
 
 - 테스트는 `tests/fake_aside/aside`(가짜 바이너리)와 `tests/fixtures/`(실제 세션·stdout·페이지·PDF·공개 HWP·HWPX에서 녹화)를 쓴다. 임계값은 실측에서 나왔다 — 셸 판정 80단어는 x.com 0단어, 연합뉴스 219단어, 위키백과 4355단어 사이에서 잡았다. HWP·HWPX 기대 문장은 같은 문서의 다른 렌더링(법원 판결문 페이지, 같은 공고의 PDF, pyhwp)에서 골랐다.
 - `-m live` 가운데 실제 `aside exec`를 부르는 3개(`test_a_simple_search_answers_with_sources`, `test_a_session_started_outside_this_tool_can_be_continued`, `test_the_real_binary_writes_a_transcript_the_cli_can_find`)는 실행할 때마다 구독을 쓴다. 나머지 live는 fetch(HWP·HWPX 포함)·map·crawl·doctor 계열이다.
-- **Aside를 업데이트한 뒤에는** live 전체를 다시 돌리고, 통과하면 `aside/process.py`의 `VERIFIED_VERSION`·`VERIFIED_DAEMON_VERSION`을 그 버전으로 올린다. 가짜 Aside와 녹화 fixture는 실제 형식이 바뀐 것을 모른다. 2026-09 중순 전사 형식 변경은 live를 돌리지 않는 동안 2주 넘게 녹색 테스트 뒤에 숨어 있었다. 2026-10 CLI 업데이트의 `exec --session` 제거와 2026-11 업데이트의 일회성 REPL 세션 폴더 삭제는 live가 잡았다.
+- `-m cold`(`tests/live/test_cold.py`)는 테스트마다 Aside 앱을 끄고 시작해, 명령이 직접 켜는 경로를 실제로 확인한다. 브라우저를 쓰지 않을 때 돌린다. 그중 하나는 구독을 쓴다. 기본 실행·`-m live`·`-m "not cold"`에서는 돌지 않고 `-m`이 `cold`를 이름으로 고를 때만 돈다.
+- **Aside를 업데이트한 뒤에는** live와 `-m cold` 전체를 다시 돌리고, 통과하면 `aside/process.py`의 `VERIFIED_VERSION`·`VERIFIED_DAEMON_VERSION`을 그 버전으로 올린다. 가짜 Aside와 녹화 fixture는 실제 형식이 바뀐 것을 모른다. 2026-09 중순 전사 형식 변경은 live를 돌리지 않는 동안 2주 넘게 녹색 테스트 뒤에 숨어 있었다. 2026-10 CLI 업데이트의 `exec --session` 제거와 2026-11 업데이트의 일회성 REPL 세션 폴더 삭제는 live가 잡았다.
 - `tests/live/test_real_sessions.py`는 이 기기의 최근 실제 Aside 세션 60개를 읽어 불변식을 지킨다: 레코드 하나가 이벤트 하나, 읽지 못한 기록 없음, 처음 보는 도구 이름 없음, 결과가 가리키는 저장 파일이 있음. 데이터는 레포에 넣지 않는다. 합성 레코드 시험은 실제 모양이 바뀌어도 녹색으로 남는다. 454개가 녹색인 채 레코드를 잃던 일(v2)이 그 예다.
 - 설계 근거는 각 모듈의 docstring에, 만든 과정과 결정은 [.claude/plans/](.claude/plans/)에 있다.

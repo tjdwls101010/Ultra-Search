@@ -25,4 +25,4 @@ Each command's `--help` owns its inputs, outputs, states and recovery.
 - `opened` means a tool returned that URL without an error, not that the page says what the answer claims; `opened_sources` holds only those, so an answer can cite pages a search merely listed or that the agent read through a script, which no record shows.
 - Nothing here cancels delegated work: only Aside itself stops a run and its credit use, so a `search`'s scope is settled when it starts.
 - Requests act as the user, with their cookies, sessions and browser. A private source being reachable does not make its contents shareable.
-- WebSearch and WebFetch cannot use the user's access, and WebFetch returns a summary rather than the page; the user grounds answers in pages acquired with their own access.
+- WebSearch and WebFetch cannot use the user's access, and WebFetch returns a summary rather than the page; the user grounds answers in pages acquired with their own access. An answer does not show which tools produced it: when work goes on with other tools after this CLI fails, the answer says so, or the user reads it as grounded in their own access.

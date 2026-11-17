@@ -26,7 +26,8 @@ VIA_CHOICES = ("auto", "fetch", "tab")
 EXIT = {outcome.OK: 0, outcome.BAD_ARGUMENTS: 2, outcome.ASIDE_UNAVAILABLE: 3, outcome.FAILED: 4, outcome.EMPTY: 5}
 
 _REFUSED = "the arguments were refused before any work; the reply says what to change"
-_NO_ASIDE = "the aside binary is missing or its daemon does not answer; the reply says how to fix it"
+_NO_ASIDE = ("the aside binary is missing, or Aside could not be reached or started; the reply says which, in Aside's "
+             "own words where it gave any")
 _UNWRITABLE = "a file under the runs dir could not be read or written"
 _UNWRITABLE_OUT = "a file under the runs dir or --out could not be read or written"
 #: What each ending means for each command -- the Exit lines of its --help.
@@ -58,6 +59,13 @@ ENDINGS = {
               outcome.ASIDE_UNAVAILABLE: "Node is missing or the install failed; the reply says which"},
 }
 ENDINGS["resume"] = ENDINGS["search"]
+
+
+#: What the commands that need Aside do before their work, on the user's machine. How long a start takes, and how
+#: Aside comes up, are Aside's to change, so only what they cause is said.
+STARTS_ASIDE = ("When the Aside daemon does not answer, `aside` is run first: it starts Aside when it is closed and waits "
+                "for it, so this command takes longer than usual, and Aside is left running.")
+STARTING = ("search", "resume", "fetch", "map", "crawl", "doctor")
 
 
 def _exit_lines(command: str) -> str:
@@ -465,6 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     for name, command in sub.choices.items():
+        if name in STARTING:
+            command.description = f"{command.description.rstrip()}\n{STARTS_ASIDE}"
         command.epilog = f"{command.epilog}\n\n{_exit_lines(name)}" if command.epilog else _exit_lines(name)
     return p
 

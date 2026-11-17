@@ -52,10 +52,26 @@ def _write_body(rec: dict, into: Path) -> None:
 
 
 def open_tab(url: str, *, wait_ms: int = TAB_WAIT_MS, settle_ms: int = 700) -> list[dict]:
+    """A tab opened in the first seconds after Aside starts was seen failing with `CDP session detached`, and the same
+    call made again working, though its record reads like a page that cannot be opened: that error alone is tried once
+    more, at the price of a second navigation to ``url``."""
+    args = {"url": url, "waitMs": wait_ms, "settleMs": settle_ms}
+    first = _tab(args)
+    if not any(_detached(r, url) for r in first):
+        return first
+    return [r for r in first if not _detached(r, url)] + _tab(args)
+
+
+def _tab(args: dict) -> list[dict]:
     try:
-        return repl.run_snippet("tab_one.js", {"url": url, "waitMs": wait_ms, "settleMs": settle_ms})
+        return repl.run_snippet("tab_one.js", args)
     except repl.ReplTimeout as e:
         return e.lines
+
+
+def _detached(rec: dict, url: str) -> bool:
+    return (rec.get("kind") == "error" and rec.get("url") == url
+            and str(rec.get("error") or "").startswith("CDP session detached"))
 
 
 def read_sitemaps(roots: list[str], *, per_url_ms: int = DEFAULT_PER_URL_MS,

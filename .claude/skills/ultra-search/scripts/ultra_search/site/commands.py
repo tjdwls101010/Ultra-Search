@@ -38,7 +38,7 @@ def _providers(no_sitemap: bool) -> dict:
 
 def map_site(root: Path, url: str, *, depth: int | None, max_urls: int | None, include: list[str] | None,
              exclude: list[str] | None, no_sitemap: bool, out: str | None, list_all: bool) -> Reply:
-    aside.require_ready()
+    aside.ensure_ready()
     urls, coverage = discover.discover(
         url,
         **_discovery(depth, max_urls),
@@ -91,7 +91,7 @@ def crawl(root: Path, url: str | None, *, from_manifest: str | None, max_pages: 
             raise ArgumentError(f"manifest {source} lists no URLs", fix="Re-run `map` with wider filters.")
     else:
         site = url
-    aside.require_ready()
+    aside.ensure_ready()
     if not from_manifest:
         urls, coverage = discover.discover(
             site,

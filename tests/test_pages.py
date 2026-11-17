@@ -451,6 +451,25 @@ def test_a_daemon_that_does_not_answer_is_said_before_any_work(cli, routes, fake
     assert code == 3 and list(Path.cwd().iterdir()) == []
 
 
+@pytest.mark.parametrize("scenario, said, cause", [
+    ("aside_down", "Aside isn't running on this machine.", "fetch failed: connect ECONNREFUSED"),
+    ("aside_unreachable", "Could not connect to Aside at", "fetch failed: bad port"),
+], ids=["refused", "other-failure"])
+def test_aside_failing_mid_work_is_quoted_with_the_cause_it_gave(cli, routes, fake_aside: Path, monkeypatch,
+                                                                 scenario: str, said: str, cause: str) -> None:
+    """Aside words a refused connection, another failed one and its own 120s snippet kill in two messages; only the
+    cause ASIDE_DEBUG=1 adds tells them apart. The cause is quoted; the stack the CLI prints after it is not."""
+    monkeypatch.setenv("FAKE_ASIDE_SCENARIO", scenario)
+
+    code, payload, _ = cli("fetch", "https://e.test/a", "--via", "fetch")
+
+    assert (code, payload["error"]) == (3, "aside_unavailable")
+    assert said in payload["message"] and cause in payload["message"]
+    assert payload["message"].count("Details: ") == 1 and "TRPCClientError" not in payload["message"]
+    snippet_calls = [json.loads(line) for line in (fake_aside / "calls.jsonl").read_text().splitlines()]
+    assert [c["env"].get("ASIDE_DEBUG") for c in snippet_calls if c["argv"][1] == "repl"] == ["1"]
+
+
 # --- escalating to a real tab ------------------------------------------------------------
 
 
@@ -1348,19 +1367,24 @@ def test_a_miss_after_the_cap_is_reached_is_still_reported(cli, routes) -> None:
 
 @pytest.mark.parametrize("snippet", ["links", "sitemap"])
 def test_a_discovery_snippet_cut_off_by_the_repl_limit_is_reported(cli, routes, snippet: str) -> None:
-    """The daemon kills a snippet at 120 seconds and says nothing more. What it printed
-    before that is kept; that the list is incomplete has to be said too."""
+    """The daemon kills a snippet at 120 seconds, and Aside words that as a connection it could not make: read as
+    Aside being unavailable, a map of a large site would end in exit 3. Nothing the killed snippet printed survives,
+    so what the other source found is all there is, and that the list is incomplete has to be said."""
     table = {
         "links": {"links": {"https://site.test/": ["/a"], "__timeout__": True}},
-        "sitemap": {"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"], "__timeout__": True}},
+        "sitemap": {"sitemap": {"https://site.test/sitemap.xml": ["https://site.test/x"], "__timeout__": True},
+                    "links": {"https://site.test/": ["/a"]}},
     }[snippet]
     routes(table)
 
     code, payload, _ = cli("map", "https://site.test/", "--depth", "1")
 
-    assert code == 0
-    assert listed(payload)
     assert payload["coverage"]["budget_exhausted"] is True
+    if snippet == "sitemap":
+        assert code == 0
+        assert listed(payload) == ["https://site.test/", "https://site.test/a"]
+    else:
+        assert code == 5, "the links it printed went with the kill, so no page was read"
 
 
 def test_one_malformed_link_does_not_lose_the_rest_of_the_page(cli, routes) -> None:

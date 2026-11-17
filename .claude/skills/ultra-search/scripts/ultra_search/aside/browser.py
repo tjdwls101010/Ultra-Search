@@ -1,8 +1,9 @@
 """The page snippets, called in the user's browser: fetching, opening a tab, reading sitemaps and links.
 
 Each returns the snippet's records as it printed them, in order. A snippet the daemon killed
-at its 120-second limit still returns what it printed before that, closed by the record that
-says its budget ran out, so a caller sees a partial answer as partial.
+at its 120-second limit returns what reached stdout before that -- which the CLI has been seen
+to drop entirely -- closed by the record that says its budget ran out, so a caller sees a
+partial answer as partial.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from pathlib import Path
 from ultra_search.aside import repl
 
 #: The daemon kills a snippet at 120 seconds. Everything a snippet does is budgeted below that.
-#: Room to print what already succeeded before the kill lands.
+#: Room to finish and print before the kill lands: a kill takes what was printed with it.
 DEFAULT_BUDGET_MS = 105_000
 DEFAULT_PER_URL_MS = 20_000
 TAB_WAIT_MS = 45_000

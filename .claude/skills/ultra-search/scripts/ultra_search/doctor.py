@@ -1,8 +1,8 @@
 """`doctor` and `setup` -- the environment.
 
 `doctor` answers one question: would a command fail right now, and why. It exits 3 when
-something it can see would stop one, so a caller can tell "Aside is closed" from "the
-search found nothing" without reading prose.
+something it can see would stop one, so a caller can tell "Aside could not be started" from
+"the search found nothing" without reading prose.
 """
 from __future__ import annotations
 
@@ -47,15 +47,29 @@ def doctor(root: Path) -> Reply:
             ok = False
             checks.append(_check("aside version", False, e.message, e.fix))
 
+    # Started the way any command would start it, so what doctor reports is what a command would meet.
+    started, unstartable = False, None
+    if binary:
+        try:
+            started = aside.ensure_ready()
+        except AsideUnavailable as e:
+            unstartable = e
     daemon = aside.daemon_status()
-    daemon_note = None
-    if daemon["ok"] and daemon.get("version") and not str(daemon["version"]).startswith(aside.VERIFIED_DAEMON_VERSION):
-        daemon_note = (
-            f"measured against daemon {aside.VERIFIED_DAEMON_VERSION}; the daemon decides what a run "
-            "records, so a difference here is the first thing to suspect if results look thin"
-        )
-    checks.append(_check("aside daemon", daemon["ok"], daemon["detail"], None if daemon["ok"] else "Open the Aside app.",
-                         note=daemon_note))
+    notes = []
+    if unstartable:
+        # Opening it by hand tells an app that will not open from a CLI that could not open it.
+        daemon = {"ok": False, "detail": unstartable.message}
+        fix = "Open the Aside app by hand, then re-run `doctor`."
+    else:
+        fix = "Open the Aside app."
+        if daemon["ok"] and started:
+            notes.append("the daemon did not answer when this check began; the `aside repl` round trip that followed "
+                         "succeeded, as it would for any command")
+        if daemon["ok"] and daemon.get("version") and not str(daemon["version"]).startswith(aside.VERIFIED_DAEMON_VERSION):
+            notes.append(f"measured against daemon {aside.VERIFIED_DAEMON_VERSION}; the daemon decides what a run "
+                         "records, so a difference here is the first thing to suspect if results look thin")
+    checks.append(_check("aside daemon", daemon["ok"], daemon["detail"], None if daemon["ok"] else fix,
+                         note="; ".join(notes) or None))
     ok = ok and daemon["ok"]
 
     if binary and daemon["ok"]:

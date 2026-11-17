@@ -362,6 +362,49 @@ def test_tab_sitemap_and_links_answer_like_their_snippets(tmp_path: Path, sent: 
                                               "perUrlTimeoutMs": 1, "budgetMs": 1})] == ["hrefs", "link_miss", "links_done"]
 
 
+TAB_HARNESS = r"""
+const reads = JSON.parse(process.env.READS);
+let n = 0;
+globalThis.sleep = async () => {};
+globalThis.openTab = async (url) => ({
+  content: async () => { const r = reads[Math.min(n++, reads.length - 1)]; if ('throws' in r) throw new Error(r.throws); return r.html; },
+  url: () => url,
+  evaluate: async () => 'visible',
+});
+globalThis.closeTab = async () => {};
+const code = require('fs').readFileSync(0, 'utf8');
+const AsyncFunction = (async () => {}).constructor;
+new AsyncFunction(code)().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+def tab_with_reads(sent: dict[str, str], reads: list[dict]) -> list[dict]:
+    """tab_one, as the CLI sends it, run in Node against a page whose successive DOM reads return or throw ``reads``
+    (the last repeating). A stand-in for the browser: it shows what the snippet makes of such reads, not that a browser
+    produces them."""
+    code = snippet(sent, "tab_one", {"url": "https://e.test/t", "waitMs": 200, "settleMs": 1})
+    p = subprocess.run(["node", "-e", TAB_HARNESS], input=code, capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "READS": json.dumps(reads)})
+    assert p.returncode == 0, p.stderr
+    return ndjson(p)
+
+
+def test_a_tab_whose_dom_could_not_be_read_is_an_error_carrying_why(sent: dict[str, str]) -> None:
+    """Once right after a cold start, a tab came back as a text record with no DOM, which fetch reported as a blocked
+    page. Every read having thrown, what the last one threw is the answer -- and a detached CDP session is then the
+    error a retry is for."""
+    (got,) = tab_with_reads(sent, [{"throws": "CDP session detached: target closed"}])
+
+    assert got["kind"] == "error"
+    assert got["error"].startswith("CDP session detached")
+
+
+def test_an_empty_dom_is_read_again_rather_than_taken_as_settled(sent: dict[str, str]) -> None:
+    (got,) = tab_with_reads(sent, [{"html": ""}, {"html": ""}, {"html": "<p>page</p>"}, {"html": "<p>page</p>"}])
+
+    assert (got["kind"], got["text"]) == ("text", "<p>page</p>")
+
+
 # --- the same questions, asked of the real binary ----------------------------------------
 
 

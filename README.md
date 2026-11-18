@@ -81,7 +81,7 @@ $US result --help           # 플래그·기본값·출력·상태·종료 코�
 ## 개발
 
 ```bash
-uv run --python 3.10 --with pytest --with olefile pytest -q          # 609개, 실제 aside 없이 통과
+uv run --python 3.10 --with pytest --with olefile pytest -q          # 621개, 실제 aside 없이 통과
 uv run --python 3.10 --with pytest --with olefile pytest -q -m live  # 27개, 실제 Aside 앱 필요
 uv run --python 3.10 --with pytest --with olefile pytest -q -m cold  # 29개, Aside 앱을 끄고 켠다
 ```

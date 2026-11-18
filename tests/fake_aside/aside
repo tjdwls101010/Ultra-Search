@@ -603,8 +603,7 @@ def main(argv: list[str]) -> int:
     if cmd == "repl":
         return do_repl(positionals[-1] if positionals else "")
     if cmd == "account":
-        # FAKE_ASIDE_ACCOUNTS=none is a signed-out browser: the command succeeds with an
-        # empty roster, which is what the real one does.
+        # FAKE_ASIDE_ACCOUNTS=none is no account at all: the command succeeds with an empty roster. Not measured; a signed-out account is still listed by the real one.
         signed_out = os.environ.get("FAKE_ASIDE_ACCOUNTS") == "none"
         roster = [] if signed_out else [{"id": "u0", "status": "logged-in"}]
         print(json.dumps({"accounts": roster}))

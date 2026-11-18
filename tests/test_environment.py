@@ -240,11 +240,10 @@ def test_doctor_checks_the_default_store_without_creating_it(aside_home: Path, f
     assert not (Path.cwd() / ".ultra-search").exists()
 
 
-def test_doctor_reports_a_signed_out_browser_as_a_failure(
+def test_doctor_reports_an_empty_account_roster_as_a_failure(
     runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
 ) -> None:
-    """A signed-out browser fetches public pages perfectly and silently loses every page this
-    tool exists to reach, so an empty account roster is not a healthy environment."""
+    """No account listed is no account for the CLI to run under."""
     monkeypatch.setenv("FAKE_ASIDE_ACCOUNTS", "none")
 
     code, payload = doctor(runs_dir)

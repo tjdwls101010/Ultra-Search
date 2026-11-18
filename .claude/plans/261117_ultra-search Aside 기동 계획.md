@@ -460,3 +460,10 @@ Claude 작업자(`claude-opus-5-5`, 같은 계열이라 두 번째 독립 검토
   - 앱을 SIGTERM으로 끄자 앱만 죽고 데몬은 남았다. 그 상태의 `aside repl`은 `Aside Browser profile for account u0 … is not connected to the daemon.`으로 실패하고 앱을 열지 않는다. CLI는 연결 거부일 때만 연다. health는 ready라서 스킬은 왕복 없이 일을 시작하고, 첫 스니펫에서 종료 3과 이 문구로 끝난다. E2의 절충이 그대로 드러난 경우이고, 조용하지 않다.
   - 앱을 `open -g -b`로 다시 띄우자 남아 있던 데몬에 붙어 정상이 됐다.
 - 예약 작업자: 재지 못했다. `claude` 스킬의 `schedule`은 공개 레포에서 `--public-ok`를 요구하는데(이 레포는 PUBLIC), 그 플래그는 계획상 이 승인에 들어 있지 않은 소유자의 선택이라 성진에게 묻는다.
+
+### 공급자 재연결 뒤 live·cold, 데몬 1.26.1118 (2026-11-18)
+
+- 성진이 Aside에서 `claude-code` 공급자를 다시 연결했다(`credentials.json`의 `claude-code` `state: active`). 그 뒤 `-m live` 27 passed(종료 0). 이 실행의 데몬 버전은 기록하지 않았다.
+- 그 사이 데몬이 스스로 1.26.1118.1753으로 올라가 있었다. 앱(`CFBundleShortVersionString` 1.0.1116.2)과 CLI(1.26.1115.1556, `aside update`가 "up to date")는 그대로다. `doctor`는 통과하고 "measured against daemon 1.26.1115.1556" note만 냈다.
+- 데몬 1.26.1118.1753에서 `-m cold` 29 passed(종료 0, 4분 37초, search 포함), 이어서 `-m live` 27 passed(종료 0, 3분 0초: 120초 kill·연결 거부 계약, search·세션 이어가기 포함). 그래서 `VERIFIED_DAEMON_VERSION`을 1.26.1118.1753으로 올렸다. `VERIFIED_VERSION`(CLI)은 그대로다.
+- 이로써 계획의 완료 조건 중 live·cold 종료 0이 채워졌다. 빈 DOM 탭 실패의 수정은 여전히 재현으로 증명되지 않았다.

@@ -86,8 +86,7 @@ def ensure_ready(*, timeout: float = START_LIMIT) -> bool:
 
 
 def account_status() -> dict:
-    """{ok, detail}: whether an account is signed in. A signed-out browser fetches public pages
-    fine and silently loses every logged-in one, which is the capability this tool exists for."""
+    """{ok, detail}: whether `aside account list` lists an account at all. An account signed out of Aside is still listed (as `signed out`) and passes: that blocks only Aside's built-in models, while the browser's own site logins, which this tool exists to reach, do not depend on it."""
     try:
         proc = subprocess.run([aside_bin(), "account", "list"], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as e:
@@ -95,10 +94,7 @@ def account_status() -> dict:
     out = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return {"ok": False, "detail": out[:200] or f"exit {proc.returncode}"}
-    # Exit 0 with an empty roster is a signed-out browser, not a healthy one -- and a
-    # signed-out browser fetches public pages perfectly while silently losing every page
-    # this tool exists to reach. So the answer has to come from the content, not the
-    # command having run.
+    # Exit 0 with an empty roster is no account for the CLI to run under, so the answer has to come from the content, not the command having run.
     flat = " ".join(out.split())
     try:
         parsed = json.loads(out)

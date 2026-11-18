@@ -85,7 +85,7 @@ def test_doctor_passes_when_everything_a_command_needs_is_there(
     assert code == 0, [c for c in payload["checks"] if not c["ok"]]
     assert payload["ok"] is True
     assert {c["check"] for c in payload["checks"]} == {
-        "aside binary", "aside version", "aside daemon", "browser repl", "aside account",
+        "aside binary", "aside version", "aside daemon", "browser repl", "aside account", "aside model",
         "node", "page conversion", "aside sessions", "runs dir",
     }
     assert all(c["ok"] and "fix" not in c for c in payload["checks"])
@@ -240,11 +240,10 @@ def test_doctor_checks_the_default_store_without_creating_it(aside_home: Path, f
     assert not (Path.cwd() / ".ultra-search").exists()
 
 
-def test_doctor_reports_a_signed_out_browser_as_a_failure(
+def test_doctor_reports_an_empty_account_roster_as_a_failure(
     runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, monkeypatch
 ) -> None:
-    """A signed-out browser fetches public pages perfectly and silently loses every page this
-    tool exists to reach, so an empty account roster is not a healthy environment."""
+    """No account listed is no account for the CLI to run under."""
     monkeypatch.setenv("FAKE_ASIDE_ACCOUNTS", "none")
 
     code, payload = doctor(runs_dir)
@@ -252,6 +251,82 @@ def test_doctor_reports_a_signed_out_browser_as_a_failure(
     assert code == 3
     assert check(payload, "aside account")["ok"] is False
     assert "Sign in" in check(payload, "aside account")["fix"]
+
+
+#: As measured (D10): the account's default model, and how Aside stored its provider's credential the day `search` failed
+#: with `Authentication failed for "claude-code"`. The token fields stand in for the secrets the real file holds.
+DEFAULT_MODEL = {"provider": "claude-code", "modelId": "claude-sonnet-5-5", "thinkingLevel": "high", "fastMode": False}
+
+
+def credential(state: str) -> dict:
+    return {"type": "oauth", "state": state, "refresh": "SECRET-REFRESH", "access": "SECRET-ACCESS", "expires": 1}
+
+
+def account_files(aside_home: Path, settings: object = None, credentials: object = None) -> None:
+    """Writes the account's settings.json and credentials.json; a str is written as is, None leaves the file out."""
+    for name, value in (("settings.json", settings), ("credentials.json", credentials)):
+        if value is not None:
+            (aside_home / "u" / "0" / name).write_text(value if isinstance(value, str) else json.dumps(value))
+
+
+def test_doctor_fails_when_the_default_models_credential_has_expired(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon
+) -> None:
+    """The day this was measured, doctor passed while every `search` on the default model failed at once."""
+    account_files(aside_home, {"defaultModel": DEFAULT_MODEL}, {"claude-code": credential("auth-expired")})
+
+    code, payload, out = run_cli("doctor", "--runs-dir", str(runs_dir))
+
+    assert code == 3
+    model = check(payload, "aside model")
+    assert model["ok"] is False
+    assert "claude-code" in model["detail"] and "auth-expired" in model["detail"]
+    assert "--model" in model["fix"]
+    assert "SECRET" not in out
+
+
+def test_doctor_passes_a_default_model_whose_credential_is_active(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon
+) -> None:
+    account_files(aside_home, {"defaultModel": DEFAULT_MODEL}, {"claude-code": credential("active")})
+
+    code, payload, out = run_cli("doctor", "--runs-dir", str(runs_dir))
+
+    assert code == 0, [c for c in payload["checks"] if not c["ok"]]
+    model = check(payload, "aside model")
+    assert model["ok"] is True and "claude-code" in model["detail"]
+    assert "fix" not in model and "note" not in model
+    assert "SECRET" not in out
+
+
+@pytest.mark.parametrize("settings, credentials", [
+    (None, None),
+    ("{not json", {"claude-code": credential("auth-expired")}),
+    ({"defaultModel": None}, {"claude-code": credential("auth-expired")}),
+    ({"defaultModel": DEFAULT_MODEL}, None),
+    ({"defaultModel": DEFAULT_MODEL}, "{not json"),
+    ({"defaultModel": {**DEFAULT_MODEL, "provider": "aside", "modelId": "gpt-6-luna"}}, {}),
+    ({"defaultModel": DEFAULT_MODEL}, {"claude-code": {"type": "oauth"}}),
+    ({"defaultModel": DEFAULT_MODEL}, {"claude-code": {**credential("x"), "state": {"access": "SECRET-ACCESS"}}}),
+    ({"defaultModel": DEFAULT_MODEL}, {"claude-code": credential("SECRET-ACCESS")}),
+    ({"defaultModel": DEFAULT_MODEL}, {"claude-code": credential("paused")}),
+], ids=["no-files", "settings-unreadable", "no-default-model", "no-credentials-file", "credentials-unreadable",
+        "provider-without-credential", "credential-without-state", "state-not-text", "state-a-token",
+        "state-not-in-asides-schema"])
+def test_doctor_says_what_it_could_not_read_without_failing_on_it(
+    runs_dir: Path, aside_home: Path, fake_aside: Path, daemon, settings, credentials
+) -> None:
+    """These are Aside's private files. One it no longer writes the way it was measured is not a broken environment,
+    and failing on it would turn doctor red while every command works."""
+    account_files(aside_home, settings, credentials)
+
+    code, payload, out = run_cli("doctor", "--runs-dir", str(runs_dir))
+
+    assert code == 0, [c for c in payload["checks"] if not c["ok"]]
+    model = check(payload, "aside model")
+    assert model["ok"] is True
+    assert "not checked" in model["note"]
+    assert "SECRET" not in out
 
 
 def test_doctor_without_the_aside_binary_says_how_to_get_one(runs_dir: Path, aside_home: Path, daemon, monkeypatch) -> None:

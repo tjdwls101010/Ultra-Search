@@ -266,7 +266,8 @@ def path_edits(source: str, where: str) -> list[str]:
 #: Spellings only Aside's own records, programs and output use. Outside `aside/` they mean its format leaked.
 ASIDE_NAMES = ("stopReason", "toolUse", "taskId", "task_id", "cacheRead", "cacheWrite", "publishDate", "toolResult",
                "turn-lifecycle", "system-message", "<citation", "<quote", "runningSessionCount", "semaphore",
-               "webfetch", "websearch", "read_file", "openTab", "closeTab", "\\x1b[", "artifacts/", "sandbox:")
+               "webfetch", "websearch", "read_file", "openTab", "closeTab", "\\x1b[", "artifacts/", "sandbox:",
+               "defaultModel", "credentials.json")
 #: The same for the Node converter, outside `converter/`.
 CONVERTER_NAMES = ("node_modules", "anydoc", "to_markdown.mjs", "npm")
 #: The same for Hancom's formats, outside `hwp/`.

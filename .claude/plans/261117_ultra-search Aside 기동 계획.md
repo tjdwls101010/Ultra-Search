@@ -467,3 +467,12 @@ Claude 작업자(`claude-opus-5-5`, 같은 계열이라 두 번째 독립 검토
 - 그 사이 데몬이 스스로 1.26.1118.1753으로 올라가 있었다. 앱(`CFBundleShortVersionString` 1.0.1116.2)과 CLI(1.26.1115.1556, `aside update`가 "up to date")는 그대로다. `doctor`는 통과하고 "measured against daemon 1.26.1115.1556" note만 냈다.
 - 데몬 1.26.1118.1753에서 `-m cold` 29 passed(종료 0, 4분 37초, search 포함), 이어서 `-m live` 27 passed(종료 0, 3분 0초: 120초 kill·연결 거부 계약, search·세션 이어가기 포함). 그래서 `VERIFIED_DAEMON_VERSION`을 1.26.1118.1753으로 올렸다. `VERIFIED_VERSION`(CLI)은 그대로다.
 - 이로써 계획의 완료 조건 중 live·cold 종료 0이 채워졌다. 빈 DOM 탭 실패의 수정은 여전히 재현으로 증명되지 않았다.
+
+### D10 결정과 PR 4 (2026-11-18)
+
+- 성진의 결정: 세 안(공급자 자격 증명 확인 / 로그아웃을 실패로 / docstring만) 가운데 **공급자 자격 증명 확인**. 예약 작업자 측정은 하지 않는다(`--public-ok` 불허, README의 "재지 않았다" 유지). 대조 실험의 결과물 파일 침묵 0/6은 "최종 답에서 밝히면 충분"으로 읽는다(문구 유지).
+- CLI에는 공급자 상태를 알려 주는 명령이 없다: `aside settings get`은 계정·프로필·saveSessions만, `aside account status --json`은 계정 필드만 준다. 그래서 `u/0/settings.json`의 `defaultModel`과 `u/0/credentials.json`의 그 공급자 `state`를 읽는다.
+- 상태 어휘: CLI 바이너리에 `modelProviderStateSchema = _enum(["active", "auth-expired"])`. `expires`는 `state: active`인 채로 같은 날 07:38→19:10 UTC로 굴러갔다(액세스 토큰 만료라 판정에 쓰지 않는다). 다른 계정(u1)의 기본 모델은 `provider: aside`(내장)이고 그 계정의 credentials는 `{}`였다.
+- 런이 쓴 모델: `--model` 없이 돌린 세션들은 `claude-code`/`claude-sonnet-5-5`를 기록했다. `defaultModel`과 `modelCategories.fast/deep`이 같은 값이라 exec가 어느 쪽을 읽는지는 가르지 못했다.
+- codex 검토: "active 아닌 모든 state를 실패"는 스키마 밖 값에서 거짓 빨강이 되고, state 자리의 토큰 같은 문자열을 detail에 인용한다는 두 지적을 채택했다(알려진 두 값만 판정·인용). "내장 모델 + 로그아웃 계정이 not checked로 통과"는 로그아웃을 실패로 정하지 않았고 그 실패를 재지 않았으므로 이번에는 고치지 않고 코드에 `성진:` 한계로 남겼다.
+- 미검증: 실제로 만료된 자격 증명으로 이 점검을 돌려 보지 않았다(오늘 아침의 만료는 이 점검을 만들기 전에 풀렸다). refresh 토큰이 죽었는데 state가 active로 남는 경우는 통과한다.

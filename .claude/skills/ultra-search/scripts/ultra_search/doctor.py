@@ -88,6 +88,10 @@ def doctor(root: Path) -> Reply:
                              None if account["ok"] else "Sign in to Aside, then re-run `doctor`."))
         ok = ok and account["ok"]
 
+    model = aside.model_access()
+    checks.append(_check("aside model", model["ok"], model["detail"], model.get("fix"), note=model.get("note")))
+    ok = ok and model["ok"]
+
     conversion = converter.check()
     checks.append(_check("node", conversion["node_ok"], conversion["node_detail"],
                          None if conversion["node_ok"] else

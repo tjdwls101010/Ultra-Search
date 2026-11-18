@@ -27,6 +27,7 @@ from ultra_search.aside.sessions import (
     session_transcript,
     sessions_root,
 )
+from ultra_search.aside.settings import model_access
 from ultra_search.aside.transcript import Event, SourceRef, ToolCall, read_events, resolve_answer_tags, turn_finished
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "fetch_pages",
     "find_session_by_marker",
     "last_activity",
+    "model_access",
     "open_tab",
     "parse_exec_output",
     "read_events",
